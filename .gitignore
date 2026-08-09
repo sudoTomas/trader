@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# uv
+uv.lock
+
+# env / secrets
+.env
+.env.*
+!.env.example
+
+# research markdown mirror (generated, one-way export)
+/research/*.md
+
+# OS
+.DS_Store

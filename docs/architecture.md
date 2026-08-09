@@ -1,0 +1,189 @@
+# Trader — Architecture
+
+Agentic-first autonomous trading agent. Greenfield successor to **trading-agent** (v1),
+which is frozen as a reference archive. This document is the source of truth for the design;
+where a decision was learned the hard way in v1, the relevant file is cited as `v1:<path>`.
+
+## Prime directive
+
+**The LLM proposes, the deterministic RiskGuard disposes, the broker executes.** The only
+path from an idea to a submitted order runs through the RiskGuard chain in pure Python. No
+LLM output, no MCP tool, and no API caller can place an order any other way.
+
+## Principles
+
+1. **Deterministic safety chain.** Every order intent passes one ordered, fail-closed
+   `RiskGuard`. Limits are code, never prompt text.
+2. **No market-data storage.** The live loop fetches bars on demand and computes indicators
+   in-process. A small immutable `bars` cache exists only for replay-shaped work. (v1 stored
+   full candle windows per tick → a 3.6 GB table and 19 GiB loads; `v1:EAI-159`.)
+3. **One service layer, three surfaces.** Every capability is a command or query registered
+   once in `surfaces/services.py` and exposed identically via REST API, MCP server, and CLI.
+   Agentic-first means the MCP tools and the API are first-class, not afterthoughts.
+4. **Per-role model routing.** A registry maps each LLM role → (provider, model, credential).
+   The money-path decide runs on the local Nemotron (Spark); research/compiler roles run on
+   Grok. No global endpoint assumption. (v1 had one hardcoded URL + `api_key="EMPTY"`.)
+5. **Paper-only, hard-gated.** Live trading is impossible unless an explicit env flag is set;
+   the default build cannot construct a live client.
+6. **Everything auditable.** Every state-changing action writes an append-only `audit_events`
+   row. Every decision journals the exact context version it saw (research, prompt, output).
+
+## What we deliberately did NOT carry from v1
+
+- **LangGraph.** The pipeline is linear and deterministic; a StateGraph bought nothing but
+  14 GB of never-resumed Postgres checkpoints. Future desk fan-out is `asyncio.gather`;
+  human-in-the-loop is an approvals table, not a graph interrupt.
+- **The evolution / strategy-discovery engine.** Mothballed in v1; its fitness signal was
+  computed on corrupt data anyway (`v1:EAI-159`). Discovery, if it returns, is a separate
+  offline service over the bars cache — parametric families first.
+- **IBKR / IB Gateway.** Its auth/session model dominated its integration cost (daily
+  re-login, gateway container, autoheal; `v1:EAI-50`). Abandoned for now. To add it back:
+  implement the `Broker` protocol against `v1:apps/agent/src/trading_agent/adapters/broker/ibkr.py`
+  and its reconcile (`v1:.../adapters/broker/reconcile.py`) — the reference is preserved.
+- **macro-lab.** Retired in v1; forecasts lost to a naive baseline 25/26, VaR was
+  `np.random`, regime was degenerate (`v1:EAI-151`). Macro context now comes from the
+  operator-curated Research Desk, not a forecasting service.
+
+## Package layout
+
+```
+src/trader/
+├── core/       # domain types (Symbol, AssetClass, Decision, OrderIntent, Position, Bar);
+│               # market calendars (always_open, nyse). Pure, no I/O.
+├── data/       # MarketData protocol; alpaca_data (primary), twelve_data (fallback), fred;
+│               # local indicators (RSI/SMA/EMA/realized-vol); bars read-through cache.
+├── llm/        # provider registry {role→(provider,model,credential)}; nemotron client
+│               # (MUST send chat_template_kwargs.enable_thinking=false — v1:EAI-128);
+│               # xai device-code OAuth (+ XAI_API_KEY fallback); usage metering.
+├── brokers/    # Broker protocol; alpaca/ (REST + trade-updates stream). ibkr = docs only.
+├── risk/       # RiskGuard ordered chain; account breakers; approvals; kill switches; kelly.
+├── loop/       # SignalScheduler → ContextBuilder → Decider → Executor → Journal.
+├── research/   # brief generator (Grok); x_sentiment (x_search, degraded-honest);
+│               # Research Desk (notes store, Grok macro-view compiler, md-mirror export);
+│               # screener (M5).
+├── store/      # db.py; repos; ONE baseline migration.
+├── surfaces/   # services.py (command/query registry) → api/ (FastAPI) + mcp/ (FastMCP
+│               # streamable HTTP /mcp) + cli/ (typer). Health identical on all three.
+└── ops/        # config (pydantic-settings); structlog; lifespan; /health.
+```
+
+## The money path (crypto slice = first vertical)
+
+```
+SignalScheduler → ContextBuilder → Decider → RiskGuard → Executor → Journal
+```
+
+- **SignalScheduler** — event-driven wakeups: heartbeat, price-move, vol-spike, sentiment,
+  position-risk. Per-asset-class cadence and calendar gating (crypto = always_open; equities
+  = nyse). Cooldowns start on dispatch, not evaluation. (v1:`engine/signal_monitor.py`.)
+- **ContextBuilder** — fetch ~100 bars/interval from Alpaca Data, compute indicators locally,
+  attach the Macro View slice + X-sentiment + open positions + recent journal. No LLM tool
+  calls in this hot path (v1 bound 28 MCP tools here → 120 s timeouts, `v1:TRA-42`).
+- **Decider** — one Nemotron completion, JSON-schema-validated, 1 retry with the validation
+  errors fed back. Transient (infra) vs crash errors classified so infra blips don't arm
+  backoff (v1:EAI-40). Runs in **shadow mode** first: journal the decision, submit nothing.
+- **RiskGuard** — ordered, fail-closed chain; each check returns allow / deny(reason) /
+  clamp(size, reason): paper-gate → kill switches (trading paused, drift) → per-class policy
+  (crypto long-only, equity shortability, session open) → sizing clamps (max position frac,
+  notional floor, kelly cap) → concurrency + trades/day → daily-loss + weekly-drawdown
+  breakers → approval threshold (large orders park as pending). Unreadable input = deny.
+  (Consolidates what v1 scattered across sleeve/translator/tournament; v1:EAI-131.)
+- **Executor** — Alpaca paper only. Idempotent `client_order_id`; persist the order row
+  before submit; trade-updates WebSocket → fills ledger. Closes must eventually land; opens
+  are best-effort + journaled. (v1:`engine/sleeve_broker_mirror.py`, EAI-46 postmortems.)
+- **Journal** — every wakeup (including suppressed/shadow) writes a row: trigger, full
+  prompt, raw output, risk verdicts, `macro_view_version`, cost, latency. Replay-ready.
+
+## Operator Research Desk
+
+Lets the operator feed hand-picked macro/market research the trader weighs when deciding.
+Design informed by the ai-quoting LLM-wiki audit (borrow the consumption discipline, avoid
+the unversioned out-of-repo maintenance).
+
+- **`research_notes`** — immutable markdown notes (title, body, tags, target asset
+  classes/symbols, source, status `active|disputed|retired`). **Auto-stale** after a default
+  window unless pinned/evergreen. Captured from anywhere via `submit_research_note` (MCP),
+  `POST /research/notes` (API), `trader note add` (CLI).
+- **`macro_views`** — a **versioned compiled digest**. A Grok "compiler" role recompiles
+  (debounced) on note change: a global thesis + per-asset-class sections. Rules (from the
+  ai-quoting anti-slop pattern): every claim cites note ids; contradictions preserved as
+  `disputed`, never LLM-resolved; **price levels frozen as example-not-current — the pattern
+  is the knowledge**; stale/retired notes drop out. Nemotron fallback if xAI is quarantined.
+- **Advisory firewall (structural, not just prompt).** The decide prompt receives a budgeted
+  Macro View slice in its **own lane** — operator judgment and market facts starve
+  independently; entries drop whole, never truncated mid-thought; empty → the block is
+  omitted. **RiskGuard never reads the Macro View**: research shapes direction and conviction,
+  never sizing or breakers. Every decision journals its `macro_view_version`.
+- **Read-only markdown mirror.** Notes + the current view export one-way to a git-tracked
+  `research/` folder for Obsidian-style browsing. Edits there do NOT flow back (single owner).
+- **Hermes is a capture client, never a dependency.** A Hermes skill can distill a forwarded
+  article or voice memo and call `submit_research_note` — but the trader never calls outward,
+  and capture works from CLI/API with Hermes absent.
+- **Graduation path.** A claim that recurs and is quantifiable ("VIX > 30 → halve crypto
+  exposure") graduates from advisory prose into a deterministic, backtestable RiskGuard/config
+  parameter and leaves the Desk's advisory role.
+
+## LLM layer
+
+- **Provider registry**: `{role → (provider, model, credential_source)}`. Roles: `decide`
+  (Nemotron/Spark), `brief` / `compiler` / `sentiment` (Grok), with per-role fallback.
+- **Nemotron client** (Spark, `http://localhost:8009/v1`): every request MUST send
+  `chat_template_kwargs: {enable_thinking: false}` or throughput collapses to ~0.35 tok/s
+  (v1:EAI-128). No auth on that endpoint — network trust. Shared 4-seq instance; keep the
+  decide loop off contention (research roles live on Grok partly for this reason).
+- **xAI / Grok** via SuperGrok **device-code OAuth** (RFC 8628, `auth.x.ai`): persist the
+  rotating refresh token BEFORE serving the access token (single-use), lock-serialized
+  refresh, 403 = entitlement (quarantine, no retry). `XAI_API_KEY` is a first-class fallback.
+  Endpoint surface settled by a spike (`/v1/responses` hosts x_search regardless).
+- **Usage metering**: real token counts surfaced from every provider (vLLM returns them),
+  priced per model; budget gates see actual spend. (v1 recorded `None` locally → budgets
+  always read $0.)
+
+## Data layer
+
+- **Alpaca Data** primary (crypto + US equities, free with broker keys), **Twelve Data**
+  fallback, **FRED** for macro series (VIX etc.). REST for the engine; providers' MCP servers
+  are for agent research only, never the hot path.
+- **Indicators** computed locally from fetched bars (RSI/SMA/EMA/realized-vol) — ~30 lines of
+  numpy, no network. (v1 fetched these over MCP and got null for 987/987 decisions.)
+- **`bars` cache**: immutable `(symbol, interval, ts) → OHLCV`, read-through, MB-scale,
+  bounded retention. Not a live-path dependency; for replay/screener only.
+
+## Surfaces (agentic-first)
+
+`surfaces/services.py` is the single registry of commands (state-changing) and queries
+(read-only). API routes, MCP tools, and CLI subcommands are thin adapters over it — one
+capability, defined once, three doors.
+
+- **REST API** (FastAPI): mandatory API-key auth; startup fails without a key unless
+  `AUTH_DISABLED=true` (explicit dev opt-out). (v1 silently disabled auth when the var was
+  unset.)
+- **MCP server** (FastMCP, streamable HTTP at `/mcp`): ~19 tools generated from the service
+  registry. Deliberately **no raw place-order tool** — orders exist only through the
+  RiskGuarded loop. Tools: health, portfolio, positions, decisions, wake_trader,
+  pause/resume, risk status, resume_breaker, approvals (list/approve/deny), briefs, sentiment,
+  bars, usage, research (submit/list/retire note, get_macro_view), flatten_all (confirm-gated).
+- **CLI** (typer, `trader ...`): wraps the same services over the API for operator use.
+
+## Safety invariants (summary)
+
+- Live client construction refuses unless `ALPACA_LIVE_ENABLED=true` (default absent).
+- No order path exists outside RiskGuard; unreadable risk input = deny, never allow.
+- Breaker + pause state is DB-backed and survives restart.
+- `audit_events` is append-only (no UPDATE/DELETE in code).
+- API auth mandatory outside explicit dev mode.
+- Blocking I/O (broker/data fetches) runs off the event loop so `/health` stays responsive
+  (v1:EAI-39 — a sync tick blocked the loop and autoheal restart-looped the container).
+
+## Deployment
+
+Runs on the DGX Spark beside `nemotron-vllm` (systemd, `:8009`). Two containers (app +
+Postgres 16) with a memory cap. Budget ~16 GB (vLLM holds the rest of the 128 GB unified
+pool). The GPU clock-cap systemd unit on the Spark is load-bearing — do not remove it.
+
+## Milestones
+
+M0 Foundation (scaffold, CI, service layer + 3 surfaces, store + auth) · M1 Market data ·
+M2 LLM layer · M3 Money path crypto (shadow → gated live-paper) · M4 Research (Desk + briefs
++ sentiment) · M5 Expansion (equities, commodity ETFs, screener, desk, replay eval, IBKR
+add-back). Tracked in the Linear **trader** project.
