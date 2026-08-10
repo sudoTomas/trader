@@ -22,8 +22,9 @@ uv sync --all-extras --dev      # install
 uv run pytest -q                # tests
 uv run ruff check . && uv run ruff format --check .   # lint
 
-trader health                   # CLI surface
-uv run uvicorn trader.surfaces.api.app:app --port 8080   # API surface → GET /health
+docker compose -f infra/docker-compose.yml up -d db   # Postgres on :5544 (tests need it)
+uv run uvicorn trader.surfaces.api.app:app --port 8080   # API → GET /health; MCP at /mcp
+trader health                   # CLI surface (talks to the running API)
 ```
 
 ## Deploy

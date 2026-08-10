@@ -1,15 +1,37 @@
-"""CLI surface (typer) — `trader ...`. Wraps the service registry for operator use."""
+"""CLI surface (typer) — `trader ...`. Talks to the running API (base URL + key from env)
+so operator commands exercise the real service, not a private in-process copy.
+"""
 
 from __future__ import annotations
 
-import asyncio
 import json
 
+import httpx
 import typer
 
-from trader.surfaces.services import build_registry
+from trader.ops.config import get_settings
 
 app = typer.Typer(help="trader — agentic-first trading agent", no_args_is_help=True)
+
+
+def _client() -> httpx.Client:
+    settings = get_settings()
+    headers = {"x-api-key": settings.api_key} if settings.api_key else {}
+    return httpx.Client(base_url=settings.api_base_url, headers=headers, timeout=10)
+
+
+def _get(path: str, params: dict | None = None) -> object:
+    try:
+        with _client() as client:
+            resp = client.get(path, params=params)
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.ConnectError as exc:
+        typer.echo(f"cannot reach the trader API at {get_settings().api_base_url}: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    except httpx.HTTPStatusError as exc:
+        typer.echo(f"API error {exc.response.status_code}: {exc.response.text}", err=True)
+        raise typer.Exit(1) from exc
 
 
 @app.callback()
@@ -19,10 +41,14 @@ def _root() -> None:
 
 @app.command()
 def health() -> None:
-    """Print liveness and build status."""
-    registry = build_registry()
-    result = asyncio.run(registry.get("health").handler())
-    typer.echo(json.dumps(result, indent=2))
+    """Print liveness, build, and store reachability."""
+    typer.echo(json.dumps(_get("/health"), indent=2))
+
+
+@app.command()
+def audit(limit: int = typer.Option(20, help="How many events, newest first.")) -> None:
+    """Print recent audit events."""
+    typer.echo(json.dumps(_get("/audit", params={"limit": limit}), indent=2))
 
 
 if __name__ == "__main__":

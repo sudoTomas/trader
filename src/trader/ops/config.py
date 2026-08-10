@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     # --- Surfaces / auth ---
     api_key: str = ""
     auth_disabled: bool = False  # explicit dev opt-out; without it, an unset api_key fails boot
+    api_base_url: str = "http://localhost:8080"  # where the CLI finds the running API
 
     # --- Store ---
     database_url: str = "postgresql://trader:trader@localhost:5544/trader"

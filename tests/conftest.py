@@ -49,6 +49,21 @@ def _migrated() -> None:
 
 
 @pytest.fixture
+def clean_db(_migrated: None) -> None:
+    """Truncate all tables for a SYNC test (surface tests drive async code via TestClient)."""
+
+    async def _truncate() -> None:
+        database = Database(min_size=1, max_size=1)
+        await database.open()
+        try:
+            await database.execute(f"TRUNCATE {', '.join(ALL_TABLES)} RESTART IDENTITY CASCADE")
+        finally:
+            await database.close()
+
+    asyncio.run(_truncate())
+
+
+@pytest.fixture
 async def db(_migrated: None) -> AsyncIterator[Database]:
     """A fresh pool per test (so it lives on this test's event loop), tables truncated."""
     database = Database(min_size=1, max_size=2)

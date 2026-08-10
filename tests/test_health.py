@@ -10,9 +10,11 @@ os.environ.setdefault("TRADER_AUTH_DISABLED", "true")
 async def test_service_registry_health():
     from trader.surfaces.services import build_registry
 
+    # Without a store the registry still answers, honestly degraded.
     result = await build_registry().get("health").handler()
-    assert result["status"] == "ok"
+    assert result["status"] == "degraded"
     assert result["service"] == "trader"
+    assert result["db"] == "unconfigured"
 
 
 def test_api_health():
