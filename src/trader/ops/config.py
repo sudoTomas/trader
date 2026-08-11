@@ -24,6 +24,12 @@ class Settings(BaseSettings):
 
     # --- LLM endpoints ---
     nemotron_base_url: str = "http://localhost:8009/v1"
+    nemotron_model: str = "nemotron-3-super"  # served model id on the Spark vLLM
+    xai_base_url: str = "https://api.x.ai/v1"
+    xai_model: str = "grok-4"
+    xai_api_key: str = Field(
+        default="", validation_alias=AliasChoices("XAI_API_KEY", "TRADER_XAI_API_KEY")
+    )
 
     # --- Market data / broker credentials ---
     # Provider-conventional env names (no TRADER_ prefix), as documented in .env.example.
