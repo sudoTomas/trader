@@ -55,11 +55,12 @@ class ServiceRegistry:
         return list(self._caps.values())
 
 
-def build_registry(db: Database | None = None) -> ServiceRegistry:
+def build_registry(db: Database | None = None, runner: Any | None = None) -> ServiceRegistry:
     """Construct the registry with the capabilities available in this build.
 
     ``db`` is the shared (possibly not-yet-opened) pool; handlers only touch it per call,
-    so the registry can be built before the lifespan opens the pool.
+    so the registry can be built before the lifespan opens the pool. ``runner`` is the
+    decide loop, present only when this build runs one.
     """
     reg = ServiceRegistry()
 
@@ -126,5 +127,80 @@ def build_registry(db: Database | None = None) -> ServiceRegistry:
         assert db is not None, "approvals requires a store"
         rows = await ApprovalService(db).pending()
         return [{**r, "created_at": r["created_at"].isoformat()} for r in rows]
+
+    # --- decide loop ------------------------------------------------------
+
+    @reg.register("decisions", kind="query", summary="Recent journaled decisions.")
+    async def decisions(limit: int = 20) -> list[dict[str, Any]]:
+        from trader.loop.journal import Journal
+
+        assert db is not None, "decisions requires a store"
+        return await Journal(db).recent(min(limit, 200))
+
+    @reg.register("decision", kind="query", summary="One journaled decision by id.")
+    async def decision(decision_id: int) -> dict[str, Any] | None:
+        from trader.loop.journal import Journal
+
+        assert db is not None, "decision requires a store"
+        return await Journal(db).get(decision_id)
+
+    @reg.register("loop_status", kind="query", summary="Decide-loop counters and mode.")
+    async def loop_status() -> dict[str, Any]:
+        from trader.ops.config import get_settings
+
+        settings = get_settings()
+        if runner is None:
+            return {"running": False, "shadow": settings.shadow_mode, "stats": None}
+        return {"running": True, "shadow": runner.shadow, "stats": runner.stats.as_dict()}
+
+    @reg.register(
+        "wake_trader", kind="command", summary="Force a decide pass now (ignores cooldowns)."
+    )
+    async def wake_trader() -> dict[str, Any]:
+        if runner is None:
+            return {"woken": False, "reason": "no decide loop in this build"}
+        results = await runner.tick(force=True)
+        await _audit_command("wake_trader", {"wakeups": len(results)})
+        return {"woken": True, "results": [r.as_dict() for r in results]}
+
+    @reg.register("pause", kind="command", summary="Pause trading (kill switch).")
+    async def pause(reason: str = "operator") -> dict[str, Any]:
+        from trader.risk.breakers import BreakerStore
+
+        assert db is not None, "pause requires a store"
+        await BreakerStore(db).pause(reason)
+        await _audit_command("pause", {"reason": reason})
+        return {"trading_paused": True, "reason": reason}
+
+    @reg.register("resume", kind="command", summary="Clear the operator pause.")
+    async def resume() -> dict[str, Any]:
+        from trader.risk.breakers import BreakerStore
+
+        assert db is not None, "resume requires a store"
+        await BreakerStore(db).unpause()
+        await _audit_command("resume", {})
+        return {"trading_paused": False}
+
+    @reg.register(
+        "resume_breaker",
+        kind="command",
+        summary="Clear a breaker halt and re-baseline its windows.",
+    )
+    async def resume_breaker(equity: float | None = None) -> dict[str, Any]:
+        from trader.ops.config import get_settings
+        from trader.risk.breakers import BreakerStore
+
+        assert db is not None, "resume_breaker requires a store"
+        baseline = equity if equity is not None else get_settings().shadow_equity
+        await BreakerStore(db).resume(equity=baseline)
+        await _audit_command("resume_breaker", {"rebaselined_to": baseline})
+        return {"halted_reason": None, "rebaselined_to": baseline}
+
+    async def _audit_command(action: str, payload: dict[str, Any]) -> None:
+        """Commands are state-changing: every one leaves an append-only trace."""
+        from trader.store.audit import audit as write_audit
+
+        if db is not None:
+            await write_audit(db, actor="surface", category="ops", action=action, payload=payload)
 
     return reg

@@ -22,6 +22,15 @@ class Settings(BaseSettings):
     # --- Safety gates (default: paper only, live impossible) ---
     alpaca_live_enabled: bool = False
 
+    # --- Decide loop ---
+    # Shadow mode defaults ON: the pipeline runs and journals, and submits nothing.
+    shadow_mode: bool = True
+    loop_enabled: bool = False  # the background task is an explicit operator opt-in
+    loop_tick_seconds: float = 60.0
+    loop_symbols: str = "BTC/USD,ETH/USD"
+    # Paper account base until the broker lands (EAI-176).
+    shadow_equity: float = 100_000.0
+
     # --- Risk limits (RiskGuard) — code/config only, never prompt-driven ---
     risk_max_position_frac: float = 0.10
     risk_min_notional_usd: float = 5.0

@@ -1,0 +1,362 @@
+"""The decide loop — triggers, context assembly, decider validation, and the shadow-mode
+runner end to end. The LLM and market data are stubbed; the store is the real one.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime, timedelta
+
+import pytest
+
+from trader.core.symbols import AssetClass, default_registry, make_symbol
+from trader.core.types import Action, Bar
+from trader.llm.base import Completion, LLMError, Usage
+from trader.loop.context import ContextBuilder, compute_indicators
+from trader.loop.decider import DECISION_SCHEMA, Decider, DeciderError, DecisionOutput
+from trader.loop.journal import DENIED, ERROR, SHADOW, SUPPRESSED, Journal
+from trader.loop.runner import LoopRunner
+from trader.loop.scheduler import (
+    HEARTBEAT,
+    POSITION_RISK,
+    PRICE_MOVE,
+    VOL_SPIKE,
+    Mark,
+    SignalScheduler,
+    TriggerConfig,
+)
+from trader.risk.guard import RiskGuard
+from trader.risk.limits import RiskLimits
+from trader.store.db import Database
+
+BTC = default_registry().get("BTC/USD")
+SPY = make_symbol("SPY", AssetClass.US_EQUITY)
+NOW = datetime(2026, 8, 12, 15, 0, tzinfo=UTC)  # Wednesday 11:00 ET
+SATURDAY = datetime(2026, 8, 15, 15, 0, tzinfo=UTC)
+
+LIMITS = RiskLimits(max_position_frac=0.05, approval_notional_usd=100_000.0)
+
+
+def bars(closes: list[float], symbol: str = "BTC/USD") -> list[Bar]:
+    return [
+        Bar(symbol, "1h", NOW - timedelta(hours=len(closes) - i), c, c * 1.01, c * 0.99, c, 10.0)
+        for i, c in enumerate(closes)
+    ]
+
+
+# --- scheduler --------------------------------------------------------------
+
+
+def test_heartbeat_fires_then_respects_its_cadence():
+    scheduler = SignalScheduler([BTC], TriggerConfig(price_move_pct=9.0))
+    first = scheduler.evaluate(NOW, {"BTC/USD": Mark(price=60_000)})
+    assert [t.type for t in first] == [HEARTBEAT]
+
+    scheduler.mark_dispatched(first, NOW)
+    soon = scheduler.evaluate(NOW + timedelta(minutes=5), {"BTC/USD": Mark(price=60_000)})
+    assert soon == []
+    later = scheduler.evaluate(NOW + timedelta(minutes=20), {"BTC/USD": Mark(price=60_000)})
+    assert [t.type for t in later] == [HEARTBEAT]
+
+
+def test_undispatched_triggers_refire_next_tick():
+    """THE cooldown discipline: a trigger suppressed by an in-flight run must come back."""
+    scheduler = SignalScheduler([BTC])
+    scheduler.mark_dispatched(scheduler.evaluate(NOW, {"BTC/USD": Mark(price=60_000)}), NOW)
+
+    later = NOW + timedelta(minutes=1)
+    moved = scheduler.evaluate(later, {"BTC/USD": Mark(price=63_000)})  # +5%
+    assert PRICE_MOVE in [t.type for t in moved]
+
+    # Simulate "the loop was busy": evaluate again WITHOUT marking dispatched.
+    again = scheduler.evaluate(later + timedelta(seconds=30), {"BTC/USD": Mark(price=63_000)})
+    assert PRICE_MOVE in [t.type for t in again]
+
+    # Once dispatched, the cooldown finally applies.
+    scheduler.mark_dispatched(again, later)
+    quiet = scheduler.evaluate(later + timedelta(minutes=1), {"BTC/USD": Mark(price=63_000)})
+    assert PRICE_MOVE not in [t.type for t in quiet]
+
+
+def test_cooldowns_are_scoped_per_symbol():
+    eth = default_registry().get("ETH/USD")
+    scheduler = SignalScheduler([BTC, eth])
+    start = {"BTC/USD": Mark(price=60_000), "ETH/USD": Mark(price=3_000)}
+    scheduler.mark_dispatched(scheduler.evaluate(NOW, start), NOW)
+
+    later = NOW + timedelta(minutes=1)
+    btc_moved = scheduler.evaluate(later, {"BTC/USD": Mark(price=63_000), **start})
+    scheduler.mark_dispatched(btc_moved, later)
+
+    # ETH's own move must not be suppressed by BTC's dispatch.
+    eth_moved = scheduler.evaluate(later + timedelta(minutes=1), {"ETH/USD": Mark(price=3_200)})
+    assert [(t.type, t.symbol) for t in eth_moved] == [(PRICE_MOVE, "ETH/USD")]
+
+
+def test_vol_spike_and_position_risk_fire():
+    scheduler = SignalScheduler([BTC], TriggerConfig(price_move_pct=9.0))
+    for i in range(3):
+        scheduler.evaluate(NOW + timedelta(minutes=i), {"BTC/USD": Mark(60_000, realized_vol=0.01)})
+    spiked = scheduler.evaluate(
+        NOW + timedelta(minutes=4), {"BTC/USD": Mark(60_000, realized_vol=0.05)}
+    )
+    assert VOL_SPIKE in [t.type for t in spiked]
+
+    risky = scheduler.evaluate(
+        NOW + timedelta(hours=2), {"BTC/USD": Mark(60_000, unrealized_pnl_frac=-0.08)}
+    )
+    assert POSITION_RISK in [t.type for t in risky]
+
+
+def test_closed_venue_produces_no_triggers():
+    scheduler = SignalScheduler([SPY])
+    assert scheduler.evaluate(SATURDAY, {"SPY": Mark(price=600)}) == []
+    assert [t.type for t in scheduler.evaluate(NOW, {"SPY": Mark(price=600)})] == [HEARTBEAT]
+
+
+# --- context ----------------------------------------------------------------
+
+
+class StubMarketData:
+    name = "stub"
+
+    def __init__(self, series: list[float] | None = None, *, fail: bool = False) -> None:
+        self._series = series if series is not None else [100.0 + i for i in range(60)]
+        self._fail = fail
+        self.bar_calls = 0
+
+    async def get_bars(self, symbol, interval, lookback):
+        self.bar_calls += 1
+        if self._fail:
+            from trader.data.base import MarketDataError
+
+            raise MarketDataError("provider down")
+        return bars(self._series, symbol.ticker)
+
+    async def get_latest_quote(self, symbol):
+        from trader.core.types import Quote
+
+        if self._fail:
+            from trader.data.base import MarketDataError
+
+            raise MarketDataError("provider down")
+        return Quote(symbol.ticker, NOW, self._series[-1], self._series[-1])
+
+
+async def test_context_computes_indicators_locally_and_never_calls_a_tool():
+    data = StubMarketData()
+    ctx = await ContextBuilder(data).build(BTC, now=NOW, triggers=[], equity=100_000.0)
+
+    assert data.bar_calls == 1  # one fetch, no per-indicator network hops
+    assert ctx.price == pytest.approx(159.0)
+    indicators = ctx.indicators["1h"]
+    assert indicators.rsi_14 is not None and indicators.sma_20 is not None
+    prompt = ctx.to_prompt()
+    assert "rsi_14" in prompt and "BTC/USD" in prompt
+
+
+async def test_context_degrades_when_data_is_unavailable():
+    ctx = await ContextBuilder(StubMarketData(fail=True)).build(BTC, now=NOW, triggers=[])
+    assert ctx.bars["1h"] == []
+    assert ctx.price == 0.0  # the runner treats this as "decide nothing"
+
+
+def test_indicators_are_independently_optional():
+    short = compute_indicators(bars([1.0, 2.0, 3.0]))
+    assert short.rsi_14 is None and short.sma_20 is None  # too few bars
+    assert short.ema_12 is None
+    full = compute_indicators(bars([100.0 + i for i in range(40)]))
+    assert full.rsi_14 is not None and full.realized_vol_20 is not None
+
+
+# --- decider ----------------------------------------------------------------
+
+
+class StubLLM:
+    """Stands in for LLMRegistry.complete with a scripted reply sequence."""
+
+    def __init__(self, replies: list[str | Exception]) -> None:
+        self._replies = list(replies)
+        self.calls: list[list[dict]] = []
+
+    async def complete(self, role, messages, *, schema=None, max_tokens=1024, temperature=0.2):
+        self.calls.append(messages)
+        reply = self._replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return Completion(
+            text=reply,
+            usage=Usage(prompt_tokens=100, completion_tokens=20),
+            cost_usd=0.0,
+            provider="nemotron",
+            model="nemotron-3-super",
+        )
+
+
+async def context_for(data: StubMarketData | None = None):
+    return await ContextBuilder(data or StubMarketData()).build(
+        BTC, now=NOW, triggers=[], equity=100_000.0
+    )
+
+
+def test_decision_schema_is_generated_from_the_model():
+    assert DECISION_SCHEMA["properties"]["action"]["enum"] == ["hold", "open", "close"]
+    with pytest.raises(ValueError, match="requires a side and a positive notional_usd"):
+        DecisionOutput(action="open", conviction=0.9, rationale="x").to_decision("BTC/USD")
+    with pytest.raises(ValueError, match="positive notional_usd"):
+        DecisionOutput(
+            action="open", conviction=0.9, rationale="x", side="buy", notional_usd=0
+        ).to_decision("BTC/USD")
+
+
+def test_hold_with_zero_notional_needs_no_retry():
+    """Live models answer notional_usd=0 for a hold; rejecting that burned an extra
+    inference call on the most common decision path."""
+    decision = DecisionOutput(
+        action="hold", conviction=0.0, rationale="no signal", notional_usd=0
+    ).to_decision("BTC/USD")
+    assert decision.action is Action.HOLD and decision.intent is None
+
+
+async def test_decider_parses_a_valid_reply():
+    llm = StubLLM(['{"action":"hold","conviction":0.4,"rationale":"rsi neutral"}'])
+    result = await Decider(llm).decide(await context_for())
+    assert result.decision.action is Action.HOLD
+    assert result.attempts == 1
+    assert result.decision.intent is None
+
+
+async def test_decider_retries_once_with_the_validation_errors():
+    llm = StubLLM(
+        [
+            '{"action":"open","conviction":2.5,"rationale":"too confident"}',  # conviction > 1
+            '{"action":"open","conviction":0.8,"rationale":"ok","side":"buy","notional_usd":500}',
+        ]
+    )
+    result = await Decider(llm).decide(await context_for())
+    assert result.attempts == 2
+    assert result.decision.intent.notional == 500.0
+
+    # The retry must actually carry the validation errors back to the model.
+    retry_prompt = llm.calls[1][-1]["content"]
+    assert "failed validation" in retry_prompt and "conviction" in retry_prompt
+
+
+async def test_two_bad_replies_is_a_non_transient_decider_error():
+    llm = StubLLM(["not json", "still not json"])
+    with pytest.raises(DeciderError) as excinfo:
+        await Decider(llm).decide(await context_for())
+    assert excinfo.value.transient is False
+
+
+async def test_llm_outage_is_classified_transient():
+    llm = StubLLM([LLMError("endpoint down")])
+    with pytest.raises(DeciderError) as excinfo:
+        await Decider(llm).decide(await context_for())
+    assert excinfo.value.transient is True  # infra: back off, don't arm a crash loop
+
+
+# --- runner (shadow mode) ---------------------------------------------------
+
+
+def build_runner(db: Database, replies: list[str | Exception], **kwargs) -> LoopRunner:
+    return LoopRunner(
+        db=db,
+        market_data=kwargs.pop("market_data", StubMarketData()),
+        llm=StubLLM(replies),
+        guard=RiskGuard(db, LIMITS),
+        symbols=[BTC],
+        shadow=kwargs.pop("shadow", True),
+        equity=100_000.0,
+        **kwargs,
+    )
+
+
+HOLD = '{"action":"hold","conviction":0.3,"rationale":"nothing doing"}'
+OPEN = '{"action":"open","conviction":0.8,"rationale":"momentum","side":"buy","notional_usd":500}'
+
+
+async def test_shadow_wakeup_journals_everything_and_submits_nothing(db: Database):
+    runner = build_runner(db, [OPEN])
+    results = await runner.tick(NOW)
+
+    assert [r.status for r in results] == [SHADOW]
+    row = await Journal(db).get(results[0].decision_id)
+    assert row["trigger"] == HEARTBEAT
+    assert row["status"] == SHADOW
+    assert row["prompt"] and row["raw_output"]  # replay-ready
+    assert row["decision"]["action"] == "open"
+    assert [v["check"] for v in row["risk_verdicts"]][0] == "input_sanity"
+    assert row["cost_usd"] is not None and row["latency_ms"] is not None
+
+    # Shadow parks no approvals and creates no orders.
+    assert await db.fetch_all("SELECT * FROM approvals") == []
+    assert await db.fetch_all("SELECT * FROM orders") == []
+
+
+async def test_hold_decisions_are_journaled_without_a_risk_pass(db: Database):
+    results = await build_runner(db, [HOLD]).tick(NOW)
+    row = await Journal(db).get(results[0].decision_id)
+    assert row["decision"]["action"] == "hold"
+    assert row["risk_verdicts"] is None  # nothing to size, nothing to check
+
+
+async def test_risk_denial_is_journaled_as_denied(db: Database):
+    from trader.risk.breakers import BreakerStore
+
+    await BreakerStore(db).pause("test")
+    results = await build_runner(db, [OPEN]).tick(NOW)
+    assert [r.status for r in results] == [DENIED]
+    row = await Journal(db).get(results[0].decision_id)
+    assert row["status"] == DENIED
+    assert row["risk_verdicts"][-1]["check"] == "kill_switch"
+
+
+async def test_unusable_market_data_journals_a_suppressed_wakeup(db: Database):
+    runner = build_runner(db, [], market_data=StubMarketData(fail=True))
+    results = await runner.tick(NOW)
+    assert [r.status for r in results] == [SUPPRESSED]
+    assert (await Journal(db).get(results[0].decision_id))["status"] == SUPPRESSED
+
+
+async def test_bad_model_output_journals_an_error_without_crashing(db: Database):
+    results = await build_runner(db, ["garbage", "still garbage"]).tick(NOW)
+    assert [r.status for r in results] == [ERROR]
+    assert (await Journal(db).get(results[0].decision_id))["status"] == ERROR
+
+
+async def test_transient_llm_failure_propagates_for_backoff(db: Database):
+    runner = build_runner(db, [LLMError("spark down")])
+    with pytest.raises(DeciderError) as excinfo:
+        await runner.tick(NOW)
+    assert excinfo.value.transient
+    # Still journaled: the operator can see the loop tried.
+    assert (await Journal(db).recent(1))[0]["status"] == ERROR
+
+
+async def test_force_wake_ignores_cooldowns(db: Database):
+    runner = build_runner(db, [HOLD, HOLD])
+    assert len(await runner.tick(NOW)) == 1
+    assert await runner.tick(NOW + timedelta(seconds=5)) == []  # heartbeat cadence not due
+    forced = await runner.tick(NOW + timedelta(seconds=10), force=True)
+    assert [r.triggers for r in forced] == [[HEARTBEAT]]
+
+
+async def test_runner_is_single_flight(db: Database):
+    import asyncio
+
+    runner = build_runner(db, [HOLD, HOLD])
+    async with runner._lock:  # simulate a wakeup already in flight
+        assert await runner.tick(NOW) == []
+    # The trigger was never dispatched, so it is still available.
+    assert len(await runner.tick(NOW)) == 1
+    assert isinstance(runner._lock, asyncio.Lock)
+
+
+async def test_shadow_journal_is_replayable(db: Database):
+    """The journal row alone must be enough to re-run the decision offline."""
+    results = await build_runner(db, [OPEN]).tick(NOW)
+    row = await Journal(db).get(results[0].decision_id)
+    replayed = DecisionOutput.model_validate_json(row["raw_output"]).to_decision(row["symbol"])
+    assert replayed.action is Action.OPEN
+    assert json.loads(json.dumps(row["decision"]))["conviction"] == 0.8

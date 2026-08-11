@@ -316,8 +316,14 @@ class RiskGuard:
         live: bool = False,
         actor: str = "loop",
         decision_id: int | None = None,
+        shadow: bool = False,
     ) -> RiskOutcome:
-        """Run the chain. Returns the (possibly clamped) intent only when approved."""
+        """Run the chain. Returns the (possibly clamped) intent only when approved.
+
+        ``shadow`` runs the identical chain but parks nothing: a human must never be
+        asked to approve an order that was never going to be submitted. The verdicts are
+        still produced and audited, which is the point of shadow mode.
+        """
         state = await self.breakers.observe(
             equity=account.equity,
             session_day=symbol.market_calendar.session_day(now),
@@ -339,7 +345,7 @@ class RiskGuard:
             )
         )
 
-        if outcome.approval_required and outcome.intent is not None:
+        if outcome.approval_required and outcome.intent is not None and not shadow:
             approval_id = await self.approvals.park(
                 outcome.intent, price=price, reason=outcome.reason, decision_id=decision_id
             )
@@ -349,7 +355,7 @@ class RiskGuard:
             self._db,
             actor=actor,
             category="risk",
-            action="verdict",
+            action="shadow_verdict" if shadow else "verdict",
             subject=symbol.ticker,
             payload={
                 "approved": outcome.approved,

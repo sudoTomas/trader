@@ -1,0 +1,176 @@
+"""ContextBuilder — everything the decider sees, assembled before the LLM is called.
+
+**No LLM tool calls in this hot path.** v1 bound 28 MCP tools into the decide call and
+got 120 s timeouts (v1:TRA-42); here the context is pre-fetched, indicators are computed
+locally (v1 fetched them over MCP and got null for 987/987 decisions), and the prompt is
+a finished string by the time the model runs.
+
+Fetch-on-tick: bars come from the provider and are used in memory. Nothing is stored.
+The Macro View slice arrives in M4 and will occupy its own lane in the prompt.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any
+
+import structlog
+
+from trader.core.symbols import Symbol
+from trader.core.types import Bar
+from trader.data.base import MarketData, MarketDataError
+from trader.data.indicators import ema, realized_vol, rsi, sma
+from trader.loop.scheduler import Trigger
+
+log = structlog.get_logger(__name__)
+
+BAR_LOOKBACK = 100
+DEFAULT_INTERVALS = ("1h",)
+
+
+@dataclass(frozen=True)
+class Indicators:
+    rsi_14: float | None = None
+    sma_20: float | None = None
+    ema_12: float | None = None
+    realized_vol_20: float | None = None
+
+    def as_dict(self) -> dict[str, float | None]:
+        return {
+            "rsi_14": self.rsi_14,
+            "sma_20": self.sma_20,
+            "ema_12": self.ema_12,
+            "realized_vol_20": self.realized_vol_20,
+        }
+
+
+def compute_indicators(bars: list[Bar]) -> Indicators:
+    """Local indicators, each independently optional: a short history yields Nones for
+    the ones it cannot support rather than failing the whole wakeup."""
+
+    def safe(fn, *args):
+        try:
+            return fn(*args)
+        except ValueError:
+            return None
+
+    return Indicators(
+        rsi_14=safe(rsi, bars, 14),
+        sma_20=safe(sma, bars, 20),
+        ema_12=safe(ema, bars, 12),
+        realized_vol_20=safe(realized_vol, bars, 20),
+    )
+
+
+@dataclass(frozen=True)
+class DecisionContext:
+    symbol: Symbol
+    now: datetime
+    triggers: list[Trigger]
+    price: float
+    bars: dict[str, list[Bar]]  # interval -> ascending bars
+    indicators: dict[str, Indicators]  # interval -> indicators
+    position_qty: float = 0.0
+    equity: float = 0.0
+    recent_decisions: list[dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def primary_vol(self) -> float | None:
+        """Realized vol for the primary interval — the guard's Kelly scaling input."""
+        primary = next(iter(self.indicators.values()), None)
+        return primary.realized_vol_20 if primary else None
+
+    def to_prompt(self) -> str:
+        """The full user-side prompt. Deterministic given the context (replay-ready)."""
+        lines = [
+            f"Symbol: {self.symbol.ticker} ({self.symbol.asset_class})",
+            f"Time: {self.now.isoformat()}",
+            f"Last price: {self.price:,.6g}",
+            f"Open position: {self.position_qty:g} units",
+            f"Account equity: {self.equity:,.2f} USD",
+            "",
+            "Wake triggers:",
+        ]
+        lines += [f"  - {t.type}: {t.detail}" for t in self.triggers] or ["  - (none)"]
+
+        for interval, indicators in self.indicators.items():
+            bars = self.bars.get(interval, [])
+            lines += ["", f"Interval {interval} ({len(bars)} bars):"]
+            lines += [f"  {name}: {value}" for name, value in indicators.as_dict().items()]
+            if bars:
+                closes = ", ".join(f"{b.close:,.6g}" for b in bars[-10:])
+                lines.append(f"  last 10 closes: {closes}")
+
+        if self.recent_decisions:
+            lines += ["", "Recent decisions (newest first):"]
+            lines += [
+                f"  - {d['ts']} {d['trigger']} -> {d['status']}"
+                f" {(d.get('decision') or {}).get('action', '')}"
+                for d in self.recent_decisions
+            ]
+        return "\n".join(lines)
+
+
+class ContextBuilder:
+    """Assembles a DecisionContext. All I/O happens here, none in the decider."""
+
+    def __init__(
+        self,
+        market_data: MarketData,
+        *,
+        intervals: tuple[str, ...] = DEFAULT_INTERVALS,
+        lookback: int = BAR_LOOKBACK,
+    ) -> None:
+        self._data = market_data
+        self._intervals = intervals
+        self._lookback = lookback
+
+    async def build(
+        self,
+        symbol: Symbol,
+        *,
+        now: datetime,
+        triggers: list[Trigger],
+        position_qty: float = 0.0,
+        equity: float = 0.0,
+        recent_decisions: list[dict[str, Any]] | None = None,
+    ) -> DecisionContext:
+        bars: dict[str, list[Bar]] = {}
+        indicators: dict[str, Indicators] = {}
+        for interval in self._intervals:
+            try:
+                fetched = await self._data.get_bars(symbol, interval, self._lookback)
+            except MarketDataError as exc:
+                log.warning(
+                    "context_bars_unavailable",
+                    symbol=symbol.ticker,
+                    interval=interval,
+                    error=str(exc),
+                )
+                fetched = []
+            bars[interval] = fetched
+            indicators[interval] = compute_indicators(fetched)
+
+        price = 0.0
+        primary = bars.get(self._intervals[0], [])
+        if primary:
+            price = primary[-1].close
+        else:
+            # No bars: fall back to a quote so the guard still sees a real price.
+            try:
+                price = (await self._data.get_latest_quote(symbol)).mid
+            except MarketDataError as exc:
+                log.warning("context_price_unavailable", symbol=symbol.ticker, error=str(exc))
+
+        return DecisionContext(
+            symbol=symbol,
+            now=now,
+            triggers=triggers,
+            price=price,
+            bars=bars,
+            indicators=indicators,
+            position_qty=position_qty,
+            equity=equity,
+            recent_decisions=recent_decisions or [],
+        )
