@@ -13,8 +13,8 @@ import structlog
 
 from trader.llm.base import Completion, LLMClient, LLMError
 from trader.llm.nemotron import nemotron_client
-from trader.llm.openai_compat import OpenAIChatClient
 from trader.llm.usage import UsageMeter
+from trader.llm.xai import xai_client
 from trader.ops.config import Settings
 
 log = structlog.get_logger(__name__)
@@ -69,18 +69,14 @@ class LLMRegistry:
 def build_llm_registry(settings: Settings, meter: UsageMeter | None = None) -> LLMRegistry:
     """Wire the chains this build can serve from configured credentials.
 
-    Grok roles are present only when an xAI credential exists (device-code OAuth lands
-    with EAI-173; ``XAI_API_KEY`` is the first-class fallback until then and after).
+    Grok roles are present when any xAI credential path exists — SuperGrok OAuth
+    (device-code login) or the first-class ``XAI_API_KEY`` fallback; consumers can't
+    tell which one is serving.
     """
     nemotron = nemotron_client(settings)
     routes: dict[str, list[LLMClient]] = {"decide": [nemotron]}
-    if settings.xai_api_key:
-        grok = OpenAIChatClient(
-            name="xai",
-            model=settings.xai_model,
-            base_url=settings.xai_base_url,
-            api_key=settings.xai_api_key,
-        )
+    grok = xai_client(settings)
+    if grok is not None:
         # Nemotron backstops research roles if xAI is quarantined (architecture §Desk).
         for role in ("brief", "compiler", "sentiment"):
             routes[role] = [grok, nemotron]

@@ -57,5 +57,45 @@ def cache_stats() -> None:
     typer.echo(json.dumps(_get("/cache-stats"), indent=2))
 
 
+xai_app = typer.Typer(help="SuperGrok OAuth credential management (local, not via the API).")
+app.add_typer(xai_app, name="xai")
+
+
+@xai_app.command("login")
+def xai_login() -> None:
+    """Device-code login against auth.x.ai; stores the encrypted refresh lineage."""
+    import asyncio
+
+    from trader.llm.xai_auth import XaiAuthError, build_manager
+
+    manager = build_manager(get_settings())
+    if manager is None:
+        typer.echo(
+            "TRADER_XAI_TOKEN_KEY is unset. Generate one:\n"
+            '  python -c "from cryptography.fernet import Fernet; '
+            'print(Fernet.generate_key().decode())"',
+            err=True,
+        )
+        raise typer.Exit(1)
+    try:
+        asyncio.run(manager.login(echo=typer.echo))
+    except XaiAuthError as exc:
+        typer.echo(f"login failed: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+
+@xai_app.command("status")
+def xai_status() -> None:
+    """Print the OAuth credential state (ok | absent | quarantined | corrupt)."""
+    from trader.llm.xai_auth import build_manager
+
+    settings = get_settings()
+    manager = build_manager(settings)
+    status = "disabled (TRADER_XAI_TOKEN_KEY unset)" if manager is None else manager.status
+    typer.echo(
+        json.dumps({"oauth": status, "api_key_fallback": bool(settings.xai_api_key)}, indent=2)
+    )
+
+
 if __name__ == "__main__":
     app()

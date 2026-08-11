@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     xai_api_key: str = Field(
         default="", validation_alias=AliasChoices("XAI_API_KEY", "TRADER_XAI_API_KEY")
     )
+    # SuperGrok OAuth: Fernet key + encrypted store path (TRADER_XAI_TOKEN_KEY unset →
+    # OAuth disabled and the provider resolves to XAI_API_KEY alone).
+    xai_token_key: str = ""
+    xai_token_path: str = "~/.config/trader/xai_token.enc"
 
     # --- Market data / broker credentials ---
     # Provider-conventional env names (no TRADER_ prefix), as documented in .env.example.
