@@ -31,6 +31,16 @@ ALL_TABLES = (
     "usage_daily",
 )
 
+# risk_state is a singleton row, not a collection: restore it to the migration's
+# defaults rather than truncating it away (a missing row is fail-closed by design).
+RESET_RISK_STATE = """
+    UPDATE risk_state SET
+        trading_paused = false, pause_reason = NULL, drift_detected = false,
+        halted_reason = NULL, halted_at = NULL, day_session = NULL,
+        day_start_equity = NULL, week_high_equity = NULL, updated_at = now()
+    WHERE id = 1
+"""
+
 
 @pytest.fixture(scope="session")
 def _migrated() -> None:
@@ -57,6 +67,7 @@ def clean_db(_migrated: None) -> None:
         await database.open()
         try:
             await database.execute(f"TRUNCATE {', '.join(ALL_TABLES)} RESTART IDENTITY CASCADE")
+            await database.execute(RESET_RISK_STATE)
         finally:
             await database.close()
 
@@ -69,5 +80,6 @@ async def db(_migrated: None) -> AsyncIterator[Database]:
     database = Database(min_size=1, max_size=2)
     await database.open()
     await database.execute(f"TRUNCATE {', '.join(ALL_TABLES)} RESTART IDENTITY CASCADE")
+    await database.execute(RESET_RISK_STATE)
     yield database
     await database.close()

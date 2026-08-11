@@ -343,6 +343,9 @@ class ApprovalsRepo:
         assert row is not None
         return row["id"]
 
+    async def get(self, approval_id: int) -> Row | None:
+        return await self._db.fetch_one("SELECT * FROM approvals WHERE id = %s", (approval_id,))
+
     async def pending(self) -> list[Row]:
         return await self._db.fetch_all(
             "SELECT * FROM approvals WHERE status = 'pending' ORDER BY created_at"

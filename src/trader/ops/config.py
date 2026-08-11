@@ -22,6 +22,15 @@ class Settings(BaseSettings):
     # --- Safety gates (default: paper only, live impossible) ---
     alpaca_live_enabled: bool = False
 
+    # --- Risk limits (RiskGuard) — code/config only, never prompt-driven ---
+    risk_max_position_frac: float = 0.10
+    risk_min_notional_usd: float = 5.0
+    risk_max_concurrent_positions: int = 5
+    risk_max_trades_per_day: int = 20
+    risk_daily_loss_limit_frac: float = 0.03
+    risk_weekly_drawdown_limit_frac: float = 0.10
+    risk_approval_notional_usd: float = 1000.0
+
     # --- LLM endpoints ---
     nemotron_base_url: str = "http://localhost:8009/v1"
     nemotron_model: str = "nemotron-3-super"  # served model id on the Spark vLLM

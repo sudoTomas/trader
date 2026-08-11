@@ -107,3 +107,13 @@ def test_audit_parity_across_all_surfaces(clean_db: None, monkeypatch: pytest.Mo
     assert len(via_registry) == 1
     assert via_registry[0]["action"] == "parity_probe"
     assert via_registry == via_api == via_mcp == via_cli
+
+
+def test_risk_status_surfaced_on_api(clean_db: None):
+    """Risk state is operator-visible on every door (registry → API → MCP → CLI)."""
+    with TestClient(create_app(DEV_SETTINGS)) as tc:
+        body = tc.get("/risk/status").json()
+        assert body["trading_paused"] is False
+        assert body["live_enabled"] is False  # paper-only by default
+        assert body["limits"]["max_position_frac"] > 0
+        assert tc.get("/risk/approvals").json() == []

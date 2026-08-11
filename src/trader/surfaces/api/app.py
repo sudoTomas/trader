@@ -62,6 +62,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def cache_stats() -> dict:
         return await registry.get("cache_stats").handler()
 
+    @app.get("/risk/status")
+    async def risk_status() -> dict:
+        return await registry.get("risk_status").handler()
+
+    @app.get("/risk/approvals")
+    async def approvals() -> list[dict]:
+        return await registry.get("approvals").handler()
+
     app.mount("/mcp", mcp_app)
     return app
 

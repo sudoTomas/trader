@@ -57,6 +57,22 @@ def cache_stats() -> None:
     typer.echo(json.dumps(_get("/cache-stats"), indent=2))
 
 
+risk_app = typer.Typer(help="Risk status and the human-in-the-loop approval queue.")
+app.add_typer(risk_app, name="risk")
+
+
+@risk_app.command("status")
+def risk_status() -> None:
+    """Print kill switches, breaker halts, and the configured limits."""
+    typer.echo(json.dumps(_get("/risk/status"), indent=2))
+
+
+@risk_app.command("approvals")
+def risk_approvals() -> None:
+    """Print order intents parked awaiting a human."""
+    typer.echo(json.dumps(_get("/risk/approvals"), indent=2))
+
+
 xai_app = typer.Typer(help="SuperGrok OAuth credential management (local, not via the API).")
 app.add_typer(xai_app, name="xai")
 

@@ -95,4 +95,36 @@ def build_registry(db: Database | None = None) -> ServiceRegistry:
 
         return dict(STATS)
 
+    @reg.register("risk_status", kind="query", summary="Kill switches, breaker halts, and limits.")
+    async def risk_status() -> dict[str, Any]:
+        from dataclasses import asdict
+
+        from trader.ops.config import get_settings
+        from trader.risk.breakers import BreakerStore
+        from trader.risk.limits import limits_from_settings
+
+        assert db is not None, "risk_status requires a store"
+        state = await BreakerStore(db).load()
+        settings = get_settings()
+        return {
+            "trading_paused": state.trading_paused,
+            "pause_reason": state.pause_reason,
+            "drift_detected": state.drift_detected,
+            "halted_reason": state.halted_reason,
+            "blocked_reason": state.blocked_reason,
+            "day_session": state.day_session.isoformat() if state.day_session else None,
+            "day_start_equity": state.day_start_equity,
+            "week_high_equity": state.week_high_equity,
+            "live_enabled": settings.alpaca_live_enabled,
+            "limits": asdict(limits_from_settings(settings)),
+        }
+
+    @reg.register("approvals", kind="query", summary="Order intents awaiting a human.")
+    async def approvals() -> list[dict[str, Any]]:
+        from trader.risk.approvals import ApprovalService
+
+        assert db is not None, "approvals requires a store"
+        rows = await ApprovalService(db).pending()
+        return [{**r, "created_at": r["created_at"].isoformat()} for r in rows]
+
     return reg
