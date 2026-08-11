@@ -51,5 +51,11 @@ def audit(limit: int = typer.Option(20, help="How many events, newest first.")) 
     typer.echo(json.dumps(_get("/audit", params={"limit": limit}), indent=2))
 
 
+@app.command("cache-stats")
+def cache_stats() -> None:
+    """Print bars-cache hit/miss counters (replay path)."""
+    typer.echo(json.dumps(_get("/cache-stats"), indent=2))
+
+
 if __name__ == "__main__":
     app()

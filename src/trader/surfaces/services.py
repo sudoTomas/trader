@@ -87,4 +87,12 @@ def build_registry(db: Database | None = None) -> ServiceRegistry:
         # ISO-format timestamps so all three surfaces emit the identical JSON shape.
         return [{**r, "ts": r["ts"].isoformat()} for r in rows]
 
+    @reg.register(
+        "cache_stats", kind="query", summary="Bars-cache hit/miss counters (replay path)."
+    )
+    async def cache_stats() -> dict[str, int]:
+        from trader.data.bars_cache import STATS
+
+        return dict(STATS)
+
     return reg

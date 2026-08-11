@@ -58,6 +58,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def audit(limit: int = Query(default=50, ge=1, le=500)) -> list[dict]:
         return await registry.get("audit").handler(limit=limit)
 
+    @app.get("/cache-stats")
+    async def cache_stats() -> dict:
+        return await registry.get("cache_stats").handler()
+
     app.mount("/mcp", mcp_app)
     return app
 
