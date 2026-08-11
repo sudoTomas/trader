@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,6 +24,22 @@ class Settings(BaseSettings):
 
     # --- LLM endpoints ---
     nemotron_base_url: str = "http://localhost:8009/v1"
+
+    # --- Market data / broker credentials ---
+    # Provider-conventional env names (no TRADER_ prefix), as documented in .env.example.
+    alpaca_api_key_id: str = Field(
+        default="", validation_alias=AliasChoices("ALPACA_API_KEY_ID", "TRADER_ALPACA_API_KEY_ID")
+    )
+    alpaca_api_secret: str = Field(
+        default="", validation_alias=AliasChoices("ALPACA_API_SECRET", "TRADER_ALPACA_API_SECRET")
+    )
+    twelve_data_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("TWELVE_DATA_API_KEY", "TRADER_TWELVE_DATA_API_KEY"),
+    )
+    fred_api_key: str = Field(
+        default="", validation_alias=AliasChoices("FRED_API_KEY", "TRADER_FRED_API_KEY")
+    )
 
     def require_auth(self) -> None:
         """Fail closed: a server with no API key and no explicit dev opt-out must not boot."""

@@ -46,6 +46,24 @@ class Bar:
 
 
 @dataclass(frozen=True)
+class Quote:
+    """Latest bid/ask for one symbol. Providers without a book quote both sides at last."""
+
+    symbol: str
+    ts: datetime
+    bid: float
+    ask: float
+
+    def __post_init__(self) -> None:
+        if self.ts.tzinfo is None:
+            raise ValueError("Quote.ts must be timezone-aware")
+
+    @property
+    def mid(self) -> float:
+        return (self.bid + self.ask) / 2
+
+
+@dataclass(frozen=True)
 class OrderIntent:
     """What the LLM proposes — RiskGuard's input, never the broker's.
 
