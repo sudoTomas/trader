@@ -120,6 +120,36 @@ def decision(decision_id: int = typer.Argument(..., help="Journaled decision id.
     typer.echo(json.dumps(_get(f"/decisions/{decision_id}"), indent=2))
 
 
+@app.command()
+def positions() -> None:
+    """Print open positions from the local ledger."""
+    typer.echo(json.dumps(_get("/positions"), indent=2))
+
+
+@app.command()
+def orders(limit: int = typer.Option(50, help="How many orders, newest first.")) -> None:
+    """Print recent orders."""
+    typer.echo(json.dumps(_get("/orders", params={"limit": limit}), indent=2))
+
+
+broker_app = typer.Typer(help="Broker reconciliation and emergency flatten.")
+app.add_typer(broker_app, name="broker")
+
+
+@broker_app.command("reconcile")
+def broker_reconcile() -> None:
+    """Compare the local ledger to the broker; drift pauses routing."""
+    typer.echo(json.dumps(_post("/broker/reconcile"), indent=2))
+
+
+@broker_app.command("flatten-all")
+def broker_flatten_all(
+    confirm: str = typer.Option("", help="Must be exactly FLATTEN to proceed."),
+) -> None:
+    """Close EVERY position at the broker. Requires --confirm FLATTEN."""
+    typer.echo(json.dumps(_post("/broker/flatten-all", params={"confirm": confirm}), indent=2))
+
+
 loop_app = typer.Typer(help="Decide-loop status.")
 app.add_typer(loop_app, name="loop")
 

@@ -196,6 +196,55 @@ def build_registry(db: Database | None = None, runner: Any | None = None) -> Ser
         await _audit_command("resume_breaker", {"rebaselined_to": baseline})
         return {"halted_reason": None, "rebaselined_to": baseline}
 
+    # --- broker / ledger --------------------------------------------------
+
+    @reg.register("positions", kind="query", summary="Open positions in the local ledger.")
+    async def positions() -> list[dict[str, Any]]:
+        from trader.store.repos import PositionsRepo
+
+        assert db is not None, "positions requires a store"
+        rows = await PositionsRepo(db).all()
+        return [
+            {**r, "qty": float(r["qty"]), "updated_at": r["updated_at"].isoformat()} for r in rows
+        ]
+
+    @reg.register("orders", kind="query", summary="Recent orders, newest first.")
+    async def orders(limit: int = 50) -> list[dict[str, Any]]:
+        assert db is not None, "orders requires a store"
+        rows = await db.fetch_all(
+            "SELECT * FROM orders ORDER BY created_at DESC, id DESC LIMIT %s", (min(limit, 200),)
+        )
+        return [
+            {
+                **r,
+                "created_at": r["created_at"].isoformat(),
+                "updated_at": r["updated_at"].isoformat(),
+            }
+            for r in rows
+        ]
+
+    @reg.register(
+        "reconcile", kind="command", summary="Compare the ledger to the broker; drift pauses."
+    )
+    async def reconcile() -> dict[str, Any]:
+        if runner is None or runner.executor is None:
+            return {"reconciled": False, "reason": "no broker in this build"}
+        result = await runner.executor.reconcile_positions()
+        await _audit_command("reconcile", result)
+        return result
+
+    @reg.register(
+        "flatten_all",
+        kind="command",
+        summary="Close every position (confirm='FLATTEN' required).",
+    )
+    async def flatten_all(confirm: str = "") -> dict[str, Any]:
+        if runner is None or runner.executor is None:
+            return {"flattened": False, "reason": "no broker in this build"}
+        result = await runner.executor.flatten_all(confirm=confirm)
+        await _audit_command("flatten_all", result)
+        return result
+
     async def _audit_command(action: str, payload: dict[str, Any]) -> None:
         """Commands are state-changing: every one leaves an append-only trace."""
         from trader.store.audit import audit as write_audit

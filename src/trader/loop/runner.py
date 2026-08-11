@@ -37,7 +37,7 @@ from trader.loop.decider import Decider, DeciderError
 from trader.loop.journal import (
     DENIED,
     ERROR,
-    PROPOSED,
+    EXECUTED,
     SHADOW,
     SUPPRESSED,
     Journal,
@@ -104,8 +104,9 @@ class LoopRunner:
     symbols: list[Symbol]
     shadow: bool = True
     tick_seconds: float = 60.0
-    equity: float = 100_000.0  # until the broker lands (EAI-176), a configured paper base
+    equity: float = 100_000.0  # fallback when no broker is attached
     scheduler: SignalScheduler | None = None
+    executor: Any | None = None  # loop.executor.Executor; absent = shadow-only build
     stats: LoopStats = field(default_factory=LoopStats)
 
     def __post_init__(self) -> None:
@@ -289,7 +290,7 @@ class LoopRunner:
 
         decision = result.decision
         verdicts: list[dict[str, Any]] | None = None
-        status = SHADOW if self.shadow else PROPOSED
+        status = SHADOW
         reason = ""
 
         if decision.intent is not None:
@@ -310,10 +311,16 @@ class LoopRunner:
             reason = outcome.reason
             if not outcome.approved:
                 status = DENIED
-            elif self.shadow:
+            elif self.shadow or self.executor is None:
                 status = SHADOW
             else:
-                status = PROPOSED  # EAI-176 executes from outcome.executable()
+                # Live-paper: the executor takes ONLY outcome.executable(), which raises
+                # unless the chain approved. There is no other path to the broker.
+                execution = await self.executor.execute(
+                    outcome, symbol, price=ctx.price, decision_id=None
+                )
+                status = EXECUTED if execution.submitted else ERROR
+                reason = execution.reason or reason
 
         decision_id = await self._journal.record(
             trigger=trigger_label,

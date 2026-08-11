@@ -102,6 +102,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def loop_status() -> dict:
         return await registry.get("loop_status").handler()
 
+    @app.get("/positions")
+    async def positions() -> list[dict]:
+        return await registry.get("positions").handler()
+
+    @app.get("/orders")
+    async def orders(limit: int = Query(default=50, ge=1, le=200)) -> list[dict]:
+        return await registry.get("orders").handler(limit=limit)
+
+    @app.post("/broker/reconcile")
+    async def reconcile() -> dict:
+        return await registry.get("reconcile").handler()
+
+    @app.post("/broker/flatten-all")
+    async def flatten_all(confirm: str = Query(default="")) -> dict:
+        return await registry.get("flatten_all").handler(confirm=confirm)
+
     @app.post("/loop/wake")
     async def wake() -> dict:
         return await registry.get("wake_trader").handler()
@@ -112,10 +128,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
 def build_runner(db: Database, settings: Settings):
     """Assemble the decide loop from configured providers (opt-in via TRADER_LOOP_ENABLED)."""
+    from trader.brokers.alpaca import AlpacaBroker
     from trader.core.symbols import default_registry
     from trader.data.composite import build_market_data
     from trader.llm.registry import build_llm_registry
     from trader.llm.usage import UsageMeter
+    from trader.loop.executor import Executor
     from trader.loop.runner import LoopRunner
     from trader.risk.guard import RiskGuard
     from trader.risk.limits import limits_from_settings
@@ -123,6 +141,14 @@ def build_runner(db: Database, settings: Settings):
 
     symbols_registry = default_registry()
     tickers = [t.strip() for t in settings.loop_symbols.split(",") if t.strip()]
+
+    # A broker is attached only when leaving shadow mode — a shadow build has no way to
+    # reach a venue at all, not merely a flag telling it not to.
+    executor = None
+    if not settings.shadow_mode:
+        broker = AlpacaBroker.from_settings(settings)
+        executor = Executor(db, broker)
+
     return LoopRunner(
         db=db,
         market_data=build_market_data(settings),
@@ -134,6 +160,7 @@ def build_runner(db: Database, settings: Settings):
         shadow=settings.shadow_mode,
         tick_seconds=settings.loop_tick_seconds,
         equity=settings.shadow_equity,
+        executor=executor,
     )
 
 
