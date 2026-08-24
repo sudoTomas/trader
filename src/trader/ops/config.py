@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     risk_weekly_drawdown_limit_frac: float = 0.10
     risk_approval_notional_usd: float = 1000.0
 
+    # --- Research Desk ---
+    # Days before an unpinned note auto-stales out of compilation (retire stays explicit).
+    research_stale_days: int = 30
+
     # --- LLM endpoints ---
     nemotron_base_url: str = "http://localhost:8009/v1"
     nemotron_model: str = "nemotron-3-super"  # served model id on the Spark vLLM

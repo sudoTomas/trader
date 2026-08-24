@@ -5,6 +5,7 @@ so operator commands exercise the real service, not a private in-process copy.
 from __future__ import annotations
 
 import json
+from typing import Annotated
 
 import httpx
 import typer
@@ -20,10 +21,12 @@ def _client() -> httpx.Client:
     return httpx.Client(base_url=settings.api_base_url, headers=headers, timeout=10)
 
 
-def _request(method: str, path: str, params: dict | None = None) -> object:
+def _request(
+    method: str, path: str, params: dict | None = None, json_body: dict | None = None
+) -> object:
     try:
         with _client() as client:
-            resp = client.request(method, path, params=params)
+            resp = client.request(method, path, params=params, json=json_body)
             resp.raise_for_status()
             return resp.json()
     except httpx.ConnectError as exc:
@@ -38,8 +41,8 @@ def _get(path: str, params: dict | None = None) -> object:
     return _request("GET", path, params)
 
 
-def _post(path: str, params: dict | None = None) -> object:
-    return _request("POST", path, params)
+def _post(path: str, params: dict | None = None, json_body: dict | None = None) -> object:
+    return _request("POST", path, params, json_body)
 
 
 @app.callback()
@@ -158,6 +161,62 @@ app.add_typer(loop_app, name="loop")
 def loop_status() -> None:
     """Print loop mode (shadow/live) and counters."""
     typer.echo(json.dumps(_get("/loop/status"), indent=2))
+
+
+note_app = typer.Typer(help="Research Desk capture — operator research notes.")
+app.add_typer(note_app, name="note")
+
+
+@note_app.command("add")
+def note_add(
+    title: str = typer.Option(..., help="Note title."),
+    body: str = typer.Option(
+        None, help="Markdown body. Omitted: read --file, else stdin (pipe or paste, ^D ends)."
+    ),
+    file: str = typer.Option(None, help="Read the body from this file."),
+    tag: Annotated[list[str] | None, typer.Option(help="Tag (repeatable).")] = None,
+    asset_class: Annotated[
+        list[str] | None, typer.Option(help="Target asset class (repeatable).")
+    ] = None,
+    symbol: Annotated[list[str] | None, typer.Option(help="Target symbol (repeatable).")] = None,
+    source: str = typer.Option(None, help="Where this came from (url, 'voice memo', ...)."),
+    pin: bool = typer.Option(False, "--pin", help="Evergreen: exempt from auto-stale."),
+    stale_days: int = typer.Option(None, help="Override the auto-stale window (days)."),
+) -> None:
+    """Capture a research note. The body is stored verbatim, markdown and all."""
+    import sys
+    from pathlib import Path
+
+    if body is None:
+        body = Path(file).read_text(encoding="utf-8") if file else sys.stdin.read()
+    payload = {
+        "title": title,
+        "body": body,
+        "tags": tag or [],
+        "asset_classes": asset_class or [],
+        "symbols": symbol or [],
+        "source": source,
+        "pinned": pin,
+        "stale_days": stale_days,
+    }
+    typer.echo(json.dumps(_post("/research/notes", json_body=payload), indent=2))
+
+
+@note_app.command("list")
+def note_list(
+    include_stale: bool = typer.Option(False, "--stale", help="Include auto-staled notes."),
+    include_retired: bool = typer.Option(False, "--retired", help="Include retired notes."),
+    limit: int = typer.Option(100, help="How many notes, newest first."),
+) -> None:
+    """List notes (default: the view compilation sees)."""
+    params = {"include_stale": include_stale, "include_retired": include_retired, "limit": limit}
+    typer.echo(json.dumps(_get("/research/notes", params=params), indent=2))
+
+
+@note_app.command("retire")
+def note_retire(note_id: int = typer.Argument(..., help="Note id to retire.")) -> None:
+    """Explicitly retire a note (auto-stale never does this for you)."""
+    typer.echo(json.dumps(_post(f"/research/notes/{note_id}/retire"), indent=2))
 
 
 xai_app = typer.Typer(help="SuperGrok OAuth credential management (local, not via the API).")

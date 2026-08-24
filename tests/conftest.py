@@ -6,12 +6,24 @@ every test (v1 lesson: rows persisted across tests broke ordering assumptions).
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
+import sys
 from collections.abc import AsyncIterator
 
 import pytest
+import structlog
 
 os.environ.setdefault("TRADER_AUTH_DISABLED", "true")
+# Tests must be immune to the operator's .env: never build the live loop (and with it a
+# real broker) off ambient config. Real env vars outrank the .env file in pydantic-settings.
+os.environ["TRADER_LOOP_ENABLED"] = "false"
+os.environ["TRADER_SHADOW_MODE"] = "true"
+
+# CLI tests parse captured stdout as JSON; keep in-process app logs (structlog + stdlib)
+# on stderr so they never interleave with a surface's output.
+structlog.configure(logger_factory=structlog.PrintLoggerFactory(sys.stderr))
+logging.basicConfig(stream=sys.stderr)
 
 from trader.store.db import Database  # noqa: E402  (env default must be set first)
 

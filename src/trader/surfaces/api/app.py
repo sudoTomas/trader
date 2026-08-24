@@ -9,8 +9,9 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query
 from mcp.server.transport_security import TransportSecuritySettings
+from pydantic import BaseModel, Field
 
 from trader.ops.config import Settings, get_settings
 from trader.store.db import Database
@@ -18,6 +19,19 @@ from trader.store.migrate import run_migrations
 from trader.surfaces.api.middleware import ApiKeyMiddleware
 from trader.surfaces.mcp.server import build_mcp
 from trader.surfaces.services import VERSION, build_registry
+
+
+class ResearchNoteIn(BaseModel):
+    """Capture payload for ``POST /research/notes``. The body is stored verbatim."""
+
+    title: str = Field(min_length=1)
+    body: str = Field(min_length=1)
+    tags: list[str] = []
+    asset_classes: list[str] = []
+    symbols: list[str] = []
+    source: str | None = None
+    pinned: bool = False
+    stale_days: int | None = Field(default=None, ge=0)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -121,6 +135,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/loop/wake")
     async def wake() -> dict:
         return await registry.get("wake_trader").handler()
+
+    @app.post("/research/notes")
+    async def submit_research_note(note: ResearchNoteIn) -> dict:
+        try:
+            return await registry.get("submit_research_note").handler(**note.model_dump())
+        except ValueError as exc:  # blank title/body past pydantic (whitespace-only)
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/research/notes")
+    async def research_notes(
+        include_stale: bool = Query(default=False),
+        include_retired: bool = Query(default=False),
+        limit: int = Query(default=100, ge=1, le=500),
+    ) -> list[dict]:
+        return await registry.get("research_notes").handler(
+            include_stale=include_stale, include_retired=include_retired, limit=limit
+        )
+
+    @app.post("/research/notes/{note_id}/retire")
+    async def retire_note(note_id: int) -> dict:
+        return await registry.get("retire_note").handler(note_id=note_id)
 
     app.mount("/mcp", mcp_app)
     return app

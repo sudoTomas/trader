@@ -242,19 +242,39 @@ class ResearchNotesRepo:
 
     async def list_current(self) -> list[Row]:
         """Notes the compiler should see: active/disputed and not auto-staled out."""
+        return await self.list_notes()
+
+    async def list_notes(
+        self,
+        *,
+        include_stale: bool = False,
+        include_retired: bool = False,
+        limit: int = 100,
+    ) -> list[Row]:
+        """The compiler's view by default; the flags widen it for operator listings."""
         return await self._db.fetch_all(
             """
             SELECT * FROM research_notes
-            WHERE status IN ('active', 'disputed')
-              AND (pinned OR expires_at IS NULL OR expires_at > now())
-            ORDER BY created_at DESC
-            """
+            WHERE (%s OR status IN ('active', 'disputed'))
+              AND (%s OR pinned OR expires_at IS NULL OR expires_at > now())
+            ORDER BY created_at DESC, id DESC
+            LIMIT %s
+            """,
+            (include_retired, include_stale, limit),
         )
 
     async def set_status(self, note_id: int, status: str) -> None:
         await self._db.execute(
             "UPDATE research_notes SET status = %s WHERE id = %s", (status, note_id)
         )
+
+    async def retire(self, note_id: int) -> bool:
+        """Retire once: False when the note is missing or already retired."""
+        n = await self._db.execute(
+            "UPDATE research_notes SET status = 'retired' WHERE id = %s AND status <> 'retired'",
+            (note_id,),
+        )
+        return n == 1
 
 
 class MacroViewsRepo:

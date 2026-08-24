@@ -245,6 +245,70 @@ def build_registry(db: Database | None = None, runner: Any | None = None) -> Ser
         await _audit_command("flatten_all", result)
         return result
 
+    # --- research desk (M4 part 1) ------------------------------------------
+
+    def _note_out(row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            **row,
+            "created_at": row["created_at"].isoformat(),
+            "expires_at": row["expires_at"].isoformat() if row["expires_at"] else None,
+        }
+
+    @reg.register(
+        "research_notes",
+        kind="query",
+        summary="Research notes — default view is what compilation sees; flags widen it.",
+    )
+    async def research_notes(
+        include_stale: bool = False, include_retired: bool = False, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        from trader.research.notes import ResearchDesk
+
+        assert db is not None, "research_notes requires a store"
+        rows = await ResearchDesk(db).list(
+            include_stale=include_stale, include_retired=include_retired, limit=min(limit, 500)
+        )
+        return [_note_out(r) for r in rows]
+
+    @reg.register(
+        "submit_research_note",
+        kind="command",
+        summary="Capture an immutable markdown research note (auto-stales unless pinned).",
+    )
+    async def submit_research_note(
+        title: str,
+        body: str,
+        tags: list[str] | None = None,
+        asset_classes: list[str] | None = None,
+        symbols: list[str] | None = None,
+        source: str | None = None,
+        pinned: bool = False,
+        stale_days: int | None = None,
+    ) -> dict[str, Any]:
+        from trader.research.notes import ResearchDesk
+
+        assert db is not None, "submit_research_note requires a store"
+        # The desk writes the audit row itself (one capture = one research-category event).
+        row = await ResearchDesk(db).submit(
+            title=title,
+            body=body,
+            tags=tags,
+            asset_classes=asset_classes,
+            symbols=symbols,
+            source=source,
+            pinned=pinned,
+            stale_days=stale_days,
+        )
+        return _note_out(row)
+
+    @reg.register("retire_note", kind="command", summary="Explicitly retire a research note by id.")
+    async def retire_note(note_id: int) -> dict[str, Any]:
+        from trader.research.notes import ResearchDesk
+
+        assert db is not None, "retire_note requires a store"
+        retired = await ResearchDesk(db).retire(note_id)
+        return {"retired": retired, "id": note_id}
+
     async def _audit_command(action: str, payload: dict[str, Any]) -> None:
         """Commands are state-changing: every one leaves an append-only trace."""
         from trader.store.audit import audit as write_audit
