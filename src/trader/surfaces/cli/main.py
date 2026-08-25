@@ -219,6 +219,25 @@ def note_retire(note_id: int = typer.Argument(..., help="Note id to retire.")) -
     typer.echo(json.dumps(_post(f"/research/notes/{note_id}/retire"), indent=2))
 
 
+macro_app = typer.Typer(help="The compiled Macro View (advisory digest of operator research).")
+app.add_typer(macro_app, name="macro")
+
+
+@macro_app.command("view")
+def macro_view(
+    version: int = typer.Option(None, help="A specific version (default: current)."),
+) -> None:
+    """Print the current (or a specific) compiled Macro View."""
+    params = {"version": version} if version is not None else None
+    typer.echo(json.dumps(_get("/research/view", params=params), indent=2))
+
+
+@macro_app.command("compile")
+def macro_compile() -> None:
+    """Recompile the Macro View from live notes now, skipping the debounce."""
+    typer.echo(json.dumps(_post("/research/view/compile"), indent=2))
+
+
 xai_app = typer.Typer(help="SuperGrok OAuth credential management (local, not via the API).")
 app.add_typer(xai_app, name="xai")
 

@@ -55,12 +55,15 @@ class ServiceRegistry:
         return list(self._caps.values())
 
 
-def build_registry(db: Database | None = None, runner: Any | None = None) -> ServiceRegistry:
+def build_registry(
+    db: Database | None = None, runner: Any | None = None, compiler: Any | None = None
+) -> ServiceRegistry:
     """Construct the registry with the capabilities available in this build.
 
     ``db`` is the shared (possibly not-yet-opened) pool; handlers only touch it per call,
     so the registry can be built before the lifespan opens the pool. ``runner`` is the
-    decide loop, present only when this build runs one.
+    decide loop, present only when this build runs one; ``compiler`` is the Macro View
+    compiler (research.compiler.MacroViewCompiler), absent in store-less builds.
     """
     reg = ServiceRegistry()
 
@@ -299,6 +302,8 @@ def build_registry(db: Database | None = None, runner: Any | None = None) -> Ser
             pinned=pinned,
             stale_days=stale_days,
         )
+        if compiler is not None:
+            compiler.mark_dirty()  # debounced Macro View recompile
         return _note_out(row)
 
     @reg.register("retire_note", kind="command", summary="Explicitly retire a research note by id.")
@@ -307,7 +312,40 @@ def build_registry(db: Database | None = None, runner: Any | None = None) -> Ser
 
         assert db is not None, "retire_note requires a store"
         retired = await ResearchDesk(db).retire(note_id)
+        if retired and compiler is not None:
+            compiler.mark_dirty()
         return {"retired": retired, "id": note_id}
+
+    def _view_out(row: dict[str, Any] | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        return {**row, "created_at": row["created_at"].isoformat()}
+
+    @reg.register(
+        "macro_view",
+        kind="query",
+        summary="The current compiled Macro View (advisory digest of operator research).",
+    )
+    async def macro_view(version: int | None = None) -> dict[str, Any] | None:
+        from trader.store.repos import MacroViewsRepo
+
+        assert db is not None, "macro_view requires a store"
+        repo = MacroViewsRepo(db)
+        row = await (repo.current() if version is None else repo.get(version))
+        return _view_out(row)
+
+    @reg.register(
+        "compile_macro_view",
+        kind="command",
+        summary="Recompile the Macro View from live notes now (skips the debounce).",
+    )
+    async def compile_macro_view() -> dict[str, Any] | None:
+        if compiler is None:
+            return {"compiled": False, "reason": "no compiler in this build"}
+        row = await compiler.compile_now()
+        if row is None:
+            return {"compiled": False, "reason": "no live notes"}
+        return {"compiled": True, "view": _view_out(row)}
 
     async def _audit_command(action: str, payload: dict[str, Any]) -> None:
         """Commands are state-changing: every one leaves an append-only trace."""

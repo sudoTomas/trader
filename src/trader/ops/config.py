@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     # --- Research Desk ---
     # Days before an unpinned note auto-stales out of compilation (retire stays explicit).
     research_stale_days: int = 30
+    # Quiet window after the last note change before the Macro View recompiles.
+    research_compile_debounce_seconds: float = 30.0
 
     # --- LLM endpoints ---
     nemotron_base_url: str = "http://localhost:8009/v1"

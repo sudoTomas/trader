@@ -6,7 +6,8 @@ locally (v1 fetched them over MCP and got null for 987/987 decisions), and the p
 a finished string by the time the model runs.
 
 Fetch-on-tick: bars come from the provider and are used in memory. Nothing is stored.
-The Macro View slice arrives in M4 and will occupy its own lane in the prompt.
+The Macro View slice occupies its own budgeted lane in the prompt (EAI-178): advisory
+by construction — it feeds the decider only, never RiskGuard.
 """
 
 from __future__ import annotations
@@ -27,6 +28,43 @@ log = structlog.get_logger(__name__)
 
 BAR_LOOKBACK = 100
 DEFAULT_INTERVALS = ("1h",)
+MACRO_BUDGET_CHARS = 2000
+
+
+@dataclass(frozen=True)
+class MacroSlice:
+    """The budgeted Macro View slice for one symbol's prompt lane (advisory only)."""
+
+    version: int
+    entries: list[str]
+
+
+def build_macro_slice(
+    view: dict[str, Any], asset_class: str, *, budget_chars: int = MACRO_BUDGET_CHARS
+) -> MacroSlice | None:
+    """Render the view into whole entries under a character budget.
+
+    The lane has its own budget (operator judgment and market facts starve independently)
+    and entries drop WHOLE — a truncated thesis reads as a different thesis. Only the
+    global thesis and this symbol's asset-class section qualify; empty → no lane at all.
+    """
+    candidates: list[str] = []
+    thesis = (view.get("global_thesis") or "").strip()
+    if thesis:
+        candidates.append(f"Global thesis: {thesis}")
+    section = ((view.get("sections") or {}).get(asset_class) or "").strip()
+    if section:
+        candidates.append(f"{asset_class}: {section}")
+
+    entries: list[str] = []
+    used = 0
+    for entry in candidates:
+        if used + len(entry) > budget_chars:
+            log.info("macro_entry_dropped_whole", version=view["version"], entry_chars=len(entry))
+            continue
+        entries.append(entry)
+        used += len(entry)
+    return MacroSlice(version=view["version"], entries=entries) if entries else None
 
 
 @dataclass(frozen=True)
@@ -74,6 +112,7 @@ class DecisionContext:
     position_qty: float = 0.0
     equity: float = 0.0
     recent_decisions: list[dict[str, Any]] = field(default_factory=list)
+    macro_view: MacroSlice | None = None  # advisory lane; RiskGuard never sees it
 
     @property
     def primary_vol(self) -> float | None:
@@ -102,6 +141,15 @@ class DecisionContext:
                 closes = ", ".join(f"{b.close:,.6g}" for b in bars[-10:])
                 lines.append(f"  last 10 closes: {closes}")
 
+        if self.macro_view:
+            lines += [
+                "",
+                "Operator Macro View (advisory — informs direction and conviction only;"
+                " a deterministic risk layer owns sizing)"
+                f" [via research v{self.macro_view.version}]:",
+            ]
+            lines += [f"  {entry}" for entry in self.macro_view.entries]
+
         if self.recent_decisions:
             lines += ["", "Recent decisions (newest first):"]
             lines += [
@@ -121,10 +169,14 @@ class ContextBuilder:
         *,
         intervals: tuple[str, ...] = DEFAULT_INTERVALS,
         lookback: int = BAR_LOOKBACK,
+        macro_views: Any | None = None,  # store.repos.MacroViewsRepo; absent = no lane
+        macro_budget_chars: int = MACRO_BUDGET_CHARS,
     ) -> None:
         self._data = market_data
         self._intervals = intervals
         self._lookback = lookback
+        self._macro_views = macro_views
+        self._macro_budget = macro_budget_chars
 
     async def build(
         self,
@@ -163,6 +215,17 @@ class ContextBuilder:
             except MarketDataError as exc:
                 log.warning("context_price_unavailable", symbol=symbol.ticker, error=str(exc))
 
+        macro_view: MacroSlice | None = None
+        if self._macro_views is not None:
+            try:
+                current = await self._macro_views.current()
+                if current is not None:
+                    macro_view = build_macro_slice(
+                        current, symbol.asset_class, budget_chars=self._macro_budget
+                    )
+            except Exception as exc:  # noqa: BLE001 - advisory must never block a decide
+                log.warning("macro_view_unavailable", error=str(exc))
+
         return DecisionContext(
             symbol=symbol,
             now=now,
@@ -173,4 +236,5 @@ class ContextBuilder:
             position_qty=position_qty,
             equity=equity,
             recent_decisions=recent_decisions or [],
+            macro_view=macro_view,
         )

@@ -45,7 +45,7 @@ from trader.loop.journal import (
 from trader.loop.scheduler import HEARTBEAT, Mark, SignalScheduler, Trigger
 from trader.risk.guard import AccountState, RiskGuard
 from trader.store.db import Database
-from trader.store.repos import PositionsRepo
+from trader.store.repos import MacroViewsRepo, PositionsRepo
 
 log = structlog.get_logger(__name__)
 
@@ -111,7 +111,7 @@ class LoopRunner:
 
     def __post_init__(self) -> None:
         self.scheduler = self.scheduler or SignalScheduler(self.symbols)
-        self._context = ContextBuilder(self.market_data)
+        self._context = ContextBuilder(self.market_data, macro_views=MacroViewsRepo(self.db))
         self._decider = Decider(self.llm)
         self._journal = Journal(self.db)
         self._positions = PositionsRepo(self.db)
@@ -258,6 +258,7 @@ class LoopRunner:
             equity=self.equity,
             recent_decisions=await self._journal.recent(5),
         )
+        macro_view_version = ctx.macro_view.version if ctx.macro_view else None
         if ctx.price <= 0:
             # No usable market data: journal the wakeup, decide nothing.
             decision_id = await self._journal.record(
@@ -266,6 +267,7 @@ class LoopRunner:
                 symbol=symbol.ticker,
                 asset_class=symbol.asset_class,
                 prompt=ctx.to_prompt(),
+                macro_view_version=macro_view_version,
             )
             return WakeupResult(
                 symbol.ticker, names, SUPPRESSED, decision_id, reason="no usable price"
@@ -281,6 +283,7 @@ class LoopRunner:
                 asset_class=symbol.asset_class,
                 prompt=ctx.to_prompt(),
                 raw_output=str(exc),
+                macro_view_version=macro_view_version,
                 latency_ms=int((time.perf_counter() - started) * 1000),
             )
             self.stats.errors += 1
@@ -331,6 +334,7 @@ class LoopRunner:
             raw_output=result.raw_output,
             decision=decision,
             risk_verdicts=verdicts,
+            macro_view_version=macro_view_version,
             cost_usd=result.completion.cost_usd,
             latency_ms=int((time.perf_counter() - started) * 1000),
         )
