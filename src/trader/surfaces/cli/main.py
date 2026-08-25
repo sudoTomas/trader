@@ -18,7 +18,10 @@ app = typer.Typer(help="trader — agentic-first trading agent", no_args_is_help
 def _client() -> httpx.Client:
     settings = get_settings()
     headers = {"x-api-key": settings.api_key} if settings.api_key else {}
-    return httpx.Client(base_url=settings.api_base_url, headers=headers, timeout=10)
+    # 120s: sentiment fetch (live x_search, ~15-25s) and macro compile go through LLMs;
+    # the first live fetch timed out client-side at 10s while the server succeeded,
+    # burning a capped API call for nothing.
+    return httpx.Client(base_url=settings.api_base_url, headers=headers, timeout=120)
 
 
 def _request(
