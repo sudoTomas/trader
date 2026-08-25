@@ -238,6 +238,12 @@ def macro_compile() -> None:
     typer.echo(json.dumps(_post("/research/view/compile"), indent=2))
 
 
+@note_app.command("mirror")
+def note_mirror() -> None:
+    """Rewrite the one-way markdown mirror (research/) from the store now."""
+    typer.echo(json.dumps(_post("/research/mirror/export"), indent=2))
+
+
 xai_app = typer.Typer(help="SuperGrok OAuth credential management (local, not via the API).")
 app.add_typer(xai_app, name="xai")
 

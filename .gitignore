@@ -14,8 +14,9 @@ uv.lock
 .env.*
 !.env.example
 
-# research markdown mirror (generated, one-way export)
+# research markdown mirror (generated, one-way export; regenerate: trader note mirror)
 /research/*.md
+/research/notes/
 
 # OS
 .DS_Store

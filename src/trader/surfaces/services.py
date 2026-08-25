@@ -56,14 +56,18 @@ class ServiceRegistry:
 
 
 def build_registry(
-    db: Database | None = None, runner: Any | None = None, compiler: Any | None = None
+    db: Database | None = None,
+    runner: Any | None = None,
+    compiler: Any | None = None,
+    mirror: Any | None = None,
 ) -> ServiceRegistry:
     """Construct the registry with the capabilities available in this build.
 
     ``db`` is the shared (possibly not-yet-opened) pool; handlers only touch it per call,
     so the registry can be built before the lifespan opens the pool. ``runner`` is the
     decide loop, present only when this build runs one; ``compiler`` is the Macro View
-    compiler (research.compiler.MacroViewCompiler), absent in store-less builds.
+    compiler and ``mirror`` the one-way markdown exporter (research.*), absent in
+    store-less builds.
     """
     reg = ServiceRegistry()
 
@@ -304,6 +308,8 @@ def build_registry(
         )
         if compiler is not None:
             compiler.mark_dirty()  # debounced Macro View recompile
+        if mirror is not None:
+            await mirror.export_quietly()
         return _note_out(row)
 
     @reg.register("retire_note", kind="command", summary="Explicitly retire a research note by id.")
@@ -314,6 +320,8 @@ def build_registry(
         retired = await ResearchDesk(db).retire(note_id)
         if retired and compiler is not None:
             compiler.mark_dirty()
+        if retired and mirror is not None:
+            await mirror.export_quietly()
         return {"retired": retired, "id": note_id}
 
     def _view_out(row: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -342,10 +350,20 @@ def build_registry(
     async def compile_macro_view() -> dict[str, Any] | None:
         if compiler is None:
             return {"compiled": False, "reason": "no compiler in this build"}
-        row = await compiler.compile_now()
+        row = await compiler.compile_now()  # its on_compiled hook refreshes the mirror
         if row is None:
             return {"compiled": False, "reason": "no live notes"}
         return {"compiled": True, "view": _view_out(row)}
+
+    @reg.register(
+        "export_research_mirror",
+        kind="command",
+        summary="Rewrite the one-way markdown mirror from the store now.",
+    )
+    async def export_research_mirror() -> dict[str, Any]:
+        if mirror is None:
+            return {"exported": False, "reason": "no mirror in this build"}
+        return {"exported": True, **await mirror.export()}
 
     async def _audit_command(action: str, payload: dict[str, Any]) -> None:
         """Commands are state-changing: every one leaves an append-only trace."""

@@ -41,8 +41,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # The pool object is cheap to build unopened; the lifespan opens/closes it.
     db = Database(settings.database_url)
     runner = build_runner(db, settings) if settings.loop_enabled else None
-    compiler = build_compiler(db, settings)
-    registry = build_registry(db, runner, compiler)
+    mirror = build_mirror(db, settings)
+    compiler = build_compiler(db, settings, mirror)
+    registry = build_registry(db, runner, compiler, mirror)
     mcp = build_mcp(registry)
     # Our ApiKeyMiddleware gates /mcp, and the Spark is reached over the LAN — the MCP
     # localhost-only Host allowlist (DNS-rebinding protection) would reject those clients.
@@ -166,11 +167,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def compile_macro_view() -> dict | None:
         return await registry.get("compile_macro_view").handler()
 
+    @app.post("/research/mirror/export")
+    async def export_research_mirror() -> dict:
+        return await registry.get("export_research_mirror").handler()
+
     app.mount("/mcp", mcp_app)
     return app
 
 
-def build_compiler(db: Database, settings: Settings):
+def build_mirror(db: Database, settings: Settings):
+    """The one-way markdown mirror; TRADER_RESEARCH_MIRROR_DIR="" disables it."""
+    from trader.research.mirror import MarkdownMirror
+
+    if not settings.research_mirror_dir:
+        return None
+    return MarkdownMirror(db, settings.research_mirror_dir)
+
+
+def build_compiler(db: Database, settings: Settings, mirror=None):
     """The Macro View compiler — present in every store-backed build, loop or not."""
     from trader.llm.registry import build_llm_registry
     from trader.llm.usage import UsageMeter
@@ -181,6 +195,7 @@ def build_compiler(db: Database, settings: Settings):
         db,
         build_llm_registry(settings, UsageMeter(UsageRepo(db))),
         debounce_seconds=settings.research_compile_debounce_seconds,
+        on_compiled=mirror.export_quietly if mirror is not None else None,
     )
 
 

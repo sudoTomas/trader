@@ -83,11 +83,13 @@ class MacroViewCompiler:
         llm: Any,  # LLMRegistry-shaped: .complete(role, messages, schema=..., ...)
         *,
         debounce_seconds: float = DEFAULT_DEBOUNCE_SECONDS,
+        on_compiled: Any | None = None,  # async () -> None; e.g. the markdown mirror
     ) -> None:
         self._db = db
         self._llm = llm
         self._views = MacroViewsRepo(db)
         self._debounce = debounce_seconds
+        self._on_compiled = on_compiled
         self._dirty = False
         self._task: asyncio.Task | None = None
 
@@ -166,6 +168,8 @@ class MacroViewCompiler:
         )
         row = await self._views.get(version)
         assert row is not None
+        if self._on_compiled is not None:
+            await self._on_compiled()
         return row
 
     @staticmethod

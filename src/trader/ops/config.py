@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     research_stale_days: int = 30
     # Quiet window after the last note change before the Macro View recompiles.
     research_compile_debounce_seconds: float = 30.0
+    # One-way markdown mirror folder (gitignored, regenerable). Empty string disables.
+    research_mirror_dir: str = "research"
 
     # --- LLM endpoints ---
     nemotron_base_url: str = "http://localhost:8009/v1"

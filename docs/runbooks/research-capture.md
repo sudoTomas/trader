@@ -65,6 +65,22 @@ Compiled claims cite `[note:<id>]`; uncited sections are dropped at compile time
 are preserved (never LLM-resolved), and every `$`-level is stamped `(example-not-current)`.
 The decide prompt receives a budgeted slice in its own lane; RiskGuard never sees it.
 
+## The markdown mirror (part 3, EAI-179)
+
+Every note change and compile rewrites a one-way markdown export for Obsidian-style
+browsing: `research/notes/<id>-<slug>.md` (frontmatter + body verbatim) and
+`research/macro-view.md`. Force a rewrite with `trader note mirror`
+(`POST /research/mirror/export`, MCP `export_research_mirror`).
+
+**Decision (per the EAI-179 checklist): the folder is gitignore-excluded, not committed.**
+The DB is the only source of truth and the mirror regenerates from it at any time, so
+committing generated files would only add churn. `TRADER_RESEARCH_MIRROR_DIR` moves it
+(empty disables).
+
+**Strictly one-way.** Files carry a DO NOT EDIT banner; local edits are overwritten on
+the next export and nothing ever reads them back — capture happens only through the
+three doors above.
+
 ## Hermes is a capture client, never a dependency
 
 A Hermes skill may distill a forwarded article, screenshot, or voice memo into a note and
