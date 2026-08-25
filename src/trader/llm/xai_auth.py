@@ -45,10 +45,26 @@ AUTH_BASE = "https://auth.x.ai"
 CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"
 SCOPE = "openid profile email offline_access grok-cli:access api:access"
 
-#: Refresh when the cached access token has less than this many seconds left.
+#: Refresh when the cached access token has less than this many seconds left. The
+#: effective margin adapts to the observed TTL (``min(this, ttl // 3)``): xAI's
+#: device-code grants return ~15-minute access tokens (embry0 audit, RAV-1284), and a
+#: fixed 30-minute margin would then refresh — burning a single-use rotating refresh
+#: token — on every call.
 REFRESH_MARGIN_SECONDS = 30 * 60
 _DEFAULT_EXPIRES_IN = 6 * 3600
 _MIN_EXPIRES_IN = 5 * 60
+
+
+def _validate_token_endpoint(url: str) -> None:
+    """Pin OAuth endpoints to https://*.x.ai — checked at login AND before every refresh,
+    so a tampered store can never ship the refresh token to an arbitrary host."""
+    parsed = urlparse(url)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or not (parsed.hostname == "x.ai" or parsed.hostname.endswith(".x.ai"))
+    ):
+        raise XaiAuthError(f"refusing non-x.ai OAuth endpoint: {url}")
 
 
 class XaiAuthError(LLMError):
@@ -153,6 +169,7 @@ class XaiCredentialManager:
         self._lock = asyncio.Lock()
         self._access_token = ""
         self._access_expiry = 0.0  # in the clock's units
+        self._refresh_margin = float(REFRESH_MARGIN_SECONDS)
         self._quarantine: str | None = None
 
     @property
@@ -171,9 +188,7 @@ class XaiCredentialManager:
                 self._quarantine, f"xai oauth quarantined ({self._quarantine}); re-login"
             )
         async with self._lock:
-            if self._access_token and self._clock() < (
-                self._access_expiry - REFRESH_MARGIN_SECONDS
-            ):
+            if self._access_token and self._clock() < (self._access_expiry - self._refresh_margin):
                 return self._access_token
             await self._refresh_locked()
             return self._access_token
@@ -182,6 +197,7 @@ class XaiCredentialManager:
         state = self._store.load()
         if state is None:
             raise XaiAuthError("no xAI OAuth credential; run `trader xai login`")
+        _validate_token_endpoint(state.token_endpoint)
         try:
             resp = await self._http.post(
                 state.token_endpoint,
@@ -239,6 +255,7 @@ class XaiCredentialManager:
         ttl = max(ttl, _MIN_EXPIRES_IN)
         self._access_token = access_token
         self._access_expiry = self._clock() + ttl
+        self._refresh_margin = min(float(REFRESH_MARGIN_SECONDS), ttl // 3)
 
     # ------------------------------------------------------------------
     # Device-code login (rare operator action — CLI-local, never a server path)
@@ -252,13 +269,7 @@ class XaiCredentialManager:
             "device_authorization_endpoint", f"{AUTH_BASE}/oauth2/device/code"
         )
         for url in (token_endpoint, device_endpoint):
-            parsed = urlparse(url)
-            if (
-                parsed.scheme != "https"
-                or not parsed.hostname
-                or not (parsed.hostname == "x.ai" or parsed.hostname.endswith(".x.ai"))
-            ):
-                raise XaiAuthError(f"refusing non-x.ai OAuth endpoint from discovery: {url}")
+            _validate_token_endpoint(url)
 
         resp = await self._http.post(device_endpoint, data={"client_id": CLIENT_ID, "scope": SCOPE})
         resp.raise_for_status()

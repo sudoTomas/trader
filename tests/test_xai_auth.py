@@ -284,3 +284,59 @@ async def test_no_credential_at_all_fails_as_llm_error():
     )
     with pytest.raises(LLMError, match="no usable credential"):
         await client.complete([{"role": "user", "content": "x"}])
+
+
+async def test_short_lived_tokens_use_an_adaptive_refresh_margin(tmp_path: Path):
+    """Device-code grants return ~15-min access tokens (embry0 audit, RAV-1284). A fixed
+    30-min margin would then refresh — and burn a single-use rotating refresh token —
+    on EVERY call. The margin must scale down with the observed TTL."""
+    store = store_at(tmp_path)
+    store.save(STATE)
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"access_token": f"access-{calls}", "expires_in": 900})
+
+    now = [0.0]
+    manager = XaiCredentialManager(
+        store,
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        clock=lambda: now[0],
+    )
+    assert await manager.get_access_token() == "access-1"
+    assert await manager.get_access_token() == "access-1"  # cache hit, not a second burn
+    assert calls == 1
+
+    now[0] = 500.0  # inside ttl - ttl//3 = 600s: still fresh
+    assert await manager.get_access_token() == "access-1"
+    assert calls == 1
+
+    now[0] = 700.0  # past the adaptive margin boundary: refresh now
+    assert await manager.get_access_token() == "access-2"
+    assert calls == 2
+
+
+async def test_refresh_refuses_tampered_token_endpoint(tmp_path: Path):
+    """Endpoint pinning must hold on every refresh, not only at login: a tampered store
+    must not ship the refresh token to an arbitrary host (embry0's SSRF lesson)."""
+    store = store_at(tmp_path)
+    store.save(
+        DurableState(
+            refresh_token="refresh-1",
+            client_id="client",
+            token_endpoint="https://notx.ai/oauth2/token",  # endswith-x.ai trap
+        )
+    )
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json=token_response())
+
+    manager = manager_with(store, handler)
+    with pytest.raises(XaiAuthError, match="non-x.ai"):
+        await manager.get_access_token()
+    assert calls == 0  # the refresh token never left the process
