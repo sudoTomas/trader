@@ -107,8 +107,10 @@ async def test_registry_falls_through_and_exhausts():
 def test_build_registry_routes_roles_from_config():
     bare = build_llm_registry(Settings(auth_disabled=True))
     assert [c.name for c in bare.chain_for("decide")] == ["nemotron"]
-    with pytest.raises(LLMError, match="no LLM provider"):
-        bare.chain_for("brief")  # no xAI credential → research roles unrouted
+    # No xAI credential: research roles still run, on the Nemotron backstop alone
+    # (EAI-178 — the Research Desk must work before any Grok credential exists).
+    assert [c.name for c in bare.chain_for("brief")] == ["nemotron"]
+    assert [c.name for c in bare.chain_for("compiler")] == ["nemotron"]
 
     with_grok = build_llm_registry(Settings(auth_disabled=True, xai_api_key="k"))
     assert [c.name for c in with_grok.chain_for("compiler")] == ["xai", "nemotron"]

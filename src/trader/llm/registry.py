@@ -76,8 +76,9 @@ def build_llm_registry(settings: Settings, meter: UsageMeter | None = None) -> L
     nemotron = nemotron_client(settings)
     routes: dict[str, list[LLMClient]] = {"decide": [nemotron]}
     grok = xai_client(settings)
-    if grok is not None:
-        # Nemotron backstops research roles if xAI is quarantined (architecture §Desk).
-        for role in ("brief", "compiler", "sentiment"):
-            routes[role] = [grok, nemotron]
+    # Research roles prefer Grok; Nemotron backstops them whether xAI is quarantined
+    # or simply not configured yet (EAI-178 — the Desk must work before any Grok
+    # credential exists; compile load is rare and debounced, not a decide-lane hazard).
+    for role in ("brief", "compiler", "sentiment"):
+        routes[role] = [grok, nemotron] if grok is not None else [nemotron]
     return LLMRegistry(routes, meter)
