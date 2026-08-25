@@ -384,6 +384,73 @@ class ApprovalsRepo:
         return n == 1
 
 
+class SentimentRepo:
+    """X sentiment polls (M4). Every poll journals, scored or not; only 'ok' rows carry
+    a number (enforced by a table constraint)."""
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def insert(
+        self,
+        *,
+        symbol: str,
+        status: str,
+        score: float | None = None,
+        volume: str | None = None,
+        drivers: list[str] | None = None,
+        citations: list[str] | None = None,
+        model: str | None = None,
+        reason: str | None = None,
+    ) -> int:
+        row = await self._db.fetch_one(
+            """
+            INSERT INTO sentiment_scores (symbol, status, score, volume, drivers, citations,
+                                          model, reason)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                symbol,
+                status,
+                score,
+                volume,
+                Jsonb(drivers or []),
+                Jsonb(citations or []),
+                model,
+                reason,
+            ),
+        )
+        assert row is not None
+        return row["id"]
+
+    async def latest(self, symbol: str, *, status: str = "ok") -> Row | None:
+        return await self._db.fetch_one(
+            "SELECT * FROM sentiment_scores WHERE symbol = %s AND status = %s"
+            " ORDER BY ts DESC, id DESC LIMIT 1",
+            (symbol, status),
+        )
+
+    async def recent(self, symbol: str | None = None, limit: int = 50) -> list[Row]:
+        if symbol is None:
+            return await self._db.fetch_all(
+                "SELECT * FROM sentiment_scores ORDER BY ts DESC, id DESC LIMIT %s", (limit,)
+            )
+        return await self._db.fetch_all(
+            "SELECT * FROM sentiment_scores WHERE symbol = %s ORDER BY ts DESC, id DESC LIMIT %s",
+            (symbol, limit),
+        )
+
+    async def calls_today(self) -> int:
+        """Polls that reached the wire today (UTC) — the daily-cap counter."""
+        row = await self._db.fetch_one(
+            "SELECT count(*) AS n FROM sentiment_scores"
+            " WHERE ts >= date_trunc('day', now()) AND coalesce(reason, '') <> 'daily cap reached'"
+        )
+        assert row is not None
+        return row["n"]
+
+
 class UsageRepo:
     """Daily LLM usage rollup (M2). Accumulates real token counts so budgets see real spend."""
 

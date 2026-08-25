@@ -81,6 +81,28 @@ committing generated files would only add churn. `TRADER_RESEARCH_MIRROR_DIR` mo
 the next export and nothing ever reads them back — capture happens only through the
 three doors above.
 
+## X sentiment (part 4, EAI-180)
+
+Needs an xAI credential (`trader xai login` or `XAI_API_KEY`) — `x_search` runs
+server-side on xAI, so without one the service is absent and every door answers
+`unavailable`. With the loop running, each symbol is polled hourly
+(`TRADER_SENTIMENT_POLL_SECONDS`) under a daily cap (`TRADER_SENTIMENT_DAILY_CALL_CAP`).
+
+```bash
+trader sentiment fetch ETH/USD   # one poll now (counts against the cap)
+trader sentiment history --symbol ETH/USD
+```
+
+API: `GET /research/sentiment`, `POST /research/sentiment/fetch?symbol=`. MCP:
+`get_sentiment`, `fetch_x_sentiment`.
+
+**The degraded rule is load-bearing**: a reply with zero live citations came from model
+priors, not X — it journals as `unavailable` and never carries a number. **Shadow-first**:
+the sentiment wake trigger ships OFF (`TRADER_SENTIMENT_TRIGGER_ENABLED=false`); flip it
+only after ≥1 week of journaled scores reads sane. When on, it wakes the trader on a
+material score swing (`TRADER_SENTIMENT_SWING_THRESHOLD`) for **held symbols only**;
+degraded reads never trigger.
+
 ## Hermes is a capture client, never a dependency
 
 A Hermes skill may distill a forwarded article, screenshot, or voice memo into a note and

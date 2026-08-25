@@ -25,9 +25,10 @@ HEARTBEAT = "heartbeat"
 PRICE_MOVE = "price_move"
 VOL_SPIKE = "vol_spike"
 POSITION_RISK = "position_risk"
+SENTIMENT = "sentiment"
 
 #: Trigger types scoped to one symbol (cooldowns keyed by symbol).
-SYMBOL_SCOPED = frozenset({PRICE_MOVE, VOL_SPIKE, POSITION_RISK})
+SYMBOL_SCOPED = frozenset({PRICE_MOVE, VOL_SPIKE, POSITION_RISK, SENTIMENT})
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,9 @@ class Mark:
     price: float
     realized_vol: float | None = None
     unrealized_pnl_frac: float | None = None  # signed, vs entry
+    # Latest live X sentiment in [-1, 1]. None when unavailable/degraded — a degraded
+    # read must never trigger (EAI-180). The runner populates this for held symbols only.
+    sentiment_score: float | None = None
 
 
 @dataclass(frozen=True)
@@ -67,6 +71,11 @@ class TriggerConfig:
     cooldown_price_move: int = 900
     cooldown_vol_spike: int = 1800
     cooldown_position_risk: int = 600
+    # Shadow-first (EAI-180): the sentiment trigger stays off until ≥1 week of journaled
+    # scores earns the operator's flip of TRADER_SENTIMENT_TRIGGER_ENABLED.
+    sentiment_enabled: bool = False
+    sentiment_swing: float = 0.5  # |delta| in score units ([-1, 1]) that wakes the trader
+    cooldown_sentiment: int = 3600
 
 
 class SignalScheduler:
@@ -77,6 +86,7 @@ class SignalScheduler:
         self._config = config or TriggerConfig()
         self._prices: dict[str, deque[tuple[datetime, float]]] = {}
         self._vols: dict[str, deque[float]] = {}
+        self._sentiments: dict[str, float] = {}
         self._last_fired: dict[str, datetime] = {}
         self._last_heartbeat: dict[str, datetime] = {}
 
@@ -141,6 +151,22 @@ class SignalScheduler:
                         )
                     )
 
+        # Material sentiment swing on live X reads. First observation is baseline only;
+        # a None score (degraded/unavailable) neither triggers nor moves the baseline.
+        if cfg.sentiment_enabled and mark.sentiment_score is not None:
+            prev = self._sentiments.get(symbol.ticker)
+            self._sentiments[symbol.ticker] = mark.sentiment_score
+            if prev is not None:
+                delta = mark.sentiment_score - prev
+                if abs(delta) >= cfg.sentiment_swing:
+                    triggers.append(
+                        Trigger(
+                            SENTIMENT,
+                            symbol.ticker,
+                            {"delta": round(delta, 4), "from": prev, "to": mark.sentiment_score},
+                        )
+                    )
+
         # A position moving against (or hard for) us deserves a look.
         if (
             mark.unrealized_pnl_frac is not None
@@ -158,6 +184,7 @@ class SignalScheduler:
             PRICE_MOVE: cfg.cooldown_price_move,
             VOL_SPIKE: cfg.cooldown_vol_spike,
             POSITION_RISK: cfg.cooldown_position_risk,
+            SENTIMENT: cfg.cooldown_sentiment,
         }.get(trigger_type, 0)
 
     def _in_cooldown(self, trigger: Trigger, now: datetime) -> bool:

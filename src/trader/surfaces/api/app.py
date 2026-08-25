@@ -40,10 +40,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # The pool object is cheap to build unopened; the lifespan opens/closes it.
     db = Database(settings.database_url)
-    runner = build_runner(db, settings) if settings.loop_enabled else None
+    sentiment = build_sentiment(db, settings)
+    runner = build_runner(db, settings, sentiment) if settings.loop_enabled else None
     mirror = build_mirror(db, settings)
     compiler = build_compiler(db, settings, mirror)
-    registry = build_registry(db, runner, compiler, mirror)
+    registry = build_registry(db, runner, compiler, mirror, sentiment)
     mcp = build_mcp(registry)
     # Our ApiKeyMiddleware gates /mcp, and the Spark is reached over the LAN — the MCP
     # localhost-only Host allowlist (DNS-rebinding protection) would reject those clients.
@@ -171,8 +172,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def export_research_mirror() -> dict:
         return await registry.get("export_research_mirror").handler()
 
+    @app.get("/research/sentiment")
+    async def sentiment_history(
+        symbol: str | None = Query(default=None),
+        limit: int = Query(default=50, ge=1, le=200),
+    ) -> list[dict]:
+        return await registry.get("sentiment").handler(symbol=symbol, limit=limit)
+
+    @app.post("/research/sentiment/fetch")
+    async def fetch_x_sentiment(symbol: str = Query()) -> dict:
+        return await registry.get("fetch_x_sentiment").handler(symbol=symbol)
+
     app.mount("/mcp", mcp_app)
     return app
+
+
+def build_sentiment(db: Database, settings: Settings):
+    """X sentiment service — None without an xAI credential path (x_search is xAI-only)."""
+    import httpx
+
+    from trader.llm.xai import ManagedBearerAuth
+    from trader.llm.xai_auth import build_manager
+    from trader.research.sentiment import SentimentService, XSentimentClient
+
+    manager = build_manager(settings)
+    if manager is None and not settings.xai_api_key:
+        return None
+    http = httpx.AsyncClient(
+        base_url=settings.xai_base_url,
+        auth=ManagedBearerAuth(manager, settings.xai_api_key),
+        timeout=120.0,
+    )
+    handles = [h.strip() for h in settings.sentiment_x_handles.split(",") if h.strip()]
+    client = XSentimentClient(http, model=settings.xai_model, allowed_x_handles=handles)
+    return SentimentService(db, client, daily_call_cap=settings.sentiment_daily_call_cap)
 
 
 def build_mirror(db: Database, settings: Settings):
@@ -199,7 +232,7 @@ def build_compiler(db: Database, settings: Settings, mirror=None):
     )
 
 
-def build_runner(db: Database, settings: Settings):
+def build_runner(db: Database, settings: Settings, sentiment=None):
     """Assemble the decide loop from configured providers (opt-in via TRADER_LOOP_ENABLED)."""
     from trader.brokers.alpaca import AlpacaBroker
     from trader.core.symbols import default_registry
@@ -208,12 +241,14 @@ def build_runner(db: Database, settings: Settings):
     from trader.llm.usage import UsageMeter
     from trader.loop.executor import Executor
     from trader.loop.runner import LoopRunner
+    from trader.loop.scheduler import SignalScheduler, TriggerConfig
     from trader.risk.guard import RiskGuard
     from trader.risk.limits import limits_from_settings
     from trader.store.repos import UsageRepo
 
     symbols_registry = default_registry()
     tickers = [t.strip() for t in settings.loop_symbols.split(",") if t.strip()]
+    symbols = [symbols_registry.get(t) for t in tickers]
 
     # A broker is attached only when leaving shadow mode — a shadow build has no way to
     # reach a venue at all, not merely a flag telling it not to.
@@ -229,11 +264,20 @@ def build_runner(db: Database, settings: Settings):
         guard=RiskGuard(
             db, limits_from_settings(settings), live_enabled=settings.alpaca_live_enabled
         ),
-        symbols=[symbols_registry.get(t) for t in tickers],
+        symbols=symbols,
         shadow=settings.shadow_mode,
         tick_seconds=settings.loop_tick_seconds,
         equity=settings.shadow_equity,
+        scheduler=SignalScheduler(
+            symbols,
+            TriggerConfig(
+                sentiment_enabled=settings.sentiment_trigger_enabled,
+                sentiment_swing=settings.sentiment_swing_threshold,
+            ),
+        ),
         executor=executor,
+        sentiment=sentiment,
+        sentiment_poll_seconds=settings.sentiment_poll_seconds,
     )
 
 

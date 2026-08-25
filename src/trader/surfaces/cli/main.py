@@ -244,6 +244,28 @@ def note_mirror() -> None:
     typer.echo(json.dumps(_post("/research/mirror/export"), indent=2))
 
 
+sentiment_app = typer.Typer(help="X sentiment (server-side x_search; shadow-first).")
+app.add_typer(sentiment_app, name="sentiment")
+
+
+@sentiment_app.command("history")
+def sentiment_history(
+    symbol: str = typer.Option(None, help="Filter to one symbol."),
+    limit: int = typer.Option(50, help="How many polls, newest first."),
+) -> None:
+    """Print journaled sentiment polls (scored and unavailable)."""
+    params: dict = {"limit": limit}
+    if symbol is not None:
+        params["symbol"] = symbol
+    typer.echo(json.dumps(_get("/research/sentiment", params=params), indent=2))
+
+
+@sentiment_app.command("fetch")
+def sentiment_fetch(symbol: str = typer.Argument(..., help="Symbol, e.g. ETH/USD.")) -> None:
+    """Poll X sentiment for one symbol now (counts against the daily cap)."""
+    typer.echo(json.dumps(_post("/research/sentiment/fetch", params={"symbol": symbol}), indent=2))
+
+
 xai_app = typer.Typer(help="SuperGrok OAuth credential management (local, not via the API).")
 app.add_typer(xai_app, name="xai")
 

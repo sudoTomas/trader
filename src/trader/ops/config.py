@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     research_compile_debounce_seconds: float = 30.0
     # One-way markdown mirror folder (gitignored, regenerable). Empty string disables.
     research_mirror_dir: str = "research"
+    # X sentiment (EAI-180). Polling needs an xAI credential; the wake trigger stays OFF
+    # until ≥1 week of journaled scores earns the operator's flip (shadow-first).
+    sentiment_poll_seconds: float = 3600.0
+    sentiment_daily_call_cap: int = 24
+    sentiment_trigger_enabled: bool = False
+    sentiment_swing_threshold: float = 0.5
+    sentiment_x_handles: str = ""  # comma-separated allowlist for x_search; empty = open
 
     # --- LLM endpoints ---
     nemotron_base_url: str = "http://localhost:8009/v1"

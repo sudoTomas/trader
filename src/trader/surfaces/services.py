@@ -60,6 +60,7 @@ def build_registry(
     runner: Any | None = None,
     compiler: Any | None = None,
     mirror: Any | None = None,
+    sentiment: Any | None = None,
 ) -> ServiceRegistry:
     """Construct the registry with the capabilities available in this build.
 
@@ -364,6 +365,39 @@ def build_registry(
         if mirror is None:
             return {"exported": False, "reason": "no mirror in this build"}
         return {"exported": True, **await mirror.export()}
+
+    # --- x sentiment (M4 part 4) ---------------------------------------------
+
+    @reg.register(
+        "sentiment",
+        kind="query",
+        summary="Journaled X sentiment polls, newest first (scored and unavailable).",
+    )
+    async def sentiment_history(symbol: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        from trader.store.repos import SentimentRepo
+
+        assert db is not None, "sentiment requires a store"
+        rows = await SentimentRepo(db).recent(symbol, min(limit, 200))
+        return [
+            {
+                **r,
+                "ts": r["ts"].isoformat(),
+                "score": float(r["score"]) if r["score"] is not None else None,
+            }
+            for r in rows
+        ]
+
+    @reg.register(
+        "fetch_x_sentiment",
+        kind="command",
+        summary="Poll X sentiment for one symbol now (server-side x_search; capped daily).",
+    )
+    async def fetch_x_sentiment(symbol: str) -> dict[str, Any]:
+        from trader.core.symbols import default_registry
+
+        if sentiment is None:
+            return {"status": "unavailable", "reason": "no xAI credential in this build"}
+        return await sentiment.get_x_sentiment(default_registry().get(symbol))
 
     async def _audit_command(action: str, payload: dict[str, Any]) -> None:
         """Commands are state-changing: every one leaves an append-only trace."""

@@ -45,7 +45,7 @@ from trader.loop.journal import (
 from trader.loop.scheduler import HEARTBEAT, Mark, SignalScheduler, Trigger
 from trader.risk.guard import AccountState, RiskGuard
 from trader.store.db import Database
-from trader.store.repos import MacroViewsRepo, PositionsRepo
+from trader.store.repos import MacroViewsRepo, PositionsRepo, SentimentRepo
 
 log = structlog.get_logger(__name__)
 
@@ -107,6 +107,8 @@ class LoopRunner:
     equity: float = 100_000.0  # fallback when no broker is attached
     scheduler: SignalScheduler | None = None
     executor: Any | None = None  # loop.executor.Executor; absent = shadow-only build
+    sentiment: Any | None = None  # research.sentiment.SentimentService; absent = no polling
+    sentiment_poll_seconds: float = 3600.0
     stats: LoopStats = field(default_factory=LoopStats)
 
     def __post_init__(self) -> None:
@@ -115,6 +117,8 @@ class LoopRunner:
         self._decider = Decider(self.llm)
         self._journal = Journal(self.db)
         self._positions = PositionsRepo(self.db)
+        self._sentiment_repo = SentimentRepo(self.db)
+        self._last_sentiment_poll: dict[str, datetime] = {}
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
         self._stopping = asyncio.Event()
@@ -191,6 +195,7 @@ class LoopRunner:
             self.stats.last_tick_at = now.isoformat()
 
             positions = {row["symbol"]: float(row["qty"]) for row in await self._positions.all()}
+            await self._poll_sentiment(now)
             marks = await self._marks(now, positions)
             assert self.scheduler is not None
             if force:
@@ -218,6 +223,27 @@ class LoopRunner:
             self.stats.wakeups += len(results)
             return results
 
+    async def _poll_sentiment(self, now: datetime) -> None:
+        """Collect X sentiment on a cadence (shadow record). Never blocks a tick on failure."""
+        if self.sentiment is None:
+            return
+        for symbol in self.symbols:
+            if not symbol.market_calendar.is_open(now):
+                continue
+            last = self._last_sentiment_poll.get(symbol.ticker)
+            if last is not None and (now - last).total_seconds() < self.sentiment_poll_seconds:
+                continue
+            # Stamp before the call: a failing provider must not be hammered every tick.
+            self._last_sentiment_poll[symbol.ticker] = now
+            try:
+                await self.sentiment.get_x_sentiment(symbol)
+            except Exception as exc:  # noqa: BLE001 - sentiment is advisory, the loop is not
+                log.warning("sentiment_poll_failed", symbol=symbol.ticker, error=str(exc))
+
+    async def _latest_sentiment(self, ticker: str) -> float | None:
+        row = await self._sentiment_repo.latest(ticker)
+        return float(row["score"]) if row is not None else None
+
     async def _marks(self, now: datetime, positions: dict[str, float]) -> dict[str, Mark]:
         """One cheap quote per symbol, for trigger evaluation.
 
@@ -230,12 +256,17 @@ class LoopRunner:
         for symbol in self.symbols:
             if not symbol.market_calendar.is_open(now):
                 continue
+            # Sentiment reaches the scheduler only for HELD symbols (EAI-180): the swing
+            # trigger exists to re-examine an open position, not to chase the feed.
+            score = None
+            if positions.get(symbol.ticker):
+                score = await self._latest_sentiment(symbol.ticker)
             try:
                 quote = await self.market_data.get_latest_quote(symbol)
-                marks[symbol.ticker] = Mark(price=quote.mid)
+                marks[symbol.ticker] = Mark(price=quote.mid, sentiment_score=score)
             except MarketDataError as exc:
                 log.warning("mark_unavailable", symbol=symbol.ticker, error=str(exc))
-                marks[symbol.ticker] = Mark(price=0.0)
+                marks[symbol.ticker] = Mark(price=0.0, sentiment_score=score)
         return marks
 
     async def _wakeup(
