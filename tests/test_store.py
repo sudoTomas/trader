@@ -248,3 +248,11 @@ async def test_usage_daily_accumulates(db: Database):
     rows = await usage.for_day(NOW.date())
     assert len(rows) == 1
     assert rows[0]["requests"] == 2 and rows[0]["prompt_tokens"] == 2000
+
+
+async def test_suite_runs_on_an_isolated_database(db: Database):
+    """The suite truncates tables wholesale; pointing it at the deployed database
+    would wipe the live journal/ledger (it did once — 2026-08-25). conftest must
+    redirect every test to a *_test database."""
+    row = await db.fetch_one("SELECT current_database() AS name")
+    assert row is not None and row["name"].endswith("_test")

@@ -20,6 +20,29 @@ os.environ.setdefault("TRADER_AUTH_DISABLED", "true")
 os.environ["TRADER_LOOP_ENABLED"] = "false"
 os.environ["TRADER_SHADOW_MODE"] = "true"
 
+# The suite truncates tables wholesale, and the deployed trader may share the compose
+# Postgres — running tests against its database wipes the live journal/ledger (it did
+# once, 2026-08-25). Redirect every test to a *_test sibling database, created on demand.
+_BASE_DB_URL = os.environ.get(
+    "TRADER_DATABASE_URL", "postgresql://trader:trader@localhost:5544/trader"
+)
+_TEST_DB_URL = _BASE_DB_URL.rstrip("/") + "_test"
+os.environ["TRADER_DATABASE_URL"] = _TEST_DB_URL
+
+
+def _ensure_test_database() -> None:
+    import psycopg
+
+    try:
+        psycopg.connect(_TEST_DB_URL, connect_timeout=5).close()
+    except psycopg.OperationalError:
+        name = _TEST_DB_URL.rsplit("/", 1)[1]
+        with psycopg.connect(_BASE_DB_URL, autocommit=True, connect_timeout=5) as conn:
+            conn.execute(f'CREATE DATABASE "{name}"')
+
+
+_ensure_test_database()
+
 # CLI tests parse captured stdout as JSON; keep in-process app logs (structlog + stdlib)
 # on stderr so they never interleave with a surface's output.
 structlog.configure(logger_factory=structlog.PrintLoggerFactory(sys.stderr))
