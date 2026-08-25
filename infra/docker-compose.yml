@@ -3,6 +3,7 @@ name: trader
 services:
   db:
     image: postgres:16
+    restart: unless-stopped  # the deployed API (systemd user unit) needs it back after reboot
     environment:
       POSTGRES_USER: trader
       POSTGRES_PASSWORD: trader
