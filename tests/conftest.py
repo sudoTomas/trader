@@ -19,10 +19,15 @@ os.environ.setdefault("TRADER_AUTH_DISABLED", "true")
 # real broker) off ambient config. Real env vars outrank the .env file in pydantic-settings.
 os.environ["TRADER_LOOP_ENABLED"] = "false"
 os.environ["TRADER_SHADOW_MODE"] = "true"
-# Likewise credentials: tests that want an xAI credential construct one explicitly;
-# the operator's real OAuth store / API key must never leak into "no credential" paths.
+# Likewise credentials: tests that want a credential construct one explicitly; the
+# operator's real keys must never leak in (they also make local runs diverge from CI,
+# which has none — that divergence shipped a CI-red commit once, 2026-08-26).
 os.environ["TRADER_XAI_TOKEN_KEY"] = ""
 os.environ["XAI_API_KEY"] = ""
+os.environ["ALPACA_API_KEY_ID"] = ""
+os.environ["ALPACA_API_SECRET"] = ""
+os.environ["TWELVE_DATA_API_KEY"] = ""
+os.environ["FRED_API_KEY"] = ""
 
 # The suite truncates tables wholesale, and the deployed trader may share the compose
 # Postgres — running tests against its database wipes the live journal/ledger (it did

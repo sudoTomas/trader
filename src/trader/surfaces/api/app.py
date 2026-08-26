@@ -232,18 +232,20 @@ def build_sentiment(db: Database, settings: Settings):
 
 
 def build_evaluator(db: Database, settings: Settings):
-    """The replay eval harness (offline; Nemotron decide role by default — free)."""
+    """The replay eval harness (offline; Nemotron decide role by default — free).
+    None without market-data credentials — every builder here must degrade gracefully,
+    because ``app = create_app()`` runs at import time (uvicorn's entrypoint)."""
     from trader.data.composite import build_market_data
     from trader.eval.replay import ReplayHarness
     from trader.llm.registry import build_llm_registry
     from trader.llm.usage import UsageMeter
     from trader.store.repos import UsageRepo
 
-    return ReplayHarness(
-        db,
-        build_llm_registry(settings, UsageMeter(UsageRepo(db))),
-        build_market_data(settings),
-    )
+    try:
+        provider = build_market_data(settings)
+    except ValueError:  # no Alpaca keys in this environment (e.g. CI)
+        return None
+    return ReplayHarness(db, build_llm_registry(settings, UsageMeter(UsageRepo(db))), provider)
 
 
 def build_mirror(db: Database, settings: Settings):
