@@ -318,6 +318,7 @@ def build_runner(db: Database, settings: Settings, sentiment=None):
         executor=executor,
         sentiment=sentiment,
         sentiment_poll_seconds=settings.sentiment_poll_seconds,
+        shadow_symbols={t.strip() for t in settings.shadow_symbols.split(",") if t.strip()},
     )
 
 

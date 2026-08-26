@@ -109,6 +109,9 @@ class LoopRunner:
     executor: Any | None = None  # loop.executor.Executor; absent = shadow-only build
     sentiment: Any | None = None  # research.sentiment.SentimentService; absent = no polling
     sentiment_poll_seconds: float = 3600.0
+    # Per-symbol throttle (EAI-186 gate): these symbols journal as shadow — full decide
+    # + risk pass, nothing submitted — while the rest of the build trades live-paper.
+    shadow_symbols: set[str] = field(default_factory=set)
     stats: LoopStats = field(default_factory=LoopStats)
 
     def __post_init__(self) -> None:
@@ -345,7 +348,7 @@ class LoopRunner:
             reason = outcome.reason
             if not outcome.approved:
                 status = DENIED
-            elif self.shadow or self.executor is None:
+            elif self.shadow or self.executor is None or symbol.ticker in self.shadow_symbols:
                 status = SHADOW
             else:
                 # Live-paper: the executor takes ONLY outcome.executable(), which raises

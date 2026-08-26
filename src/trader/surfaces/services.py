@@ -160,7 +160,12 @@ def build_registry(
         settings = get_settings()
         if runner is None:
             return {"running": False, "shadow": settings.shadow_mode, "stats": None}
-        return {"running": True, "shadow": runner.shadow, "stats": runner.stats.as_dict()}
+        return {
+            "running": True,
+            "shadow": runner.shadow,
+            "shadow_symbols": sorted(runner.shadow_symbols),
+            "stats": runner.stats.as_dict(),
+        }
 
     @reg.register(
         "wake_trader", kind="command", summary="Force a decide pass now (ignores cooldowns)."

@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     loop_enabled: bool = False  # the background task is an explicit operator opt-in
     loop_tick_seconds: float = 60.0
     loop_symbols: str = "BTC/USD,ETH/USD"
+    # Per-symbol shadow (EAI-186 gate): these symbols decide + risk-check but never
+    # submit, while the rest of the build trades live-paper. Comma-separated tickers.
+    shadow_symbols: str = ""
     # Paper account base until the broker lands (EAI-176).
     shadow_equity: float = 100_000.0
 

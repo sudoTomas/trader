@@ -127,11 +127,12 @@ def test_class_defaults_and_overrides():
 
 
 def test_registry_extension_is_immutable():
+    # QQQ: an equity NOT in the seed universe (SPY joined it in EAI-186).
     reg = default_registry()
-    extended = reg.with_symbol(make_symbol("SPY", AssetClass.US_EQUITY))
-    assert extended.get("SPY").ticker == "SPY"
+    extended = reg.with_symbol(make_symbol("QQQ", AssetClass.US_EQUITY))
+    assert extended.get("QQQ").ticker == "QQQ"
     with pytest.raises(KeyError):
-        reg.get("SPY")  # original untouched
+        reg.get("QQQ")  # original untouched
 
 
 # --- types ------------------------------------------------------------------
