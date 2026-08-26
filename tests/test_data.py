@@ -201,3 +201,24 @@ async def test_composite_unrouted_asset_class_fails_safe():
     md = CompositeMarketData({AssetClass.US_EQUITY: [_StubProvider("a")]})
     with pytest.raises(MarketDataError, match="no market data providers"):
         await md.get_bars(BTC, "1m", 5)
+
+
+async def test_alpaca_bars_request_reaches_back_past_todays_midnight():
+    """Without an explicit `start`, Alpaca defaults to the beginning of the current day
+    and `limit` silently caps to today's bars — a 100-bar hourly lookback came back as
+    15 bars in production (EAI-188 first live replay). `start` must cover the lookback
+    with slack for closed sessions."""
+    from datetime import UTC, datetime, timedelta
+
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["params"] = dict(request.url.params)
+        return httpx.Response(200, json=ALPACA_CRYPTO_BARS)
+
+    data = AlpacaData("k", "s", client=mock_client(handler))
+    await data.get_bars(BTC, "1h", 100)
+
+    start = datetime.fromisoformat(seen["params"]["start"])
+    assert start.tzinfo is not None
+    assert start <= datetime.now(tz=UTC) - timedelta(hours=100)  # covers the lookback

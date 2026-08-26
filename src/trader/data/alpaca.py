@@ -14,7 +14,7 @@ window, then reversed to the ascending order consumers expect.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -27,6 +27,7 @@ _BASE_URL = "https://data.alpaca.markets"
 
 #: internal interval -> Alpaca timeframe
 _TIMEFRAMES = {"1m": "1Min", "5m": "5Min", "15m": "15Min", "1h": "1Hour", "1d": "1Day"}
+_INTERVAL_SECONDS = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "1d": 86400}
 
 PROVIDER = "alpaca_data"
 
@@ -68,9 +69,16 @@ class AlpacaData:
         except KeyError:
             raise MarketDataError(f"alpaca_data: unsupported interval '{interval}'") from None
         spelled = symbol.for_provider(PROVIDER)
+        # Explicit `start`: without it Alpaca defaults to the beginning of the CURRENT
+        # day, silently capping any lookback to today's bars (a 100-bar hourly request
+        # came back as 15 bars in production — caught by EAI-188's first live replay).
+        # 5x slack covers closed sessions; limit + sort=desc still bounds the response
+        # to exactly the most recent `lookback` bars.
+        window = timedelta(seconds=_INTERVAL_SECONDS[interval] * lookback * 5)
         params: dict[str, Any] = {
             "symbols": spelled,
             "timeframe": timeframe,
+            "start": (datetime.now(tz=UTC) - window).isoformat(),
             "limit": lookback,
             "sort": "desc",
         }
