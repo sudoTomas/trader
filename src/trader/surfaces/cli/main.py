@@ -222,6 +222,34 @@ def note_retire(note_id: int = typer.Argument(..., help="Note id to retire.")) -
     typer.echo(json.dumps(_post(f"/research/notes/{note_id}/retire"), indent=2))
 
 
+eval_app = typer.Typer(help="Replay eval — offline decide reruns; the decide-change gate.")
+app.add_typer(eval_app, name="eval")
+
+
+@eval_app.command("run")
+def eval_run_cmd(
+    symbol: str = typer.Option(..., help="Symbol, e.g. BTC/USD."),
+    start: str = typer.Option(..., help="Window start (ISO-8601, tz-aware)."),
+    end: str = typer.Option(..., help="Window end (ISO-8601, tz-aware)."),
+    label: str = typer.Option("replay", help="Name this run for later comparison."),
+) -> None:
+    """Start a background replay over [start, end); poll with `trader eval show`."""
+    params = {"symbol": symbol, "start": start, "end": end, "label": label}
+    typer.echo(json.dumps(_post("/eval/replay", params=params), indent=2))
+
+
+@eval_app.command("list")
+def eval_list(limit: int = typer.Option(50, help="How many runs, newest first.")) -> None:
+    """List replay eval runs."""
+    typer.echo(json.dumps(_get("/eval/runs", params={"limit": limit}), indent=2))
+
+
+@eval_app.command("show")
+def eval_show(run_id: int = typer.Argument(..., help="Eval run id.")) -> None:
+    """One run: status, summary, and per-step decisions (no prompt dumps)."""
+    typer.echo(json.dumps(_get(f"/eval/runs/{run_id}"), indent=2))
+
+
 macro_app = typer.Typer(help="The compiled Macro View (advisory digest of operator research).")
 app.add_typer(macro_app, name="macro")
 

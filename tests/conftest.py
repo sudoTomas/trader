@@ -58,6 +58,8 @@ from trader.store.db import Database  # noqa: E402  (env default must be set fir
 # TRUNCATE is allowed on audit_events (its append-only trigger blocks row-level
 # UPDATE/DELETE only) — fine for tests, and no such statement exists in app code.
 ALL_TABLES = (
+    "eval_steps",
+    "eval_runs",
     "fills",
     "orders",
     "approvals",

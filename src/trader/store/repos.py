@@ -384,6 +384,90 @@ class ApprovalsRepo:
         return n == 1
 
 
+class EvalRepo:
+    """Replay eval runs + their steps (M5). Offline decide reruns journal here, never
+    into ``decisions`` — the live journal stays evidence of what actually ran."""
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def create_run(
+        self,
+        *,
+        label: str,
+        symbol: str,
+        interval: str,
+        start_ts: datetime,
+        end_ts: datetime,
+        config: dict[str, Any] | None = None,
+    ) -> int:
+        row = await self._db.fetch_one(
+            """
+            INSERT INTO eval_runs (label, symbol, interval, start_ts, end_ts, config)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (label, symbol, interval, start_ts, end_ts, Jsonb(config or {})),
+        )
+        assert row is not None
+        return row["id"]
+
+    async def finish_run(self, run_id: int, *, status: str, summary: dict[str, Any]) -> None:
+        await self._db.execute(
+            "UPDATE eval_runs SET status = %s, summary = %s WHERE id = %s",
+            (status, Jsonb(summary), run_id),
+        )
+
+    async def add_step(
+        self,
+        run_id: int,
+        *,
+        ts: datetime,
+        status: str,
+        price: float | None = None,
+        prompt: str | None = None,
+        raw_output: str | None = None,
+        decision: dict[str, Any] | None = None,
+        latency_ms: int | None = None,
+    ) -> int:
+        row = await self._db.fetch_one(
+            """
+            INSERT INTO eval_steps (run_id, ts, status, price, prompt, raw_output, decision,
+                                    latency_ms)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                run_id,
+                ts,
+                status,
+                price,
+                prompt,
+                raw_output,
+                Jsonb(decision) if decision is not None else None,
+                latency_ms,
+            ),
+        )
+        assert row is not None
+        return row["id"]
+
+    async def get_run(self, run_id: int) -> Row | None:
+        return await self._db.fetch_one("SELECT * FROM eval_runs WHERE id = %s", (run_id,))
+
+    async def runs(self, limit: int = 50) -> list[Row]:
+        return await self._db.fetch_all(
+            "SELECT * FROM eval_runs ORDER BY created_at DESC, id DESC LIMIT %s", (limit,)
+        )
+
+    async def steps_summary(self, run_id: int) -> list[Row]:
+        """Steps without the prompt/raw_output payloads — a listing, not a dump."""
+        return await self._db.fetch_all(
+            "SELECT id, ts, status, price, decision, latency_ms"
+            " FROM eval_steps WHERE run_id = %s ORDER BY ts",
+            (run_id,),
+        )
+
+
 class SentimentRepo:
     """X sentiment polls (M4). Every poll journals, scored or not; only 'ok' rows carry
     a number (enforced by a table constraint)."""

@@ -44,7 +44,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     runner = build_runner(db, settings, sentiment) if settings.loop_enabled else None
     mirror = build_mirror(db, settings)
     compiler = build_compiler(db, settings, mirror)
-    registry = build_registry(db, runner, compiler, mirror, sentiment)
+    evaluator = build_evaluator(db, settings)
+    registry = build_registry(db, runner, compiler, mirror, sentiment, evaluator)
     mcp = build_mcp(registry)
     # Our ApiKeyMiddleware gates /mcp, and the Spark is reached over the LAN — the MCP
     # localhost-only Host allowlist (DNS-rebinding protection) would reject those clients.
@@ -183,6 +184,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def fetch_x_sentiment(symbol: str = Query()) -> dict:
         return await registry.get("fetch_x_sentiment").handler(symbol=symbol)
 
+    @app.post("/eval/replay")
+    async def run_replay_eval(
+        symbol: str = Query(),
+        start: str = Query(),
+        end: str = Query(),
+        label: str = Query(default="replay"),
+    ) -> dict:
+        try:
+            return await registry.get("run_replay_eval").handler(
+                symbol=symbol, start=start, end=end, label=label
+            )
+        except (ValueError, KeyError) as exc:  # bad window / unknown symbol
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/eval/runs")
+    async def eval_runs(limit: int = Query(default=50, ge=1, le=200)) -> list[dict]:
+        return await registry.get("eval_runs").handler(limit=limit)
+
+    @app.get("/eval/runs/{run_id}")
+    async def eval_run(run_id: int) -> dict | None:
+        return await registry.get("eval_run").handler(run_id=run_id)
+
     app.mount("/mcp", mcp_app)
     return app
 
@@ -206,6 +229,21 @@ def build_sentiment(db: Database, settings: Settings):
     handles = [h.strip() for h in settings.sentiment_x_handles.split(",") if h.strip()]
     client = XSentimentClient(http, model=settings.xai_model, allowed_x_handles=handles)
     return SentimentService(db, client, daily_call_cap=settings.sentiment_daily_call_cap)
+
+
+def build_evaluator(db: Database, settings: Settings):
+    """The replay eval harness (offline; Nemotron decide role by default — free)."""
+    from trader.data.composite import build_market_data
+    from trader.eval.replay import ReplayHarness
+    from trader.llm.registry import build_llm_registry
+    from trader.llm.usage import UsageMeter
+    from trader.store.repos import UsageRepo
+
+    return ReplayHarness(
+        db,
+        build_llm_registry(settings, UsageMeter(UsageRepo(db))),
+        build_market_data(settings),
+    )
 
 
 def build_mirror(db: Database, settings: Settings):

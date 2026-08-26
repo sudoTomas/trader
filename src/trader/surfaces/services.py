@@ -61,6 +61,7 @@ def build_registry(
     compiler: Any | None = None,
     mirror: Any | None = None,
     sentiment: Any | None = None,
+    evaluator: Any | None = None,
 ) -> ServiceRegistry:
     """Construct the registry with the capabilities available in this build.
 
@@ -398,6 +399,70 @@ def build_registry(
         if sentiment is None:
             return {"status": "unavailable", "reason": "no xAI credential in this build"}
         return await sentiment.get_x_sentiment(default_registry().get(symbol))
+
+    # --- replay eval (M5, EAI-188) -------------------------------------------
+
+    def _run_out(row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            **row,
+            "created_at": row["created_at"].isoformat(),
+            "start_ts": row["start_ts"].isoformat(),
+            "end_ts": row["end_ts"].isoformat(),
+        }
+
+    @reg.register(
+        "run_replay_eval",
+        kind="command",
+        summary="Replay the decide stage over a historical window (background; offline only).",
+    )
+    async def run_replay_eval(
+        symbol: str, start: str, end: str, label: str = "replay"
+    ) -> dict[str, Any]:
+        import asyncio
+        from datetime import datetime
+
+        from trader.core.symbols import default_registry
+
+        if evaluator is None:
+            return {"run_id": None, "status": "unavailable", "reason": "no evaluator in build"}
+        sym = default_registry().get(symbol)
+        run_id = await evaluator.create_run(
+            sym,
+            datetime.fromisoformat(start),
+            datetime.fromisoformat(end),
+            label=label,
+        )
+        asyncio.create_task(evaluator.execute(run_id, sym), name=f"replay-eval-{run_id}")
+        await _audit_command(
+            "run_replay_eval", {"run_id": run_id, "symbol": symbol, "label": label}
+        )
+        return {"run_id": run_id, "status": "running"}
+
+    @reg.register("eval_runs", kind="query", summary="Replay eval runs, newest first.")
+    async def eval_runs(limit: int = 50) -> list[dict[str, Any]]:
+        from trader.store.repos import EvalRepo
+
+        assert db is not None, "eval_runs requires a store"
+        return [_run_out(r) for r in await EvalRepo(db).runs(min(limit, 200))]
+
+    @reg.register("eval_run", kind="query", summary="One replay eval run with step summaries.")
+    async def eval_run(run_id: int) -> dict[str, Any] | None:
+        from trader.store.repos import EvalRepo
+
+        assert db is not None, "eval_run requires a store"
+        repo = EvalRepo(db)
+        row = await repo.get_run(run_id)
+        if row is None:
+            return None
+        steps = [
+            {
+                **s,
+                "ts": s["ts"].isoformat(),
+                "price": float(s["price"]) if s["price"] is not None else None,
+            }
+            for s in await repo.steps_summary(run_id)
+        ]
+        return {**_run_out(row), "steps": steps}
 
     async def _audit_command(action: str, payload: dict[str, Any]) -> None:
         """Commands are state-changing: every one leaves an append-only trace."""
