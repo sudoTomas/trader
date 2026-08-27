@@ -232,9 +232,10 @@ def eval_run_cmd(
     start: str = typer.Option(..., help="Window start (ISO-8601, tz-aware)."),
     end: str = typer.Option(..., help="Window end (ISO-8601, tz-aware)."),
     label: str = typer.Option("replay", help="Name this run for later comparison."),
+    desk: bool = typer.Option(False, "--desk", help="Replay with the decision desk on."),
 ) -> None:
     """Start a background replay over [start, end); poll with `trader eval show`."""
-    params = {"symbol": symbol, "start": start, "end": end, "label": label}
+    params = {"symbol": symbol, "start": start, "end": end, "label": label, "desk": desk}
     typer.echo(json.dumps(_post("/eval/replay", params=params), indent=2))
 
 

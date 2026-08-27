@@ -148,6 +148,7 @@ class DecisionContext:
     recent_decisions: list[dict[str, Any]] = field(default_factory=list)
     macro_view: MacroSlice | None = None  # advisory lane; RiskGuard never sees it
     brief: BriefSlice | None = None  # advisory lane; RiskGuard never sees it
+    analysts: list[str] = field(default_factory=list)  # desk lanes (EAI-190); advisory
 
     @property
     def primary_vol(self) -> float | None:
@@ -193,6 +194,14 @@ class DecisionContext:
                 f" [via brief v{self.brief.version}]:",
             ]
             lines += [f"  {entry}" for entry in self.brief.entries]
+
+        if self.analysts:
+            lines += [
+                "",
+                "Analyst desk (advisory reads — contradictions between analysts are"
+                " information, not noise; a deterministic risk layer owns sizing):",
+            ]
+            lines += [f"  {entry}" for entry in self.analysts]
 
         if self.recent_decisions:
             lines += ["", "Recent decisions (newest first):"]

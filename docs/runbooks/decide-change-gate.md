@@ -32,6 +32,15 @@ costs/slippage: it ranks configurations, it does not predict live PnL** (the sum
 so in `pnl_model`). Replayed contexts currently exclude the Macro View lane and use the
 `replay` trigger; judge relative differences, not absolutes.
 
+**The desk (EAI-190) has first-class variant plumbing**: `trader eval run --desk` (API
+`desk=true`) replays the same window through analyst fan-out + critic while the live desk
+stays dark. The summary gains a `desk` tally (`approve/shrink/veto/pass_through/skipped`)
+and each step's decision records the full desk verdicts. Compare desk-on vs desk-off on
+the SAME window: the desk earns its flip if agreement-where-it-matters improves — fewer
+bad opens and kept exits — not merely a different PnL number. A desk-on replay with the
+critic on Grok costs real money per intent step; the hold-skip keeps it small, but check
+`/usage` after.
+
 ## 2. Shadow window (live inputs, no orders)
 
 Only if the replay comparison favors the candidate: run it against live data without

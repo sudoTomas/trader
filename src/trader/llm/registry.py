@@ -19,7 +19,7 @@ from trader.ops.config import Settings
 
 log = structlog.get_logger(__name__)
 
-ROLES = ("decide", "brief", "compiler", "sentiment")
+ROLES = ("decide", "brief", "compiler", "sentiment", "analyst", "critic")
 
 
 class LLMRegistry:
@@ -74,11 +74,15 @@ def build_llm_registry(settings: Settings, meter: UsageMeter | None = None) -> L
     tell which one is serving.
     """
     nemotron = nemotron_client(settings)
-    routes: dict[str, list[LLMClient]] = {"decide": [nemotron]}
+    # Desk analysts run on every wakeup: local-only by design, free by definition
+    # (EAI-190's cost ceiling assumes it — routing them at Grok would burn ~3 calls/hour).
+    routes: dict[str, list[LLMClient]] = {"decide": [nemotron], "analyst": [nemotron]}
     grok = xai_client(settings)
     # Research roles prefer Grok; Nemotron backstops them whether xAI is quarantined
     # or simply not configured yet (EAI-178 — the Desk must work before any Grok
     # credential exists; compile load is rare and debounced, not a decide-lane hazard).
-    for role in ("brief", "compiler", "sentiment"):
+    # The critic rides the same ordering, which is also its cross-model property: Grok
+    # reviews Nemotron's draft; the backstop degrades to same-model critique, not to none.
+    for role in ("brief", "compiler", "sentiment", "critic"):
         routes[role] = [grok, nemotron] if grok is not None else [nemotron]
     return LLMRegistry(routes, meter)

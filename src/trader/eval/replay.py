@@ -84,6 +84,7 @@ class ReplayHarness:
         step_seconds: float = 3600.0,
         max_steps: int = DEFAULT_MAX_STEPS,
         equity: float = 100_000.0,
+        desk: Any | None = None,  # desk.desk.Desk; enables config={"desk": true} runs
     ) -> None:
         self._db = db
         self._repo = EvalRepo(db)
@@ -93,6 +94,7 @@ class ReplayHarness:
         self._step = timedelta(seconds=step_seconds)
         self._max_steps = max_steps
         self._equity = equity
+        self._desk = desk
 
     # -- public API ----------------------------------------------------------
 
@@ -111,6 +113,8 @@ class ReplayHarness:
                 f"window is {n_steps} steps; max is {self._max_steps} — narrow it or raise"
                 " max_steps deliberately (LLM cost scales linearly)"
             )
+        if (config or {}).get("desk") and self._desk is None:
+            raise ValueError("desk replay requested but no desk is wired into this harness")
         return await self._repo.create_run(
             label=label,
             symbol=symbol.ticker,
@@ -124,8 +128,11 @@ class ReplayHarness:
         """Walk the run's window. Always finishes the row (done/failed)."""
         run = await self._repo.get_run(run_id)
         assert run is not None
+        use_desk = bool((run["config"] or {}).get("desk"))
         try:
-            summary = await self._walk(run_id, symbol, run["start_ts"], run["end_ts"])
+            summary = await self._walk(
+                run_id, symbol, run["start_ts"], run["end_ts"], use_desk=use_desk
+            )
             await self._repo.finish_run(run_id, status="done", summary=summary)
         except Exception as exc:  # noqa: BLE001 - a failed run must say so, not hang
             log.exception("replay_run_failed", run_id=run_id)
@@ -149,9 +156,10 @@ class ReplayHarness:
     # -- internals -----------------------------------------------------------
 
     async def _walk(
-        self, run_id: int, symbol: Symbol, start: datetime, end: datetime
+        self, run_id: int, symbol: Symbol, start: datetime, end: datetime, *, use_desk: bool
     ) -> dict[str, Any]:
         actions: dict[str, int] = {}
+        desk_tally = {"approve": 0, "shrink": 0, "veto": 0, "pass_through": 0, "skipped": 0}
         recent: list[dict[str, Any]] = []
         steps = errors = skipped_closed = skipped_no_data = 0
         qty = entry = realized = cost = 0.0
@@ -179,6 +187,13 @@ class ReplayHarness:
                 continue
             last_price = ctx.price
 
+            desk_info: dict[str, Any] | None = None
+            if use_desk:
+                # Unlike the live loop's fail-open wrapping, a replay desk failure
+                # propagates: a desk-on run that silently degrades to baseline would
+                # corrupt the comparison the run exists to make.
+                ctx, desk_info = await self._desk.enrich(ctx)
+
             started = time.perf_counter()
             try:
                 result = await self._decider.decide(ctx)
@@ -197,6 +212,9 @@ class ReplayHarness:
                 continue
 
             decision = result.decision
+            if use_desk:
+                decision, desk_info = await self._desk.review(ctx, decision, desk_info or {})
+                desk_tally[desk_info["critic"]["verdict"]] += 1
             actions[decision.action.value] = actions.get(decision.action.value, 0) + 1
             cost += result.completion.cost_usd or 0.0
 
@@ -221,6 +239,7 @@ class ReplayHarness:
                     "action": decision.action.value,
                     "conviction": decision.conviction,
                     "rationale": decision.rationale,
+                    **({"desk": desk_info} if desk_info is not None else {}),
                 },
                 latency_ms=int((time.perf_counter() - started) * 1000),
             )
@@ -237,6 +256,7 @@ class ReplayHarness:
             as_of += self._step
 
         return {
+            **({"desk": desk_tally} if use_desk else {}),
             "steps": steps,
             "errors": errors,
             "skipped_closed": skipped_closed,

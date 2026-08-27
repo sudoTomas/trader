@@ -457,7 +457,7 @@ def build_registry(
         summary="Replay the decide stage over a historical window (background; offline only).",
     )
     async def run_replay_eval(
-        symbol: str, start: str, end: str, label: str = "replay"
+        symbol: str, start: str, end: str, label: str = "replay", desk: bool = False
     ) -> dict[str, Any]:
         import asyncio
         from datetime import datetime
@@ -472,10 +472,11 @@ def build_registry(
             datetime.fromisoformat(start),
             datetime.fromisoformat(end),
             label=label,
+            config={"desk": desk},
         )
         asyncio.create_task(evaluator.execute(run_id, sym), name=f"replay-eval-{run_id}")
         await _audit_command(
-            "run_replay_eval", {"run_id": run_id, "symbol": symbol, "label": label}
+            "run_replay_eval", {"run_id": run_id, "symbol": symbol, "label": label, "desk": desk}
         )
         return {"run_id": run_id, "status": "running"}
 

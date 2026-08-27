@@ -32,6 +32,7 @@ class DecisionsRepo:
         raw_output: str | None = None,
         decision: dict[str, Any] | None = None,
         risk_verdicts: list[dict[str, Any]] | None = None,
+        desk_verdicts: dict[str, Any] | None = None,
         macro_view_version: int | None = None,
         brief_version: int | None = None,
         cost_usd: float | None = None,
@@ -40,9 +41,9 @@ class DecisionsRepo:
         row = await self._db.fetch_one(
             """
             INSERT INTO decisions (trigger, status, symbol, asset_class, prompt, raw_output,
-                                   decision, risk_verdicts, macro_view_version, brief_version,
-                                   cost_usd, latency_ms)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                   decision, risk_verdicts, desk_verdicts, macro_view_version,
+                                   brief_version, cost_usd, latency_ms)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
             (
@@ -54,6 +55,7 @@ class DecisionsRepo:
                 raw_output,
                 Jsonb(decision) if decision is not None else None,
                 Jsonb(risk_verdicts) if risk_verdicts is not None else None,
+                Jsonb(desk_verdicts) if desk_verdicts is not None else None,
                 macro_view_version,
                 brief_version,
                 cost_usd,

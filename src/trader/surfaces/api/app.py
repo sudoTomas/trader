@@ -41,11 +41,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # The pool object is cheap to build unopened; the lifespan opens/closes it.
     db = Database(settings.database_url)
     sentiment = build_sentiment(db, settings)
-    runner = build_runner(db, settings, sentiment) if settings.loop_enabled else None
+    desk = build_desk(db, settings)
+    runner = build_runner(db, settings, sentiment, desk) if settings.loop_enabled else None
     mirror = build_mirror(db, settings)
     compiler = build_compiler(db, settings, mirror)
     briefs = build_briefs(db, settings)
-    evaluator = build_evaluator(db, settings)
+    evaluator = build_evaluator(db, settings, desk)
     registry = build_registry(db, runner, compiler, mirror, sentiment, evaluator, briefs)
     mcp = build_mcp(registry)
     # Our ApiKeyMiddleware gates /mcp, and the Spark is reached over the LAN — the MCP
@@ -202,10 +203,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         start: str = Query(),
         end: str = Query(),
         label: str = Query(default="replay"),
+        desk: bool = Query(default=False),
     ) -> dict:
         try:
             return await registry.get("run_replay_eval").handler(
-                symbol=symbol, start=start, end=end, label=label
+                symbol=symbol, start=start, end=end, label=label, desk=desk
             )
         except (ValueError, KeyError) as exc:  # bad window / unknown symbol
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -243,10 +245,11 @@ def build_sentiment(db: Database, settings: Settings):
     return SentimentService(db, client, daily_call_cap=settings.sentiment_daily_call_cap)
 
 
-def build_evaluator(db: Database, settings: Settings):
+def build_evaluator(db: Database, settings: Settings, desk=None):
     """The replay eval harness (offline; Nemotron decide role by default — free).
     None without market-data credentials — every builder here must degrade gracefully,
-    because ``app = create_app()`` runs at import time (uvicorn's entrypoint)."""
+    because ``app = create_app()`` runs at import time (uvicorn's entrypoint). The desk
+    is wired in every build so desk-on replays work while the live desk stays dark."""
     from trader.data.composite import build_market_data
     from trader.eval.replay import ReplayHarness
     from trader.llm.registry import build_llm_registry
@@ -257,7 +260,24 @@ def build_evaluator(db: Database, settings: Settings):
         provider = build_market_data(settings)
     except ValueError:  # no Alpaca keys in this environment (e.g. CI)
         return None
-    return ReplayHarness(db, build_llm_registry(settings, UsageMeter(UsageRepo(db))), provider)
+    return ReplayHarness(
+        db, build_llm_registry(settings, UsageMeter(UsageRepo(db))), provider, desk=desk
+    )
+
+
+def build_desk(db: Database, settings: Settings):
+    """The decision desk — built in every store-backed build (replay needs it); the LIVE
+    loop only receives it when TRADER_DESK_ENABLED=true (see create_app)."""
+    from trader.desk.desk import Desk
+    from trader.llm.registry import build_llm_registry
+    from trader.llm.usage import UsageMeter
+    from trader.store.repos import UsageRepo
+
+    return Desk(
+        build_llm_registry(settings, UsageMeter(UsageRepo(db))),
+        usage=UsageRepo(db),
+        critic_daily_usd=settings.desk_critic_daily_usd,
+    )
 
 
 def build_mirror(db: Database, settings: Settings):
@@ -300,7 +320,7 @@ def build_briefs(db: Database, settings: Settings):
     )
 
 
-def build_runner(db: Database, settings: Settings, sentiment=None):
+def build_runner(db: Database, settings: Settings, sentiment=None, desk=None):
     """Assemble the decide loop from configured providers (opt-in via TRADER_LOOP_ENABLED)."""
     from trader.brokers.alpaca import AlpacaBroker
     from trader.core.symbols import default_registry
@@ -348,6 +368,7 @@ def build_runner(db: Database, settings: Settings, sentiment=None):
         sentiment_poll_seconds=settings.sentiment_poll_seconds,
         shadow_symbols={t.strip() for t in settings.shadow_symbols.split(",") if t.strip()},
         briefs_enabled=settings.briefs_enabled,
+        desk=desk if settings.desk_enabled else None,
     )
 
 

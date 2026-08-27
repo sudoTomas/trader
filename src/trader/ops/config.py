@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     # Briefs lane (EAI-192): briefs compile and store regardless; this flag alone lets
     # them into the decide prompt (a decide-behavior change — flip only through the gate).
     briefs_enabled: bool = False
+    # Decision desk (EAI-190): analyst fan-out + cross-model critic around the decide.
+    # Dark by default — earns its flip via replay desk-on vs desk-off, then shadow.
+    desk_enabled: bool = False
+    # The critic prefers Grok (cross-model): cap its spend per UTC day; at the cap,
+    # reviews degrade to journaled pass-throughs. Analysts are Nemotron-only (free).
+    desk_critic_daily_usd: float = 1.0
     # X sentiment (EAI-180). Polling needs an xAI credential; the wake trigger stays OFF
     # until ≥1 week of journaled scores earns the operator's flip (shadow-first).
     sentiment_poll_seconds: float = 3600.0

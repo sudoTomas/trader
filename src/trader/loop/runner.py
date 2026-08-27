@@ -115,6 +115,9 @@ class LoopRunner:
     # Briefs lane (EAI-192 gate): dark by default — briefs compile and store regardless,
     # but only this flag lets them into the decide prompt (a decide-behavior change).
     briefs_enabled: bool = False
+    # Decision desk (EAI-190 gate): analyst lanes before the decide, critic after it.
+    # Absent = no desk. Advisory: a crashing desk degrades to a plain decide, never blocks.
+    desk: Any | None = None
     stats: LoopStats = field(default_factory=LoopStats)
 
     def __post_init__(self) -> None:
@@ -316,6 +319,13 @@ class LoopRunner:
                 symbol.ticker, names, SUPPRESSED, decision_id, reason="no usable price"
             )
 
+        desk_verdicts: dict[str, Any] | None = None
+        if self.desk is not None:
+            try:
+                ctx, desk_verdicts = await self.desk.enrich(ctx)
+            except Exception as exc:  # noqa: BLE001 - advisory must never block a decide
+                log.warning("desk_enrich_failed", symbol=symbol.ticker, error=str(exc))
+
         try:
             result = await self._decider.decide(ctx)
         except DeciderError as exc:
@@ -326,6 +336,7 @@ class LoopRunner:
                 asset_class=symbol.asset_class,
                 prompt=ctx.to_prompt(),
                 raw_output=str(exc),
+                desk_verdicts=desk_verdicts,
                 macro_view_version=macro_view_version,
                 brief_version=brief_version,
                 latency_ms=int((time.perf_counter() - started) * 1000),
@@ -336,6 +347,11 @@ class LoopRunner:
             return WakeupResult(symbol.ticker, names, ERROR, decision_id, reason=str(exc))
 
         decision = result.decision
+        if self.desk is not None:
+            try:
+                decision, desk_verdicts = await self.desk.review(ctx, decision, desk_verdicts or {})
+            except Exception as exc:  # noqa: BLE001 - a broken critic is a pass-through
+                log.warning("desk_review_failed", symbol=symbol.ticker, error=str(exc))
         verdicts: list[dict[str, Any]] | None = None
         status = SHADOW
         reason = ""
@@ -378,6 +394,7 @@ class LoopRunner:
             raw_output=result.raw_output,
             decision=decision,
             risk_verdicts=verdicts,
+            desk_verdicts=desk_verdicts,
             macro_view_version=macro_view_version,
             brief_version=brief_version,
             cost_usd=result.completion.cost_usd,
