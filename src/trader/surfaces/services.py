@@ -62,14 +62,15 @@ def build_registry(
     mirror: Any | None = None,
     sentiment: Any | None = None,
     evaluator: Any | None = None,
+    briefs: Any | None = None,
 ) -> ServiceRegistry:
     """Construct the registry with the capabilities available in this build.
 
     ``db`` is the shared (possibly not-yet-opened) pool; handlers only touch it per call,
     so the registry can be built before the lifespan opens the pool. ``runner`` is the
     decide loop, present only when this build runs one; ``compiler`` is the Macro View
-    compiler and ``mirror`` the one-way markdown exporter (research.*), absent in
-    store-less builds.
+    compiler, ``briefs`` the per-candidate brief compiler, and ``mirror`` the one-way
+    markdown exporter (research.*), absent in store-less builds.
     """
     reg = ServiceRegistry()
 
@@ -315,6 +316,8 @@ def build_registry(
         )
         if compiler is not None:
             compiler.mark_dirty()  # debounced Macro View recompile
+        if briefs is not None:
+            briefs.mark_dirty()  # debounced per-candidate brief recompile
         if mirror is not None:
             await mirror.export_quietly()
         return _note_out(row)
@@ -327,6 +330,8 @@ def build_registry(
         retired = await ResearchDesk(db).retire(note_id)
         if retired and compiler is not None:
             compiler.mark_dirty()
+        if retired and briefs is not None:
+            briefs.mark_dirty()
         if retired and mirror is not None:
             await mirror.export_quietly()
         return {"retired": retired, "id": note_id}
@@ -371,6 +376,37 @@ def build_registry(
         if mirror is None:
             return {"exported": False, "reason": "no mirror in this build"}
         return {"exported": True, **await mirror.export()}
+
+    def _brief_out(row: dict[str, Any] | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        return {**row, "ts": row["ts"].isoformat()}
+
+    @reg.register(
+        "brief",
+        kind="query",
+        summary="The current (or a specific) per-candidate research brief (advisory).",
+    )
+    async def brief(symbol: str | None = None, version: int | None = None) -> dict[str, Any] | None:
+        from trader.store.repos import BriefsRepo
+
+        assert db is not None, "brief requires a store"
+        repo = BriefsRepo(db)
+        row = await (repo.get(version) if version is not None else repo.current(symbol or ""))
+        return _brief_out(row)
+
+    @reg.register(
+        "compile_brief",
+        kind="command",
+        summary="Compile one symbol's brief from store inputs now (skips the debounce).",
+    )
+    async def compile_brief(symbol: str) -> dict[str, Any]:
+        if briefs is None:
+            return {"compiled": False, "reason": "no brief compiler in this build"}
+        row = await briefs.compile_now(symbol)
+        if row is None:
+            return {"compiled": False, "reason": "no symbol-scoped inputs (or output uncited)"}
+        return {"compiled": True, "brief": _brief_out(row)}
 
     # --- x sentiment (M4 part 4) ---------------------------------------------
 

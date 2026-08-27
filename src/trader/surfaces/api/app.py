@@ -44,8 +44,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     runner = build_runner(db, settings, sentiment) if settings.loop_enabled else None
     mirror = build_mirror(db, settings)
     compiler = build_compiler(db, settings, mirror)
+    briefs = build_briefs(db, settings)
     evaluator = build_evaluator(db, settings)
-    registry = build_registry(db, runner, compiler, mirror, sentiment, evaluator)
+    registry = build_registry(db, runner, compiler, mirror, sentiment, evaluator, briefs)
     mcp = build_mcp(registry)
     # Our ApiKeyMiddleware gates /mcp, and the Spark is reached over the LAN — the MCP
     # localhost-only Host allowlist (DNS-rebinding protection) would reject those clients.
@@ -173,6 +174,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def export_research_mirror() -> dict:
         return await registry.get("export_research_mirror").handler()
 
+    @app.get("/research/briefs")
+    async def brief(
+        symbol: str | None = Query(default=None),
+        version: int | None = Query(default=None, ge=1),
+    ) -> dict | None:
+        return await registry.get("brief").handler(symbol=symbol, version=version)
+
+    @app.post("/research/briefs/compile")
+    async def compile_brief(symbol: str = Query()) -> dict:
+        return await registry.get("compile_brief").handler(symbol=symbol)
+
     @app.get("/research/sentiment")
     async def sentiment_history(
         symbol: str | None = Query(default=None),
@@ -272,6 +284,22 @@ def build_compiler(db: Database, settings: Settings, mirror=None):
     )
 
 
+def build_briefs(db: Database, settings: Settings):
+    """The per-candidate brief compiler — present in every store-backed build. The lane
+    into the decide prompt is gated separately (TRADER_BRIEFS_ENABLED, see build_runner)."""
+    from trader.llm.registry import build_llm_registry
+    from trader.llm.usage import UsageMeter
+    from trader.research.briefs import BriefCompiler
+    from trader.store.repos import UsageRepo
+
+    return BriefCompiler(
+        db,
+        build_llm_registry(settings, UsageMeter(UsageRepo(db))),
+        symbols=[t.strip() for t in settings.loop_symbols.split(",") if t.strip()],
+        debounce_seconds=settings.research_compile_debounce_seconds,
+    )
+
+
 def build_runner(db: Database, settings: Settings, sentiment=None):
     """Assemble the decide loop from configured providers (opt-in via TRADER_LOOP_ENABLED)."""
     from trader.brokers.alpaca import AlpacaBroker
@@ -319,6 +347,7 @@ def build_runner(db: Database, settings: Settings, sentiment=None):
         sentiment=sentiment,
         sentiment_poll_seconds=settings.sentiment_poll_seconds,
         shadow_symbols={t.strip() for t in settings.shadow_symbols.split(",") if t.strip()},
+        briefs_enabled=settings.briefs_enabled,
     )
 
 

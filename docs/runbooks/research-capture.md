@@ -81,6 +81,32 @@ committing generated files would only add churn. `TRADER_RESEARCH_MIRROR_DIR` mo
 the next export and nothing ever reads them back — capture happens only through the
 three doors above.
 
+## Per-candidate briefs (EAI-192)
+
+Where the Macro View digests notes per **asset class**, a brief digests per **symbol**:
+the `brief` LLM role (Grok, Nemotron backstop) compiles the notes scoped to that symbol
+(`--symbol` on capture) plus the latest ok sentiment row into a versioned `briefs` row.
+Store-resident inputs only — no live search, no model priors: **no symbol-scoped inputs
+means no brief and no LLM call**, an uncited thesis drops the whole brief, uncited
+points drop individually, and `$`-levels freeze as example-not-current (the EAI-178
+rules). Briefs recompile debounced on note submit/retire; sentiment polls do NOT
+trigger recompiles (bounds Grok spend).
+
+```bash
+trader brief show ETH/USD              # current brief (add --version N for history)
+trader brief compile ETH/USD           # compile now, skipping the debounce
+```
+
+API: `GET /research/briefs?symbol=`, `POST /research/briefs/compile?symbol=`. MCP:
+`get_brief`, `compile_brief`.
+
+**The prompt lane is gated.** Briefs compile and store regardless, but they reach the
+decide prompt only with `TRADER_BRIEFS_ENABLED=true` — injecting a lane is a
+decide-behavior change, so the flip goes through `docs/runbooks/decide-change-gate.md`
+(replay → shadow → flip; one gate at a time — it queues behind any open SPY/sentiment
+gate). While dark, review accruing briefs with `trader brief show`; once live, every
+decision journals the `brief_version` it saw, and RiskGuard never reads any of it.
+
 ## X sentiment (part 4, EAI-180)
 
 Needs an xAI credential (`trader xai login` or `XAI_API_KEY`) — `x_search` runs

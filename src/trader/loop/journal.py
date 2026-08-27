@@ -51,6 +51,7 @@ class Journal:
         decision: Decision | None = None,
         risk_verdicts: list[dict[str, Any]] | None = None,
         macro_view_version: int | None = None,
+        brief_version: int | None = None,
         cost_usd: float | None = None,
         latency_ms: int | None = None,
     ) -> int:
@@ -64,6 +65,7 @@ class Journal:
             decision=decision_to_json(decision),
             risk_verdicts=json_safe(risk_verdicts) if risk_verdicts is not None else None,
             macro_view_version=macro_view_version,
+            brief_version=brief_version,
             cost_usd=cost_usd,
             latency_ms=latency_ms,
         )

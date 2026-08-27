@@ -73,6 +73,7 @@ ALL_TABLES = (
     "audit_events",
     "research_notes",
     "macro_views",
+    "briefs",
     "sentiment_scores",
     "bars",
     "usage_daily",

@@ -275,6 +275,28 @@ def note_mirror() -> None:
     typer.echo(json.dumps(_post("/research/mirror/export"), indent=2))
 
 
+brief_app = typer.Typer(help="Per-candidate research briefs (advisory; prompt lane is gated).")
+app.add_typer(brief_app, name="brief")
+
+
+@brief_app.command("show")
+def brief_show(
+    symbol: str = typer.Argument(..., help="Symbol, e.g. ETH/USD."),
+    version: int = typer.Option(None, help="A specific version (default: current)."),
+) -> None:
+    """Print the current (or a specific) compiled brief for one symbol."""
+    params: dict = {"symbol": symbol}
+    if version is not None:
+        params["version"] = version
+    typer.echo(json.dumps(_get("/research/briefs", params=params), indent=2))
+
+
+@brief_app.command("compile")
+def brief_compile(symbol: str = typer.Argument(..., help="Symbol, e.g. ETH/USD.")) -> None:
+    """Compile one symbol's brief from store inputs now, skipping the debounce."""
+    typer.echo(json.dumps(_post("/research/briefs/compile", params={"symbol": symbol}), indent=2))
+
+
 sentiment_app = typer.Typer(help="X sentiment (server-side x_search; shadow-first).")
 app.add_typer(sentiment_app, name="sentiment")
 

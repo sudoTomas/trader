@@ -33,15 +33,16 @@ class DecisionsRepo:
         decision: dict[str, Any] | None = None,
         risk_verdicts: list[dict[str, Any]] | None = None,
         macro_view_version: int | None = None,
+        brief_version: int | None = None,
         cost_usd: float | None = None,
         latency_ms: int | None = None,
     ) -> int:
         row = await self._db.fetch_one(
             """
             INSERT INTO decisions (trigger, status, symbol, asset_class, prompt, raw_output,
-                                   decision, risk_verdicts, macro_view_version, cost_usd,
-                                   latency_ms)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                   decision, risk_verdicts, macro_view_version, brief_version,
+                                   cost_usd, latency_ms)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
             (
@@ -54,6 +55,7 @@ class DecisionsRepo:
                 Jsonb(decision) if decision is not None else None,
                 Jsonb(risk_verdicts) if risk_verdicts is not None else None,
                 macro_view_version,
+                brief_version,
                 cost_usd,
                 latency_ms,
             ),
@@ -307,6 +309,43 @@ class MacroViewsRepo:
 
     async def get(self, version: int) -> Row | None:
         return await self._db.fetch_one("SELECT * FROM macro_views WHERE version = %s", (version,))
+
+
+class BriefsRepo:
+    """Per-candidate research briefs (M4, EAI-192). New compile = new row; version is a
+    single global identity so ``decisions.brief_version`` points at exactly one row."""
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def add(
+        self,
+        *,
+        symbol: str,
+        compiled_by: str,
+        thesis: str,
+        points: list[str],
+        note_ids: list[int],
+        sentiment_id: int | None = None,
+    ) -> int:
+        row = await self._db.fetch_one(
+            """
+            INSERT INTO briefs (symbol, compiled_by, thesis, points, note_ids, sentiment_id)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            RETURNING version
+            """,
+            (symbol, compiled_by, thesis, Jsonb(points), note_ids, sentiment_id),
+        )
+        assert row is not None
+        return row["version"]
+
+    async def current(self, symbol: str) -> Row | None:
+        return await self._db.fetch_one(
+            "SELECT * FROM briefs WHERE symbol = %s ORDER BY version DESC LIMIT 1", (symbol,)
+        )
+
+    async def get(self, version: int) -> Row | None:
+        return await self._db.fetch_one("SELECT * FROM briefs WHERE version = %s", (version,))
 
 
 class BarsRepo:

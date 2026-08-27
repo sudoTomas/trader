@@ -29,6 +29,7 @@ log = structlog.get_logger(__name__)
 BAR_LOOKBACK = 100
 DEFAULT_INTERVALS = ("1h",)
 MACRO_BUDGET_CHARS = 2000
+BRIEF_BUDGET_CHARS = 1200
 
 
 @dataclass(frozen=True)
@@ -65,6 +66,39 @@ def build_macro_slice(
         entries.append(entry)
         used += len(entry)
     return MacroSlice(version=view["version"], entries=entries) if entries else None
+
+
+@dataclass(frozen=True)
+class BriefSlice:
+    """The budgeted Candidate Brief for one symbol's prompt lane (advisory only)."""
+
+    version: int
+    entries: list[str]
+
+
+def build_brief_slice(
+    row: dict[str, Any], *, budget_chars: int = BRIEF_BUDGET_CHARS
+) -> BriefSlice | None:
+    """Render a brief into whole entries under its own character budget (EAI-192).
+
+    Same discipline as the Macro lane: entries drop WHOLE (a truncated thesis reads as a
+    different thesis), and an empty render means no lane at all.
+    """
+    candidates: list[str] = []
+    thesis = (row.get("thesis") or "").strip()
+    if thesis:
+        candidates.append(f"Thesis: {thesis}")
+    candidates += [p.strip() for p in row.get("points") or [] if p.strip()]
+
+    entries: list[str] = []
+    used = 0
+    for entry in candidates:
+        if used + len(entry) > budget_chars:
+            log.info("brief_entry_dropped_whole", version=row["version"], entry_chars=len(entry))
+            continue
+        entries.append(entry)
+        used += len(entry)
+    return BriefSlice(version=row["version"], entries=entries) if entries else None
 
 
 @dataclass(frozen=True)
@@ -113,6 +147,7 @@ class DecisionContext:
     equity: float = 0.0
     recent_decisions: list[dict[str, Any]] = field(default_factory=list)
     macro_view: MacroSlice | None = None  # advisory lane; RiskGuard never sees it
+    brief: BriefSlice | None = None  # advisory lane; RiskGuard never sees it
 
     @property
     def primary_vol(self) -> float | None:
@@ -150,6 +185,15 @@ class DecisionContext:
             ]
             lines += [f"  {entry}" for entry in self.macro_view.entries]
 
+        if self.brief:
+            lines += [
+                "",
+                "Candidate Brief (advisory — informs direction and conviction only;"
+                " a deterministic risk layer owns sizing)"
+                f" [via brief v{self.brief.version}]:",
+            ]
+            lines += [f"  {entry}" for entry in self.brief.entries]
+
         if self.recent_decisions:
             lines += ["", "Recent decisions (newest first):"]
             lines += [
@@ -171,12 +215,16 @@ class ContextBuilder:
         lookback: int = BAR_LOOKBACK,
         macro_views: Any | None = None,  # store.repos.MacroViewsRepo; absent = no lane
         macro_budget_chars: int = MACRO_BUDGET_CHARS,
+        briefs: Any | None = None,  # store.repos.BriefsRepo; absent = no lane (dark)
+        brief_budget_chars: int = BRIEF_BUDGET_CHARS,
     ) -> None:
         self._data = market_data
         self._intervals = intervals
         self._lookback = lookback
         self._macro_views = macro_views
         self._macro_budget = macro_budget_chars
+        self._briefs = briefs
+        self._brief_budget = brief_budget_chars
 
     async def build(
         self,
@@ -226,6 +274,15 @@ class ContextBuilder:
             except Exception as exc:  # noqa: BLE001 - advisory must never block a decide
                 log.warning("macro_view_unavailable", error=str(exc))
 
+        brief: BriefSlice | None = None
+        if self._briefs is not None:
+            try:
+                current_brief = await self._briefs.current(symbol.ticker)
+                if current_brief is not None:
+                    brief = build_brief_slice(current_brief, budget_chars=self._brief_budget)
+            except Exception as exc:  # noqa: BLE001 - advisory must never block a decide
+                log.warning("brief_unavailable", error=str(exc))
+
         return DecisionContext(
             symbol=symbol,
             now=now,
@@ -237,4 +294,5 @@ class ContextBuilder:
             equity=equity,
             recent_decisions=recent_decisions or [],
             macro_view=macro_view,
+            brief=brief,
         )

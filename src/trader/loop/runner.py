@@ -45,7 +45,7 @@ from trader.loop.journal import (
 from trader.loop.scheduler import HEARTBEAT, Mark, SignalScheduler, Trigger
 from trader.risk.guard import AccountState, RiskGuard
 from trader.store.db import Database
-from trader.store.repos import MacroViewsRepo, PositionsRepo, SentimentRepo
+from trader.store.repos import BriefsRepo, MacroViewsRepo, PositionsRepo, SentimentRepo
 
 log = structlog.get_logger(__name__)
 
@@ -112,11 +112,18 @@ class LoopRunner:
     # Per-symbol throttle (EAI-186 gate): these symbols journal as shadow — full decide
     # + risk pass, nothing submitted — while the rest of the build trades live-paper.
     shadow_symbols: set[str] = field(default_factory=set)
+    # Briefs lane (EAI-192 gate): dark by default — briefs compile and store regardless,
+    # but only this flag lets them into the decide prompt (a decide-behavior change).
+    briefs_enabled: bool = False
     stats: LoopStats = field(default_factory=LoopStats)
 
     def __post_init__(self) -> None:
         self.scheduler = self.scheduler or SignalScheduler(self.symbols)
-        self._context = ContextBuilder(self.market_data, macro_views=MacroViewsRepo(self.db))
+        self._context = ContextBuilder(
+            self.market_data,
+            macro_views=MacroViewsRepo(self.db),
+            briefs=BriefsRepo(self.db) if self.briefs_enabled else None,
+        )
         self._decider = Decider(self.llm)
         self._journal = Journal(self.db)
         self._positions = PositionsRepo(self.db)
@@ -293,6 +300,7 @@ class LoopRunner:
             recent_decisions=await self._journal.recent(5),
         )
         macro_view_version = ctx.macro_view.version if ctx.macro_view else None
+        brief_version = ctx.brief.version if ctx.brief else None
         if ctx.price <= 0:
             # No usable market data: journal the wakeup, decide nothing.
             decision_id = await self._journal.record(
@@ -302,6 +310,7 @@ class LoopRunner:
                 asset_class=symbol.asset_class,
                 prompt=ctx.to_prompt(),
                 macro_view_version=macro_view_version,
+                brief_version=brief_version,
             )
             return WakeupResult(
                 symbol.ticker, names, SUPPRESSED, decision_id, reason="no usable price"
@@ -318,6 +327,7 @@ class LoopRunner:
                 prompt=ctx.to_prompt(),
                 raw_output=str(exc),
                 macro_view_version=macro_view_version,
+                brief_version=brief_version,
                 latency_ms=int((time.perf_counter() - started) * 1000),
             )
             self.stats.errors += 1
@@ -369,6 +379,7 @@ class LoopRunner:
             decision=decision,
             risk_verdicts=verdicts,
             macro_view_version=macro_view_version,
+            brief_version=brief_version,
             cost_usd=result.completion.cost_usd,
             latency_ms=int((time.perf_counter() - started) * 1000),
         )
