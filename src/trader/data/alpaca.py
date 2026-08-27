@@ -90,6 +90,16 @@ class AlpacaData:
             params["adjustment"] = "split"
         payload = await self._get(path, params)
         rows = (payload.get("bars") or {}).get(spelled, [])
+        # Alpaca caps one response (~210 rows observed) no matter what `limit` says and
+        # paginates via next_page_token; ignoring it silently truncates deep lookbacks
+        # to the most recent page (found by EAI-190's gate replay — 6 days of a 2-week
+        # backfill came back missing). Pages continue oldest-ward under sort=desc.
+        pages = 1
+        while len(rows) < lookback and payload.get("next_page_token") and pages < 50:
+            payload = await self._get(path, {**params, "page_token": payload["next_page_token"]})
+            rows += (payload.get("bars") or {}).get(spelled, [])
+            pages += 1
+        rows = rows[:lookback]  # desc: the first `lookback` rows are the most recent
         return [
             Bar(
                 symbol=symbol.ticker,

@@ -60,6 +60,49 @@ async def test_alpaca_crypto_bars_ascending():
     assert all(b.symbol == "BTC/USD" and b.interval == "1m" for b in bars)
 
 
+async def test_alpaca_bars_follow_pagination_until_lookback_is_met():
+    """Alpaca caps a bars response (~210 rows) regardless of `limit` and hands back a
+    next_page_token — a client that ignores it silently truncates any deep lookback to
+    the most recent page (found by EAI-190's gate replay: 2-week backfills came back
+    as 210 bars and the replay skipped 6 days as no-data)."""
+    calls: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        params = dict(request.url.params)
+        calls.append(params)
+        if "page_token" not in params:
+            return httpx.Response(
+                200,
+                json={
+                    "bars": {
+                        "BTC/USD": [
+                            {"t": "2026-08-11T10:02:00Z", "o": 1, "h": 1, "l": 1, "c": 3, "v": 1},
+                            {"t": "2026-08-11T10:01:00Z", "o": 1, "h": 1, "l": 1, "c": 2, "v": 1},
+                        ]
+                    },
+                    "next_page_token": "TOKEN-1",
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "bars": {
+                    "BTC/USD": [
+                        {"t": "2026-08-11T10:00:00Z", "o": 1, "h": 1, "l": 1, "c": 1, "v": 1}
+                    ]
+                },
+                "next_page_token": None,
+            },
+        )
+
+    data = AlpacaData("k", "s", client=mock_client(handler))
+    bars = await data.get_bars(BTC, "1m", 3)
+
+    assert len(calls) == 2
+    assert calls[1]["page_token"] == "TOKEN-1"
+    assert [b.close for b in bars] == [1, 2, 3]  # ascending, all three pages' bars
+
+
 async def test_alpaca_equities_use_iex_feed():
     seen: dict = {}
 
