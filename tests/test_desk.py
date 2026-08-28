@@ -250,6 +250,23 @@ async def test_critic_daily_budget_cap_passes_through(db):
     assert llm.calls == []
 
 
+def test_critic_wire_schema_requires_every_key():
+    """Same failure class as the decider's omitted side/notional: a shrink verdict
+    without its notional would pass guided decoding if the key were optional."""
+    from trader.desk.critic import CRITIC_SCHEMA
+
+    assert set(CRITIC_SCHEMA["required"]) == set(CRITIC_SCHEMA["properties"])
+
+
+def test_technical_analyst_stance_is_earned_not_the_default():
+    """EAI-190 gate finding: the technical analyst read neutral on 330/331 steps — no
+    signal. The prompt now reserves neutral for genuinely conflicting indicators."""
+    from trader.desk.analysts import TECHNICAL_PROMPT
+
+    assert "conflict" in TECHNICAL_PROMPT.lower()
+    assert "lean" in TECHNICAL_PROMPT.lower()
+
+
 def test_critic_output_is_structurally_unable_to_redirect():
     """No field exists for side, symbol, or a larger size — enlarging/redirecting is
     impossible by schema, not by prompt."""

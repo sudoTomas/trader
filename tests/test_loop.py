@@ -209,6 +209,25 @@ def test_decision_schema_is_generated_from_the_model():
         ).to_decision("BTC/USD")
 
 
+def test_wire_schema_requires_every_key_but_validation_stays_lenient():
+    """EAI-190 gate finding: under guided decoding the decider omitted side/notional on
+    opens (schema-invalid twice, 5×/336 steps with the analyst lane). The WIRE schema
+    now forces every key to be emitted — omission becomes ungrammatical, holds write
+    nulls — while the pydantic validator stays lenient for stubs and non-guided paths."""
+    assert set(DECISION_SCHEMA["required"]) == set(DECISION_SCHEMA["properties"])
+    lenient = DecisionOutput.model_validate_json(
+        '{"action":"hold","conviction":0.3,"rationale":"nothing doing"}'
+    )
+    assert lenient.side is None and lenient.notional_usd is None
+
+
+def test_decide_prompt_states_the_open_close_field_requirement():
+    from trader.loop.decider import SYSTEM_PROMPT
+
+    assert "`side`" in SYSTEM_PROMPT  # the conditional requirement is spelled out
+    assert "`notional_usd`" in SYSTEM_PROMPT
+
+
 def test_hold_with_zero_notional_needs_no_retry():
     """Live models answer notional_usd=0 for a hold; rejecting that burned an extra
     inference call on the most common decision path."""

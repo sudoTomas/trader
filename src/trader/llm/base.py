@@ -49,3 +49,12 @@ class LLMClient(Protocol):
         """One chat completion. ``schema`` switches the provider into
         JSON-schema-constrained output for schema-validated decides."""
         ...
+
+
+def require_all_keys(schema: dict[str, Any]) -> dict[str, Any]:
+    """Wire-schema hardening: force guided decoding to EMIT every key (nullable values
+    stay nullable — holds write nulls). Under long prompts models omit optional keys
+    they should have filled (EAI-190 gate: 5 opens without side/notional, invalid
+    twice each); making omission ungrammatical fixes generation, while pydantic
+    validation stays lenient for stubs and non-guided providers."""
+    return {**schema, "required": sorted(schema["properties"])}

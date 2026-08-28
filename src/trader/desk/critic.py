@@ -22,7 +22,7 @@ import structlog
 from pydantic import BaseModel, Field, ValidationError
 
 from trader.core.types import Decision
-from trader.llm.base import LLMError
+from trader.llm.base import LLMError, require_all_keys
 from trader.loop.context import DecisionContext
 
 log = structlog.get_logger(__name__)
@@ -55,7 +55,9 @@ class CriticOutput(BaseModel):
     reason: str = Field(min_length=1, max_length=1000)
 
 
-CRITIC_SCHEMA: dict[str, Any] = CriticOutput.model_json_schema()
+# Wire schema: a shrink whose notional was omitted would be the decider's EAI-190
+# failure class all over again — every key must be emitted (null allowed).
+CRITIC_SCHEMA: dict[str, Any] = require_all_keys(CriticOutput.model_json_schema())
 
 
 class Critic:

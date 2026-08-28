@@ -23,7 +23,7 @@ import structlog
 from pydantic import BaseModel, Field, ValidationError
 
 from trader.core.types import Action, Decision, OrderIntent, Side
-from trader.llm.base import Completion, LLMError
+from trader.llm.base import Completion, LLMError, require_all_keys
 from trader.llm.registry import LLMRegistry
 from trader.loop.context import DecisionContext
 
@@ -41,6 +41,8 @@ Rules:
 - `notional_usd` is a REQUEST. A deterministic risk layer clamps or refuses it; never
   assume your number is what trades.
 - Prefer `hold` when the evidence is weak. Doing nothing is a valid, common answer.
+- If `action` is `open` or `close`, `side` and a positive `notional_usd` are REQUIRED —
+  never null. For `hold`, set both to null.
 - `rationale` must cite the specific context values that drove the call.
 """
 
@@ -75,7 +77,10 @@ class DecisionOutput(BaseModel):
         )
 
 
-DECISION_SCHEMA: dict[str, Any] = DecisionOutput.model_json_schema()
+# Wire schema: every key must be EMITTED (EAI-190 gate finding — under the longer
+# analyst-enriched prompt the model omitted side/notional on opens, invalid twice each;
+# guided decoding allowed it because optional keys were omittable).
+DECISION_SCHEMA: dict[str, Any] = require_all_keys(DecisionOutput.model_json_schema())
 
 
 class DeciderError(RuntimeError):
