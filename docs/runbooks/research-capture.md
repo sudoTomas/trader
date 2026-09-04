@@ -131,9 +131,14 @@ degraded reads never trigger.
 
 ## Hermes is a capture client, never a dependency
 
-A Hermes skill may distill a forwarded article, screenshot, or voice memo into a note and
-call `submit_research_note` over MCP — that is the *intended* mobile capture path. The
-invariants that keep it safe (docs/architecture.md §Operator Research Desk):
+The capture skill lives at `docs/hermes/skills/research-capture/SKILL.md` — install it
+into the Hermes agent (e.g. copy the `research-capture/` directory into Hermes's skills
+location and add the trader's `/mcp` endpoint as a remote MCP server with the
+`X-API-Key` header). It distills a forwarded article, screenshot, or voice memo into a
+note and calls `submit_research_note`, passing `authored_at` (publication date) so
+freshness anchors on when the research was created — omitted when unknown, never
+guessed. The invariants that keep it safe (docs/architecture.md §Operator Research
+Desk):
 
 - **The trader never calls outward to Hermes.** Capture is push-only, into the same three
   doors any client uses; there is no Hermes adapter in this codebase and none should appear.
