@@ -49,7 +49,9 @@ Rules — violations get your output discarded:
 - Every claim MUST cite the note ids it comes from, inline, as [note:<id>].
 - Notes marked `disputed` contradict other notes. Present BOTH sides, each cited. \
 NEVER resolve, average, or pick a winner — the dispute itself is the information.
-- Weigh recency: newer notes speak louder than older ones on the same subject.
+- Weigh recency by when the research was AUTHORED (each note's `authored` date), not \
+when it was submitted: newer information speaks louder on the same subject, and an old \
+article captured yesterday is still old information.
 - Price levels in notes are historical examples. State the PATTERN they evidence, \
 not the number as a live level.
 - Write only what the notes support. No outside knowledge, no filler.
@@ -182,8 +184,10 @@ class MacroViewCompiler:
         blocks = [f"Operator research notes ({len(notes)}), newest first:"]
         for n in notes:
             scope = ", ".join([*n["asset_classes"], *n["symbols"]]) or "general"
+            authored = (n["authored_at"] or n["created_at"]).date().isoformat()
             blocks.append(
-                f"--- note:{n['id']} | status: {n['status']} | {n['created_at'].isoformat()}"
+                f"--- note:{n['id']} | status: {n['status']} | authored: {authored}"
+                f" | submitted: {n['created_at'].date().isoformat()}"
                 f" | scope: {scope} | {n['title']}\n{n['body']}"
             )
         return "\n\n".join(blocks)

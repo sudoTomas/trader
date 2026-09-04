@@ -79,6 +79,7 @@ class MarkdownMirror:
             f"title: {json_str(note['title'])}",
             f"status: {note['status']}",
             f"created_at: {note['created_at'].isoformat()}",
+            f"authored_at: {note['authored_at'].isoformat() if note['authored_at'] else 'null'}",
             f"expires_at: {note['expires_at'].isoformat() if note['expires_at'] else 'null'}",
             f"pinned: {str(note['pinned']).lower()}",
             f"tags: {list(note['tags'])}",

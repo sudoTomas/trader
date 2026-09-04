@@ -267,6 +267,7 @@ def build_registry(
             **row,
             "created_at": row["created_at"].isoformat(),
             "expires_at": row["expires_at"].isoformat() if row["expires_at"] else None,
+            "authored_at": row["authored_at"].isoformat() if row["authored_at"] else None,
         }
 
     @reg.register(
@@ -288,7 +289,8 @@ def build_registry(
     @reg.register(
         "submit_research_note",
         kind="command",
-        summary="Capture an immutable markdown research note (auto-stales unless pinned).",
+        summary="Capture an immutable markdown research note (auto-stales unless pinned;"
+        " authored_at = when the research was created, ISO-8601 — freshness anchors on it).",
     )
     async def submit_research_note(
         title: str,
@@ -299,7 +301,10 @@ def build_registry(
         source: str | None = None,
         pinned: bool = False,
         stale_days: int | None = None,
+        authored_at: str | None = None,
     ) -> dict[str, Any]:
+        from datetime import datetime
+
         from trader.research.notes import ResearchDesk
 
         assert db is not None, "submit_research_note requires a store"
@@ -313,6 +318,7 @@ def build_registry(
             source=source,
             pinned=pinned,
             stale_days=stale_days,
+            authored_at=datetime.fromisoformat(authored_at) if authored_at else None,
         )
         if compiler is not None:
             compiler.mark_dirty()  # debounced Macro View recompile

@@ -120,6 +120,30 @@ async def test_single_asset_notes_yield_an_empty_global_thesis_and_no_foreign_la
     assert build_macro_slice(view, "us_equity", budget_chars=2000) is None
 
 
+async def test_compiler_sees_authored_dates_and_is_told_recency_means_authorship(db: Database):
+    """The recency the compiler weighs is when the research was CREATED, not submitted —
+    an old article captured today must not read as fresh."""
+    from datetime import UTC, datetime, timedelta
+
+    desk = ResearchDesk(db)
+    aged = await desk.submit(
+        title="aged",
+        body="old take",
+        authored_at=datetime.now(tz=UTC) - timedelta(days=20),
+    )
+    fresh = await desk.submit(title="fresh", body="new take")
+    llm = CapturingLLM([reply(f"t [note:{aged['id']}] [note:{fresh['id']}]", {})])
+    assert await MacroViewCompiler(db, llm).compile_now() is not None
+
+    prompt = "\n".join(m["content"] for m in llm.calls[0][1])
+    assert "authored" in prompt.lower()
+    assert prompt.lower().count("authored:") == 2  # every note line carries it
+    # The dated line distinguishes authorship from submission for the aged note.
+    aged_id = aged["id"]
+    aged_line = next(ln for ln in prompt.splitlines() if f"note:{aged_id}" in ln)
+    assert "authored:" in aged_line and "submitted:" in aged_line
+
+
 async def test_price_levels_are_frozen_as_example_not_current(db: Database):
     desk = ResearchDesk(db)
     note = await desk.submit(title="levels", body="Support held twice.")

@@ -32,6 +32,9 @@ class ResearchNoteIn(BaseModel):
     source: str | None = None
     pinned: bool = False
     stale_days: int | None = Field(default=None, ge=0)
+    # When the research was CREATED (ISO-8601, tz-aware); submission time is recorded
+    # separately as created_at. Freshness anchors on this when given.
+    authored_at: str | None = None
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:

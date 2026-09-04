@@ -87,6 +87,59 @@ async def test_auto_stale_windowing(db: Database):
     assert row is not None and row["status"] == "active"
 
 
+async def test_authored_at_is_the_second_date_and_anchors_freshness(db: Database):
+    """Two date fields (Hermes capture requirement): created_at = when SUBMITTED (db
+    default), authored_at = when the research was CREATED. Recency and auto-stale key
+    off authored_at when given — an old article submitted today is old information."""
+    from datetime import UTC, datetime, timedelta
+
+    desk = ResearchDesk(db, stale_days=30)
+    authored = datetime.now(tz=UTC) - timedelta(days=10)
+    note = await desk.submit(title="aged article", body="content", authored_at=authored)
+    assert note["authored_at"] == authored
+    assert note["created_at"] > authored  # submitted now, created 10 days ago
+    # Stale window anchors on authorship: expires 30d after AUTHORED, not submitted.
+    assert abs((note["expires_at"] - (authored + timedelta(days=30))).total_seconds()) < 5
+
+    # Omitted authored_at stays NULL (unknown) and the window anchors on submission.
+    plain = await desk.submit(title="fresh capture", body="content")
+    assert plain["authored_at"] is None
+    assert plain["expires_at"] > datetime.now(tz=UTC) + timedelta(days=29)
+
+    # Information older than the window is stale ON ARRIVAL: compilation never sees it,
+    # but the operator's widened listing does (pin or widen stale_days to keep it).
+    old = await desk.submit(
+        title="ancient article",
+        body="content",
+        authored_at=datetime.now(tz=UTC) - timedelta(days=40),
+    )
+    visible = [n["id"] for n in await desk.list()]
+    assert note["id"] in visible and old["id"] not in visible
+    widened = [n["id"] for n in await desk.list(include_stale=True)]
+    assert old["id"] in widened
+
+
+async def test_authored_at_rejects_future_and_naive_datetimes(db: Database):
+    from datetime import UTC, datetime, timedelta
+
+    desk = ResearchDesk(db)
+    with pytest.raises(ValueError, match="future"):
+        await desk.submit(title="t", body="b", authored_at=datetime.now(tz=UTC) + timedelta(days=1))
+    with pytest.raises(ValueError, match="timezone"):
+        await desk.submit(title="t", body="b", authored_at=datetime(2026, 9, 1))
+
+
+def test_authored_at_flows_through_the_api_door(clean_db: None):
+    with TestClient(create_app(DEV_SETTINGS)) as tc:
+        out = tc.post(
+            "/research/notes",
+            json={"title": "aged", "body": "b", "authored_at": "2026-08-25T12:00:00+00:00"},
+        ).json()
+        assert out["authored_at"] == "2026-08-25T12:00:00+00:00"
+        listed = tc.get("/research/notes").json()
+    assert listed[0]["authored_at"] == "2026-08-25T12:00:00+00:00"
+
+
 async def test_submit_rejects_blank_notes(db: Database):
     desk = ResearchDesk(db)
     with pytest.raises(ValueError):

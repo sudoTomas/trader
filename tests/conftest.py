@@ -19,6 +19,12 @@ os.environ.setdefault("TRADER_AUTH_DISABLED", "true")
 # real broker) off ambient config. Real env vars outrank the .env file in pydantic-settings.
 os.environ["TRADER_LOOP_ENABLED"] = "false"
 os.environ["TRADER_SHADOW_MODE"] = "true"
+# Gated feature flags the operator flips in .env over time: tests always see the dark
+# defaults (an operator flip must never change what the suite asserts — 2026-09-04).
+os.environ["TRADER_SENTIMENT_TRIGGER_ENABLED"] = "false"
+os.environ["TRADER_DESK_ENABLED"] = "false"
+os.environ["TRADER_BRIEFS_ENABLED"] = "false"
+os.environ["TRADER_SHADOW_SYMBOLS"] = ""
 # Likewise credentials: tests that want a credential construct one explicitly; the
 # operator's real keys must never leak in (they also make local runs diverge from CI,
 # which has none — that divergence shipped a CI-red commit once, 2026-08-26).

@@ -219,12 +219,13 @@ class ResearchNotesRepo:
         source: str | None = None,
         pinned: bool = False,
         expires_at: datetime | None = None,
+        authored_at: datetime | None = None,
     ) -> int:
         row = await self._db.fetch_one(
             """
             INSERT INTO research_notes (title, body, tags, asset_classes, symbols, source,
-                                        pinned, expires_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                                        pinned, expires_at, authored_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
             (
@@ -236,6 +237,7 @@ class ResearchNotesRepo:
                 source,
                 pinned,
                 expires_at,
+                authored_at,
             ),
         )
         assert row is not None

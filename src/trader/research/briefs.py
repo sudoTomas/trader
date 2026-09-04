@@ -188,8 +188,10 @@ class BriefCompiler:
     ) -> str:
         blocks = [f"Candidate: {symbol}. Store-resident research inputs, newest first:"]
         for n in notes:
+            authored = (n["authored_at"] or n["created_at"]).date().isoformat()
             blocks.append(
-                f"--- note:{n['id']} | status: {n['status']} | {n['created_at'].isoformat()}"
+                f"--- note:{n['id']} | status: {n['status']} | authored: {authored}"
+                f" | submitted: {n['created_at'].date().isoformat()}"
                 f" | {n['title']}\n{n['body']}"
             )
         if sentiment is not None:

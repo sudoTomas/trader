@@ -185,6 +185,9 @@ def note_add(
     source: str = typer.Option(None, help="Where this came from (url, 'voice memo', ...)."),
     pin: bool = typer.Option(False, "--pin", help="Evergreen: exempt from auto-stale."),
     stale_days: int = typer.Option(None, help="Override the auto-stale window (days)."),
+    authored: str = typer.Option(
+        None, help="When the research was CREATED (ISO-8601, tz-aware); freshness anchors here."
+    ),
 ) -> None:
     """Capture a research note. The body is stored verbatim, markdown and all."""
     import sys
@@ -201,6 +204,7 @@ def note_add(
         "source": source,
         "pinned": pin,
         "stale_days": stale_days,
+        "authored_at": authored,
     }
     typer.echo(json.dumps(_post("/research/notes", json_body=payload), indent=2))
 

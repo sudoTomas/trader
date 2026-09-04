@@ -47,15 +47,28 @@ class ResearchDesk:
         source: str | None = None,
         pinned: bool = False,
         stale_days: int | None = None,
+        authored_at: datetime | None = None,
     ) -> Row:
-        """Store one immutable note (body verbatim, byte-for-byte) and audit the capture."""
+        """Store one immutable note (body verbatim, byte-for-byte) and audit the capture.
+
+        ``authored_at`` is when the underlying research was CREATED (``created_at`` is
+        when it was submitted). Freshness anchors on it: the stale window runs from
+        authorship, so information older than the window is stale on arrival — pin it
+        or widen ``stale_days`` to keep it compiling.
+        """
         if not title.strip():
             raise ValueError("a research note needs a title")
         if not body.strip():
             raise ValueError("a research note needs a body")
+        if authored_at is not None:
+            if authored_at.tzinfo is None:
+                raise ValueError("authored_at must be timezone-aware")
+            if authored_at > datetime.now(UTC):
+                raise ValueError("authored_at cannot be in the future")
         window = self._stale_days if stale_days is None else stale_days
         # Schema invariant: expires_at is NULL only when pinned (evergreen).
-        expires_at = None if pinned else datetime.now(UTC) + timedelta(days=window)
+        anchor = authored_at or datetime.now(UTC)
+        expires_at = None if pinned else anchor + timedelta(days=window)
         note_id = await self._repo.add(
             title=title,
             body=body,
@@ -65,6 +78,7 @@ class ResearchDesk:
             source=source,
             pinned=pinned,
             expires_at=expires_at,
+            authored_at=authored_at,
         )
         await audit(
             self._db,
