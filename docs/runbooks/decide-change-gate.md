@@ -59,3 +59,11 @@ same window; if two are ready, sequence them and watch the journal between flips
 
 Rollback is always config-only: revert the flag, restart. RiskGuard is unchanged by any
 of this — it was never the throttle being gated.
+
+## Watching a shadow window
+
+`scripts/desk-watch.sh` (hourly `trader-desk-watch` systemd user timer) tails the journal
+for the events worth seeing the day they happen — first drafted intent, critic vetoes,
+decide errors, an `executed` row (which must never appear mid-window), critic spend
+nearing its cap. Findings append to `desk-watch.log` (gitignored) and the systemd journal
+(`journalctl --user -t trader-desk-watch`). Monitoring only — flips stay manual.
