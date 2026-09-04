@@ -22,7 +22,7 @@ from trader.llm.base import Completion, Usage
 from trader.loop.context import build_macro_slice
 from trader.loop.journal import Journal
 from trader.ops.config import Settings
-from trader.research.compiler import MacroViewCompiler
+from trader.research.compiler import SYSTEM_PROMPT, MacroViewCompiler
 from trader.research.notes import ResearchDesk
 from trader.store.db import Database
 from trader.store.repos import MacroViewsRepo, ResearchNotesRepo
@@ -98,6 +98,26 @@ async def test_compile_prompt_carries_live_notes_only_and_preserves_dispute(db: 
     assert set(view["note_ids"]) == {ids["bull"], ids["bear"]}
     assert str(ids["bull"]) in view["sections"]["crypto"]
     assert str(ids["bear"]) in view["sections"]["crypto"]
+
+
+async def test_single_asset_notes_yield_an_empty_global_thesis_and_no_foreign_lane(db: Database):
+    """EAI-186 shadow-review finding: with only ETH-scoped notes the compiler wrote an
+    ETH-flavored "global" thesis, which the global lane then rendered into SPY prompts.
+    The contract now: global_thesis carries only cross-asset claims (empty when the
+    notes are single-asset); asset-class sections already scope correctly."""
+    assert "cross-asset" in SYSTEM_PROMPT
+    assert "empty" in SYSTEM_PROMPT
+
+    desk = ResearchDesk(db)
+    note = await desk.submit(title="ETH flows", body="inflows", asset_classes=["crypto"])
+    llm = CapturingLLM([reply("", {"crypto": f"Inflow pattern [note:{note['id']}]"})])
+    view = await MacroViewCompiler(db, llm).compile_now()
+    assert view is not None and view["global_thesis"] == ""
+
+    # The crypto lane renders its section; other asset classes get NO lane at all.
+    crypto = build_macro_slice(view, "crypto", budget_chars=2000)
+    assert crypto is not None and "Inflow pattern" in "\n".join(crypto.entries)
+    assert build_macro_slice(view, "us_equity", budget_chars=2000) is None
 
 
 async def test_price_levels_are_frozen_as_example_not_current(db: Database):

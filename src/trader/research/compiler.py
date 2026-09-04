@@ -56,7 +56,12 @@ not the number as a live level.
 
 Reply with JSON matching the provided schema: a `global_thesis` string and `sections`, \
 an object mapping asset-class keys (e.g. "crypto", "us_equity") to digest strings. Only \
-include sections the notes support."""
+include sections the notes support.
+
+`global_thesis` is injected into EVERY symbol's context, whatever its asset class — it \
+may hold only claims that genuinely apply cross-asset (macro conditions, cross-market \
+regime). Evidence about one asset class belongs in that class's section ONLY; if the \
+notes cover a single asset class, leave `global_thesis` as an empty string."""
 
 
 class CompiledOutput(BaseModel):
