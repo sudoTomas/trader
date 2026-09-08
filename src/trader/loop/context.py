@@ -261,15 +261,16 @@ class ContextBuilder:
             bars[interval] = fetched
             indicators[interval] = compute_indicators(fetched)
 
+        # Quote-first mark: the last completed bar is up to an interval stale (more for
+        # sip bars behind their delayed end); bars are the fallback, not the source.
         price = 0.0
-        primary = bars.get(self._intervals[0], [])
-        if primary:
-            price = primary[-1].close
-        else:
-            # No bars: fall back to a quote so the guard still sees a real price.
-            try:
-                price = (await self._data.get_latest_quote(symbol)).mid
-            except MarketDataError as exc:
+        try:
+            price = (await self._data.get_latest_quote(symbol)).mid
+        except MarketDataError as exc:
+            primary = bars.get(self._intervals[0], [])
+            if primary:
+                price = primary[-1].close
+            else:
                 log.warning("context_price_unavailable", symbol=symbol.ticker, error=str(exc))
 
         macro_view: MacroSlice | None = None

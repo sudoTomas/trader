@@ -103,7 +103,12 @@ async def test_alpaca_bars_follow_pagination_until_lookback_is_met():
     assert [b.close for b in bars] == [1, 2, 3]  # ascending, all three pages' bars
 
 
-async def test_alpaca_equities_use_iex_feed():
+async def test_alpaca_equity_bars_use_sip_with_a_delayed_end():
+    """Free-tier Alpaca serves CONSOLIDATED (sip) historical bars when the window ends
+    >=15 min in the past. IEX omits whole thin-hours bars (measured 2026-09-08: 8 vs 16
+    on the same window), so completed-bar quality is a sip+delayed-end away — for $0."""
+    from datetime import UTC, datetime, timedelta
+
     seen: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -114,7 +119,39 @@ async def test_alpaca_equities_use_iex_feed():
     data = AlpacaData("k", "s", client=mock_client(handler))
     assert await data.get_bars(SPY, "1d", 10) == []
     assert seen["path"] == "/v2/stocks/bars"
+    assert seen["params"]["feed"] == "sip"
+    assert seen["params"]["adjustment"] == "split"
+    end = datetime.fromisoformat(seen["params"]["end"])
+    assert timedelta(minutes=15) <= datetime.now(tz=UTC) - end <= timedelta(minutes=30)
+
+
+async def test_alpaca_crypto_bars_send_no_feed_and_no_end():
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["params"] = dict(request.url.params)
+        return httpx.Response(200, json={"bars": {"BTC/USD": []}})
+
+    data = AlpacaData("k", "s", client=mock_client(handler))
+    await data.get_bars(BTC, "1h", 10)
+    assert "feed" not in seen["params"] and "end" not in seen["params"]
+
+
+async def test_alpaca_equity_quotes_stay_on_iex():
+    """Quotes are the real-time mark; free-tier sip quotes are not available — the
+    delayed end applies to BARS only."""
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["params"] = dict(request.url.params)
+        return httpx.Response(
+            200, json={"quotes": {"SPY": {"t": "2026-09-08T10:02:03Z", "bp": 769, "ap": 770}}}
+        )
+
+    data = AlpacaData("k", "s", client=mock_client(handler))
+    quote = await data.get_latest_quote(SPY)
     assert seen["params"]["feed"] == "iex"
+    assert quote.mid == 769.5
 
 
 async def test_alpaca_quote_and_errors():

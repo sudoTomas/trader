@@ -25,6 +25,12 @@ from trader.data.base import MarketDataError
 
 _BASE_URL = "https://data.alpaca.markets"
 
+#: Free-tier Alpaca serves CONSOLIDATED (sip) historical equity data when the query
+#: window ends >=15 minutes in the past. 16 gives a margin. IEX omits entire thin-hours
+#: bars (measured 2026-09-08: 8 vs 16 hourly bars on the same window), so completed-bar
+#: quality is worth a delayed end; the real-time mark comes from quotes, not bars.
+_SIP_HISTORICAL_DELAY = timedelta(minutes=16)
+
 #: internal interval -> Alpaca timeframe
 _TIMEFRAMES = {"1m": "1Min", "5m": "5Min", "15m": "15Min", "1h": "1Hour", "1d": "1Day"}
 _INTERVAL_SECONDS = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "1d": 86400}
@@ -86,7 +92,8 @@ class AlpacaData:
             path = "/v1beta3/crypto/us/bars"
         else:
             path = "/v2/stocks/bars"
-            params["feed"] = "iex"  # free-tier feed
+            params["feed"] = "sip"  # consolidated; free-tier-legal via the delayed end
+            params["end"] = (datetime.now(tz=UTC) - _SIP_HISTORICAL_DELAY).isoformat()
             params["adjustment"] = "split"
         payload = await self._get(path, params)
         rows = (payload.get("bars") or {}).get(spelled, [])

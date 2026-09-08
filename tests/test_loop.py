@@ -169,6 +169,32 @@ def test_indicators_are_independently_optional():
     assert full.rsi_14 is not None and full.realized_vol_20 is not None
 
 
+async def test_price_prefers_the_live_quote_over_the_last_bar_close():
+    """The mark must not inherit bar staleness (a completed 1h bar is up to an hour
+    old; with sip's delayed end, more) — price is quote-first, bars are the fallback."""
+
+    class QuoteAheadData(StubMarketData):
+        async def get_latest_quote(self, symbol):
+            from trader.core.types import Quote
+
+            return Quote(symbol.ticker, NOW, 170.0, 171.0)  # fresher than last close 159
+
+    ctx = await context_for(QuoteAheadData())
+    assert ctx.price == 170.5  # quote mid, not bars[-1].close
+    assert ctx.bars["1h"]  # bars still present for indicators
+
+
+async def test_price_falls_back_to_last_bar_close_when_the_quote_fails():
+    class QuoteDownData(StubMarketData):
+        async def get_latest_quote(self, symbol):
+            from trader.data.base import MarketDataError
+
+            raise MarketDataError("quote feed down")
+
+    ctx = await context_for(QuoteDownData())
+    assert ctx.price == 159.0  # last close of the default rising series
+
+
 # --- decider ----------------------------------------------------------------
 
 
