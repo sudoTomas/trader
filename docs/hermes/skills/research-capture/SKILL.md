@@ -59,6 +59,35 @@ submit_research_note({
    dates, and when it will auto-stale (`expires_at` in the response). If the response
    shows it already expired (stale on arrival), say so plainly.
 
+## Multi-page PDF reports (macro research journals)
+
+PDFs are distilled, never dumped. The trader's compile prompt ingests every live note
+body, and the decide prompt's research lane has a ~2,000-character budget where entries
+drop WHOLE — a pasted report never survives; a tight distillation does.
+
+Per report:
+
+1. **Read the whole PDF, charts included.** Macro research carries its thesis in charts
+   and tables; use vision on figure-heavy pages. If you cannot read the figures, say so
+   in the note ("chart on p.4 not extracted") rather than guessing at them.
+2. **Pull `authored_at` from the cover/masthead** (publication date, not download date).
+   The 30-day freshness window runs from it. A report near the window's edge will stale
+   out within days of submission — that is correct behavior, not a reason to inflate
+   the date. If the report is older than the window, STOP and ask the operator
+   (archive / `pinned` / wider `stale_days`) before submitting.
+3. **Split into 1–3 scoped notes, not one blob** — one note per asset class or theme
+   the report actually covers, each scoped via `asset_classes`/`symbols`. Body ≤ ~1,500
+   characters of tight markdown: the claims, their numbers, the evidence — the source's
+   view verbatim in substance, zero opinion of yours. Title = report title + theme.
+   `source` = journal name + report id/URL. Same `authored_at` on every note from one
+   report.
+4. **Submit each note** via `submit_research_note`; bursts are fine (recompiles are
+   debounced — a whole batch costs one compile).
+5. **Close the loop**: after the batch, call `get_macro_view` (optionally
+   `compile_macro_view` first to skip the debounce) and report which of your notes the
+   compiled view actually cites — the compiler drops uncited claims, so this is the
+   real measure of whether the distillation landed.
+
 ## Invariants (do not violate)
 
 - **Push-only.** You call the trader; the trader never calls you. Only these tools:
