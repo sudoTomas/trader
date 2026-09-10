@@ -19,11 +19,16 @@ You cannot place orders — no such tool exists on any surface, by design.
 | MCP server | `http://192.168.195.251:8080/mcp` | Streamable HTTP (FastMCP). Add as a remote MCP server in Hermes |
 | Health (no auth ever) | `GET /health` | `{"status":"ok","db":"ok"}` when healthy |
 
-**Auth**: requests carry an `X-API-Key` header matching `TRADER_API_KEY`. As of
-2026-09-10 the deployment runs with `TRADER_AUTH_DISABLED=true` (LAN-trust, no key
-needed). Before exposing beyond the LAN — or if you want per-client hygiene — set
-`TRADER_API_KEY=<secret>` and remove `TRADER_AUTH_DISABLED` in `~/repos/trader/.env`,
-then `systemctl --user restart trader-api`.
+**Auth (enabled 2026-09-10)**: every request — REST and `/mcp` alike — must carry an
+`X-API-Key` header matching `TRADER_API_KEY` in `~/repos/trader/.env` on the box
+(`/health` is the only exemption). Missing/wrong key → 401. When configuring Hermes's
+remote MCP server, set the endpoint to `http://192.168.195.251:8080/mcp/` (note the
+trailing slash) with the `X-API-Key` custom header; read the key off the box, never
+hard-code it into shared docs.
+
+> History: until 2026-09-10 the service ran auth-disabled AND bound to localhost only —
+> a remote client got connection-refused (reported as "no MCP built out"). Both fixed:
+> the unit now binds `0.0.0.0` and auth is mandatory (EAI-194).
 
 ## The capability surface (identical on MCP, REST, and the `trader` CLI)
 
