@@ -138,6 +138,35 @@ def build_registry(
         rows = await ApprovalService(db).pending()
         return [{**r, "created_at": r["created_at"].isoformat()} for r in rows]
 
+    @reg.register(
+        "resolve_approval",
+        kind="command",
+        summary="Approve or deny a parked order intent (HITL queue; operator-only).",
+    )
+    async def resolve_approval(
+        approval_id: int, approved: bool, resolved_by: str = "operator"
+    ) -> dict[str, Any]:
+        from trader.risk.approvals import ApprovalService
+
+        assert db is not None, "resolve_approval requires a store"
+        resolved = await ApprovalService(db).resolve(
+            approval_id, approved=approved, resolved_by=resolved_by
+        )
+        status = ("approved" if approved else "denied") if resolved else "not pending"
+        await _audit_command(
+            "resolve_approval",
+            {"approval_id": approval_id, "status": status, "resolved_by": resolved_by},
+        )
+        out: dict[str, Any] = {"resolved": resolved, "id": approval_id, "status": status}
+        if resolved and approved:
+            # Honesty over affordance: nothing redeems approved rows into orders yet
+            # (ApprovalService.redeem has no callers — tracked separately).
+            out["note"] = (
+                "approved in the queue, but approval-to-execution is NOT wired yet —"
+                " this does not place the order"
+            )
+        return out
+
     # --- decide loop ------------------------------------------------------
 
     @reg.register("decisions", kind="query", summary="Recent journaled decisions.")
@@ -247,6 +276,21 @@ def build_registry(
         result = await runner.executor.reconcile_positions()
         await _audit_command("reconcile", result)
         return result
+
+    @reg.register(
+        "adopt_venue_positions",
+        kind="command",
+        summary="Rewrite the local ledger to venue truth and clear the drift flag"
+        " (confirm='ADOPT' required; operator-only, after investigating the drift).",
+    )
+    async def adopt_venue_positions(confirm: str = "") -> dict[str, Any]:
+        if runner is None or runner.executor is None:
+            return {"adopted": False, "reason": "no broker in this build"}
+        if confirm != "ADOPT":
+            return {"adopted": False, "reason": "confirm must be exactly 'ADOPT'"}
+        count = await runner.executor.adopt_venue_positions()
+        await _audit_command("adopt_venue_positions", {"positions": count})
+        return {"adopted": True, "positions": count}
 
     @reg.register(
         "flatten_all",

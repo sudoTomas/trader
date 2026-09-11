@@ -101,6 +101,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def approvals() -> list[dict]:
         return await registry.get("approvals").handler()
 
+    @app.post("/risk/approvals/{approval_id}/resolve")
+    async def resolve_approval(
+        approval_id: int,
+        approved: bool = Query(),
+        resolved_by: str = Query(default="operator"),
+    ) -> dict:
+        return await registry.get("resolve_approval").handler(
+            approval_id=approval_id, approved=approved, resolved_by=resolved_by
+        )
+
     @app.post("/risk/pause")
     async def pause(reason: str = Query(default="operator")) -> dict:
         return await registry.get("pause").handler(reason=reason)
@@ -136,6 +146,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/broker/reconcile")
     async def reconcile() -> dict:
         return await registry.get("reconcile").handler()
+
+    @app.post("/broker/adopt")
+    async def adopt_venue_positions(confirm: str = Query(default="")) -> dict:
+        return await registry.get("adopt_venue_positions").handler(confirm=confirm)
 
     @app.post("/broker/flatten-all")
     async def flatten_all(confirm: str = Query(default="")) -> dict:

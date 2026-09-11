@@ -87,6 +87,38 @@ def risk_approvals() -> None:
     typer.echo(json.dumps(_get("/risk/approvals"), indent=2))
 
 
+@risk_app.command("approve")
+def risk_approve(
+    approval_id: int = typer.Argument(..., help="Approval id from `trader risk approvals`."),
+) -> None:
+    """Approve a parked intent (NOTE: does not place the order — execution wiring pending)."""
+    typer.echo(
+        json.dumps(
+            _post(
+                f"/risk/approvals/{approval_id}/resolve",
+                params={"approved": True, "resolved_by": "cli"},
+            ),
+            indent=2,
+        )
+    )
+
+
+@risk_app.command("deny")
+def risk_deny(
+    approval_id: int = typer.Argument(..., help="Approval id from `trader risk approvals`."),
+) -> None:
+    """Deny a parked intent."""
+    typer.echo(
+        json.dumps(
+            _post(
+                f"/risk/approvals/{approval_id}/resolve",
+                params={"approved": False, "resolved_by": "cli"},
+            ),
+            indent=2,
+        )
+    )
+
+
 @risk_app.command("pause")
 def risk_pause(reason: str = typer.Option("operator", help="Why trading is being paused.")) -> None:
     """Pause trading (kill switch — blocks every order, exits included)."""
@@ -146,6 +178,14 @@ app.add_typer(broker_app, name="broker")
 def broker_reconcile() -> None:
     """Compare the local ledger to the broker; drift pauses routing."""
     typer.echo(json.dumps(_post("/broker/reconcile"), indent=2))
+
+
+@broker_app.command("adopt")
+def broker_adopt(
+    confirm: str = typer.Option("", help="Must be exactly ADOPT — rewrites the ledger."),
+) -> None:
+    """Adopt venue positions as ledger truth and clear the drift flag (after investigating)."""
+    typer.echo(json.dumps(_post("/broker/adopt", params={"confirm": confirm}), indent=2))
 
 
 @broker_app.command("flatten-all")

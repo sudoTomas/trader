@@ -74,8 +74,9 @@ curl -s -X POST http://192.168.195.251:8080/research/notes \
 
 ### Commands external agents must NOT call (operator-only)
 
-`pause`, `resume`, `resume_breaker`, `flatten_all`, `wake_trader`, `run_replay_eval`,
-`fetch_x_sentiment` (spends against a daily cap), `export_research_mirror`. They exist
+`pause`, `resume`, `resume_breaker`, `flatten_all`, `wake_trader`, `resolve_approval`,
+`adopt_venue_positions`, `run_replay_eval`, `fetch_x_sentiment` (spends against a daily
+cap), `export_research_mirror`. They exist
 for the operator's surfaces. `flatten_all` closes every position; treat the whole group
 as off-limits unless the operator explicitly directs otherwise in the moment.
 
