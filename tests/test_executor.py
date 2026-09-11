@@ -495,3 +495,81 @@ async def test_shadow_loop_never_reaches_the_venue_even_with_an_executor(db: Dat
     await runner.tick(NOW)
     assert broker.submitted == []
     assert await db.fetch_all("SELECT * FROM orders") == []
+
+
+# --- the stream must actually run, and must not die (EAI-176 acceptance finding) ------
+
+
+async def test_run_stream_survives_disconnects_and_applies_later_events(db: Database):
+    """2026-09-11: the FIRST live fill never reached the ledger — run_stream existed but
+    was (a) never started and (b) fatal on its first error despite its own docstring.
+    The stream must reconnect with backoff; venue disconnects are routine."""
+    import asyncio
+
+    outcome = await approved_outcome(db)
+    broker = FakeAlpaca()
+    executor = Executor(db, broker)
+    result = await executor.execute(outcome, BTC, price=60_000.0)
+
+    applied = asyncio.Event()
+    calls = {"n": 0}
+
+    async def flaky_stream():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise BrokerError("ws dropped")  # first connect dies mid-stream
+        yield OrderEvent(
+            event="fill",
+            client_order_id=result.client_order_id,
+            broker_order_id="brk-1",
+            status="filled",
+            ts=NOW,
+            filled_qty=0.008,
+            fill_price=60_000.0,
+            execution_id="exec-stream-1",
+        )
+        applied.set()
+        await asyncio.sleep(3600)  # hold the stream open like a real socket
+
+    broker.stream_trade_updates = flaky_stream
+    task = asyncio.create_task(executor.run_stream(reconnect_delay=0.05))
+    try:
+        await asyncio.wait_for(applied.wait(), timeout=5)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert calls["n"] == 2  # died once, reconnected, served
+    fills = await db.fetch_all("SELECT * FROM fills")
+    assert len(fills) == 1  # the fill landed in the ledger
+
+
+async def test_runner_starts_and_stops_the_executor_stream(db: Database):
+    """LoopRunner owns the executor: starting the loop must start the fills stream,
+    stopping it must cancel it. A live-paper build without the stream is a ledger
+    that silently diverges on the first fill."""
+    import asyncio
+
+    from tests.test_loop import build_runner
+
+    class StreamProbe:
+        def __init__(self) -> None:
+            self.running = asyncio.Event()
+            self.cancelled = False
+
+        async def run_stream(self, reconnect_delay: float = 5.0) -> None:
+            self.running.set()
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+
+    probe = StreamProbe()
+    runner = build_runner(db, [], executor=probe)
+    await runner.start()
+    try:
+        await asyncio.wait_for(probe.running.wait(), timeout=2)
+    finally:
+        await runner.stop()
+    assert probe.cancelled

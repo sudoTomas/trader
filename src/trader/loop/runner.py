@@ -134,6 +134,7 @@ class LoopRunner:
         self._last_sentiment_poll: dict[str, datetime] = {}
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
+        self._stream_task: asyncio.Task | None = None
         self._stopping = asyncio.Event()
 
     # -- lifecycle ---------------------------------------------------------
@@ -143,17 +144,26 @@ class LoopRunner:
             self._stopping.clear()
             self._task = asyncio.create_task(self.run_forever(), name="trader-loop")
             log.info("loop_started", shadow=self.shadow, symbols=[s.ticker for s in self.symbols])
+        if self.executor is not None and self._stream_task is None:
+            # The fills feed lives and dies with the loop: without it the ledger
+            # silently diverges on the first fill (found 2026-09-11, first live trade).
+            self._stream_task = asyncio.create_task(
+                self.executor.run_stream(), name="trader-fills-stream"
+            )
+            log.info("fills_stream_started")
 
     async def stop(self) -> None:
         self._stopping.set()
-        if self._task is not None:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-            self._task = None
-            log.info("loop_stopped")
+        for attr in ("_task", "_stream_task"):
+            task = getattr(self, attr)
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                setattr(self, attr, None)
+        log.info("loop_stopped")
 
     async def run_forever(self) -> None:
         backoff = 0.0

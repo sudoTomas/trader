@@ -23,6 +23,7 @@ Discipline, each earned in v1:
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -372,11 +373,14 @@ class Executor:
         log.warning("flatten_all_submitted", count=len(orders))
         return {"flattened": True, "orders": len(orders)}
 
-    async def run_stream(self) -> None:
+    async def run_stream(self, reconnect_delay: float = 5.0) -> None:
         """Consume trade updates forever, reconciling after every (re)connect.
 
         The venue stream has NO replay — events during a disconnect are lost — so a
-        reconcile on connect is the only way the ledger stays true.
+        reconcile on connect is the only way the ledger stays true. Disconnects are
+        routine: every failure backs off and reconnects; only cancellation ends this.
+        (2026-09-11: the first live fill was lost because this raised on first error —
+        and was never started at all; LoopRunner now owns it.)
         """
         while True:
             try:
@@ -384,6 +388,9 @@ class Executor:
                 await self.reconcile_positions()
                 async for event in self._broker.stream_trade_updates():
                     await self.apply_event(event)
-            except Exception as exc:  # noqa: BLE001 - the ledger feed must not die
-                log.exception("trade_stream_error", error=str(exc))
+                log.warning("trade_stream_ended", reconnect_in=reconnect_delay)
+            except asyncio.CancelledError:
                 raise
+            except Exception as exc:  # noqa: BLE001 - the ledger feed must not die
+                log.exception("trade_stream_error", error=str(exc), reconnect_in=reconnect_delay)
+            await asyncio.sleep(reconnect_delay)
