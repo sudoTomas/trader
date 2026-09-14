@@ -236,7 +236,10 @@ class Executor:
         signed = event.filled_qty if order_row["side"] == "buy" else -event.filled_qty
         current = await self._positions.get(symbol)
         held = float(current["qty"]) if current else 0.0
-        new_qty = held + signed
+        # Venue truth wins when the event carries it: crypto fees come out of the asset,
+        # so accumulating gross fill qty overstates the position by the fee (~25 bps —
+        # the ledger's first ETH fill drifted exactly that much, 2026-09-14).
+        new_qty = event.position_qty if event.position_qty is not None else held + signed
 
         # Weighted average entry while adding; a reduction keeps the existing basis.
         avg = float(current["avg_entry_price"]) if current and current["avg_entry_price"] else None

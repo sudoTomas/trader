@@ -573,3 +573,73 @@ async def test_runner_starts_and_stops_the_executor_stream(db: Database):
     finally:
         await runner.stop()
     assert probe.cancelled
+
+
+# --- venue symbol normalization + fee-aware fills (found by the first ETH fill) -------
+
+
+async def test_broker_positions_normalize_venue_spellings_to_canonical_tickers():
+    """Alpaca reports crypto positions as ETHUSD; the ledger keys ETH/USD. Reconcile
+    compared raw strings and saw two phantom drifts (2026-09-14). The broker boundary
+    now maps venue spellings back through the registry; unknown spellings pass raw."""
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[
+                {"symbol": "ETHUSD", "qty": "0.196485132", "asset_class": "crypto"},
+                {"symbol": "SPY", "qty": "1.306", "asset_class": "us_equity"},
+                {"symbol": "MYSTERY", "qty": "1", "asset_class": "us_equity"},
+            ],
+        )
+
+    broker = AlpacaBroker(
+        "k",
+        "s",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://t"),
+    )
+    positions = {p.symbol: p.qty for p in await broker.get_positions()}
+    assert positions == {"ETH/USD": 0.196485132, "SPY": 1.306, "MYSTERY": 1.0}
+
+
+def test_stream_event_carries_venue_position_qty():
+    """Alpaca crypto fees are deducted FROM THE ASSET: the fill's gross qty overstates
+    the resulting position by the fee (~25 bps — measured live: 0.196977576 filled,
+    0.196485132 held). The event's position_qty is venue truth."""
+    event = _to_event(
+        {
+            "event": "fill",
+            "timestamp": "2026-09-12T13:27:39Z",
+            "qty": "0.196977576",
+            "price": "2541.50",
+            "position_qty": "0.196485132",
+            "execution_id": "exec-fee",
+            "order": {"client_order_id": "c1", "id": "b1", "status": "filled"},
+        }
+    )
+    assert event.position_qty == 0.196485132
+    assert event.filled_qty == 0.196977576
+
+
+async def test_fill_application_trusts_venue_position_qty_over_gross_accumulation(
+    db: Database,
+):
+    outcome = await approved_outcome(db)
+    executor = Executor(db, FakeAlpaca())
+    result = await executor.execute(outcome, BTC, price=60_000.0)
+
+    event = OrderEvent(
+        event="fill",
+        client_order_id=result.client_order_id,
+        broker_order_id="brk-1",
+        status="filled",
+        ts=NOW,
+        filled_qty=0.008,
+        fill_price=60_000.0,
+        execution_id="exec-net",
+        position_qty=0.00798,  # net of the venue's in-asset fee
+    )
+    assert await executor.apply_event(event) is True
+    row = await db.fetch_one("SELECT qty FROM positions WHERE symbol = 'BTC/USD'")
+    assert float(row["qty"]) == 0.00798  # venue truth, not the 0.008 gross

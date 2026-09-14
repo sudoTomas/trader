@@ -152,9 +152,18 @@ class AlpacaBroker:
 
     async def get_positions(self) -> list[BrokerPosition]:
         rows = await self._request("GET", "/v2/positions") or []
+        # Venue spellings (ETHUSD) map back to canonical tickers (ETH/USD) so reconcile
+        # and adopt compare like with like — raw-string comparison saw phantom double
+        # drift on the first crypto fill (2026-09-14). Unknown spellings pass through
+        # raw: a position we never registered should still read as drift, honestly.
+        from trader.core.symbols import default_registry
+
+        to_canonical = {
+            s.for_provider("alpaca_trading"): s.ticker for s in default_registry().all()
+        }
         return [
             BrokerPosition(
-                symbol=row["symbol"],
+                symbol=to_canonical.get(row["symbol"], row["symbol"]),
                 qty=_f(row.get("qty")),
                 # qty_available excludes shares already committed to open orders — using
                 # qty for a close would oversell (v1:EAI-46).
@@ -297,5 +306,8 @@ def _to_event(data: dict[str, Any]) -> OrderEvent | None:
         filled_qty=_f(data.get("qty")) or _f(order.get("filled_qty")),
         fill_price=_f(data.get("price")) or _f(order.get("filled_avg_price")) or None,
         execution_id=data.get("execution_id"),
+        # Venue-authoritative resulting position. Crypto fees are deducted FROM THE
+        # ASSET, so gross fill qty overstates the position by the fee (~25 bps).
+        position_qty=_f(data.get("position_qty")) if data.get("position_qty") else None,
         raw=data,
     )

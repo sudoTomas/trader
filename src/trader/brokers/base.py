@@ -77,6 +77,9 @@ class OrderEvent:
     filled_qty: float = 0.0
     fill_price: float | None = None
     execution_id: str | None = None
+    # Resulting position AFTER this fill, as the venue reports it — authoritative when
+    # present (crypto fees are deducted from the asset, so gross qty accumulation drifts).
+    position_qty: float | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
