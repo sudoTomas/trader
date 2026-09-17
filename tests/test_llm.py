@@ -13,7 +13,12 @@ import pytest
 from trader.llm.base import Completion, LLMError, Usage
 from trader.llm.nemotron import nemotron_client
 from trader.llm.registry import LLMRegistry, build_llm_registry
-from trader.llm.usage import UsageMeter, price_per_million
+from trader.llm.usage import (
+    UsageMeter,
+    price_per_million,
+    x_search_tool_cost_usd,
+    x_search_units_from_citations,
+)
 from trader.ops.config import Settings
 from trader.store.db import Database
 from trader.store.repos import UsageRepo
@@ -63,10 +68,43 @@ async def test_nemotron_schema_switches_to_json_schema_mode():
 
 def test_price_table():
     assert price_per_million("nemotron", "nemotron-3-super") == (0.0, 0.0)
-    in_price, out_price = price_per_million("xai", "grok-4")
-    assert (in_price, out_price) == (3.00, 15.00)
+    # Live default is still grok-4; current lineup must not fail-loud if flipped.
+    assert price_per_million("xai", "grok-4") == (3.00, 15.00)
+    assert price_per_million("xai", "grok-4-mini") == (0.30, 0.50)
+    assert price_per_million("xai", "grok-4.6") == (2.00, 6.00)
+    assert price_per_million("xai", "grok-4.5") == (2.00, 6.00)
+    assert price_per_million("xai", "grok-4.3") == (1.25, 2.50)
+    assert price_per_million("xai", "grok-4.20-0309-reasoning") == (1.25, 2.50)
+    assert price_per_million("xai", "grok-4.20-0309-non-reasoning") == (1.25, 2.50)
+    assert price_per_million("xai", "grok-4.20-multi-agent-0309") == (1.25, 2.50)
     with pytest.raises(KeyError, match="no price entry"):
         price_per_million("xai", "grok-99")  # unknown models fail loud, never meter $0
+
+
+def test_x_search_tool_cost_flips_at_2026_09_21_noon_pt():
+    from zoneinfo import ZoneInfo
+
+    pt = ZoneInfo("America/Los_Angeles")
+    before = datetime(2026, 9, 21, 11, 59, tzinfo=pt)
+    at = datetime(2026, 9, 21, 12, 0, tzinfo=pt)
+    # Until the cutover: $5 / 1k calls, post/profile counts ignored.
+    assert x_search_tool_cost_usd(calls=1, posts=25, profiles=3, when=before) == 5.0 / 1000
+    # From 2026-09-21 12:00 PT: $5 / 1k posts fetched + $10 / 1k profiles.
+    assert x_search_tool_cost_usd(calls=1, posts=25, profiles=3, when=at) == pytest.approx(
+        25 * 5.0 / 1000 + 3 * 10.0 / 1000
+    )
+
+
+def test_x_search_units_count_status_urls_as_posts():
+    posts, profiles = x_search_units_from_citations(
+        [
+            "https://x.com/i/status/1",
+            "https://x.com/foo/status/2",
+            "https://x.com/elonmusk",
+            "https://example.com/not-x",
+        ]
+    )
+    assert (posts, profiles) == (2, 1)
 
 
 class _StubClient:

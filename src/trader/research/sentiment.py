@@ -20,7 +20,11 @@ from pydantic import BaseModel, Field, ValidationError
 
 from trader.core.symbols import Symbol
 from trader.llm.base import Completion, Usage
-from trader.llm.usage import price_per_million
+from trader.llm.usage import (
+    price_per_million,
+    x_search_tool_cost_usd,
+    x_search_units_from_citations,
+)
 from trader.store.db import Database
 from trader.store.repos import SentimentRepo
 
@@ -140,7 +144,7 @@ class SentimentService:
             from_date=(now - timedelta(hours=lookback_hours)).date().isoformat(),
             to_date=now.date().isoformat(),
         )
-        await self._record_usage(usage)
+        await self._record_usage(usage, citations=citations, now=now)
 
         if not citations:
             # Zero citations with filters active = model-prior, not live X (v1:EAI-146).
@@ -183,13 +187,17 @@ class SentimentService:
         log.info("sentiment_unavailable", symbol=symbol.ticker, reason=reason)
         return {"status": "unavailable", "symbol": symbol.ticker, "reason": reason}
 
-    async def _record_usage(self, usage: Usage) -> None:
+    async def _record_usage(self, usage: Usage, *, citations: list[str], now: datetime) -> None:
         if self._meter is None:
             return
         prompt_price, completion_price = price_per_million("xai", self._client.model)
-        cost = (
+        token_cost = (
             usage.prompt_tokens * prompt_price + usage.completion_tokens * completion_price
         ) / 1_000_000
+        posts, profiles = x_search_units_from_citations(citations)
+        cost = token_cost + x_search_tool_cost_usd(
+            calls=1, posts=posts, profiles=profiles, when=now
+        )
         await self._meter.record(
             ROLE,
             Completion(

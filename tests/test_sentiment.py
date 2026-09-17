@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from trader.core.symbols import default_registry
@@ -99,7 +101,20 @@ async def test_live_citations_yield_a_persisted_scored_verdict(db: Database):
     # Metered into usage_daily under the sentiment role (M2 discipline).
     (usage,) = await db.fetch_all("SELECT * FROM usage_daily WHERE role = 'sentiment'")
     assert usage["prompt_tokens"] == 100 and usage["completion_tokens"] == 40
-    assert float(usage["cost_usd"]) > 0  # grok-4 is a paid model
+    # Tokens (grok-4 $3/$15) + pre-cutover x_search call fee ($5/1k calls).
+    token = (100 * 3.00 + 40 * 15.00) / 1_000_000
+    assert float(usage["cost_usd"]) == pytest.approx(token + 5.0 / 1000)
+
+
+async def test_sentiment_meters_x_search_per_post_after_cutover(db: Database):
+    after = datetime(2026, 9, 21, 12, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    cites = ["https://x.com/i/status/1", "https://x.com/foo/status/2", "https://x.com/bar"]
+    client = make_client(responses_payload(VERDICT, cites), [])
+    await service(db, client).get_x_sentiment(ETH, now=after)
+    (usage,) = await db.fetch_all("SELECT * FROM usage_daily WHERE role = 'sentiment'")
+    token = (100 * 3.00 + 40 * 15.00) / 1_000_000
+    tool = 2 * 5.0 / 1000 + 1 * 10.0 / 1000  # 2 posts + 1 profile
+    assert float(usage["cost_usd"]) == pytest.approx(token + tool)
 
 
 async def test_daily_call_cap_short_circuits_without_calling_x(db: Database):

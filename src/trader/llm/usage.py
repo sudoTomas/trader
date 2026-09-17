@@ -8,6 +8,7 @@ loud rather than silently metering at zero.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 import structlog
 
@@ -17,12 +18,27 @@ from trader.store.repos import UsageRepo
 log = structlog.get_logger(__name__)
 
 #: (provider, model) -> (USD per 1M prompt tokens, USD per 1M completion tokens).
-#: Nemotron runs on our own Spark: $0 by definition. xAI prices as of 2026-08.
+#: Nemotron runs on our own Spark: $0 by definition. xAI short-context rates from
+#: docs.x.ai/developers/pricing (read 2026-09-17). Long-context (≥200k prompt) is
+#: 2×; we do not take that path. ``grok-4`` stays because it is still the live default.
 PRICES: dict[tuple[str, str], tuple[float, float]] = {
     ("nemotron", "nemotron-3-super"): (0.0, 0.0),
     ("xai", "grok-4"): (3.00, 15.00),
     ("xai", "grok-4-mini"): (0.30, 0.50),
+    ("xai", "grok-4.6"): (2.00, 6.00),
+    ("xai", "grok-4.5"): (2.00, 6.00),
+    ("xai", "grok-4.3"): (1.25, 2.50),
+    ("xai", "grok-4.20-0309-reasoning"): (1.25, 2.50),
+    ("xai", "grok-4.20-0309-non-reasoning"): (1.25, 2.50),
+    ("xai", "grok-4.20-multi-agent-0309"): (1.25, 2.50),
 }
+
+#: x_search tool fees (docs.x.ai/developers/pricing). Until this instant: $5 / 1k
+#: calls. From it: $5 / 1k posts fetched + $10 / 1k profiles; parent/quoted posts count.
+X_SEARCH_CUTOVER = datetime(2026, 9, 21, 12, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+X_SEARCH_PER_1K_CALLS_USD = 5.0
+X_SEARCH_PER_1K_POSTS_USD = 5.0
+X_SEARCH_PER_1K_PROFILES_USD = 10.0
 
 
 def price_per_million(provider: str, model: str) -> tuple[float, float]:
@@ -32,6 +48,39 @@ def price_per_million(provider: str, model: str) -> tuple[float, float]:
         raise KeyError(
             f"no price entry for ({provider}, {model}) — add it to trader.llm.usage.PRICES"
         ) from None
+
+
+def x_search_tool_cost_usd(
+    *,
+    calls: int = 1,
+    posts: int = 0,
+    profiles: int = 0,
+    when: datetime | None = None,
+) -> float:
+    """USD for one x_search invocation. ``when`` must be tz-aware (defaults to now)."""
+    when = when or datetime.now(tz=UTC)
+    if when.tzinfo is None:
+        raise ValueError("when must be timezone-aware")
+    if when < X_SEARCH_CUTOVER:
+        return calls * X_SEARCH_PER_1K_CALLS_USD / 1000
+    return (posts * X_SEARCH_PER_1K_POSTS_USD + profiles * X_SEARCH_PER_1K_PROFILES_USD) / 1000
+
+
+def x_search_units_from_citations(citations: list[str]) -> tuple[int, int]:
+    """Count billed x_search units from citation URLs.
+
+    Citation-count is a lower bound: parent/quoted posts that the tool fetched but
+    did not cite still bill, and we cannot see them on the responses payload.
+    """
+    posts = 0
+    profiles = 0
+    for url in citations:
+        lowered = url.lower()
+        if "/status/" in lowered:
+            posts += 1
+        elif "x.com/" in lowered or "twitter.com/" in lowered:
+            profiles += 1
+    return posts, profiles
 
 
 class UsageMeter:
