@@ -28,6 +28,7 @@ from trader.risk.limits import RiskLimits
 from trader.store.db import Database
 
 BTC = default_registry().get("BTC/USD")
+ETH = default_registry().get("ETH/USD")
 SPY = make_symbol("SPY", AssetClass.US_EQUITY)
 NOW = datetime(2026, 8, 12, 15, 0, tzinfo=UTC)
 LIMITS = RiskLimits(max_position_frac=0.05, approval_notional_usd=1_000_000.0)
@@ -172,6 +173,38 @@ def test_crypto_notional_is_converted_to_quantity():
     assert qty is None and notional == 500.0 and tif == "day"
 
 
+def test_crypto_sell_clamps_to_held_qty():
+    """Live 2026-09-18: two ETH closes converted notional/mark to qty a few
+    millionths above the fee-adjusted hold (0.196488897 requested vs 0.196485132
+    available) and Alpaca 403'd. A sell may not exceed held qty."""
+    held = 0.196485132
+    notional = 506.34
+    price = 2576.89  # 506.34 / 0.196488897 — the live conversion that overshot
+    raw = notional / price
+    assert raw > held
+
+    qty, n, tif = venue_order_params(
+        OrderIntent("ETH/USD", Side.SELL, notional=notional),
+        ETH,
+        price,
+        held_qty=held,
+    )
+    assert n is None and tif == "gtc"
+    assert qty == held
+
+    # A reduce smaller than the book is not inflated to a full close.
+    qty, _, _ = venue_order_params(
+        OrderIntent("ETH/USD", Side.SELL, notional=100.0), ETH, price=1000.0, held_qty=held
+    )
+    assert qty == pytest.approx(0.1)
+
+    # Buys are not clamped — we are adding, not spending the asset.
+    qty, _, _ = venue_order_params(
+        OrderIntent("ETH/USD", Side.BUY, notional=notional), ETH, price, held_qty=held
+    )
+    assert qty == pytest.approx(raw)
+
+
 # --- executor ---------------------------------------------------------------
 
 
@@ -231,6 +264,34 @@ async def approved_outcome(db: Database, notional: float = 500.0):
         now=NOW,
         realized_vol=0.02,
     )
+
+
+async def test_crypto_close_submits_held_qty_not_notional_overshoot(db: Database):
+    """Executor must look up the ledger and clamp before the venue sees the order."""
+    from trader.store.repos import PositionsRepo
+
+    held = 0.196485132
+    notional = 506.34
+    price = 2576.89
+    await PositionsRepo(db).upsert(
+        symbol="ETH/USD", asset_class="crypto", qty=held, avg_entry_price=2541.50
+    )
+    guard = RiskGuard(db, LIMITS)
+    outcome = await guard.evaluate(
+        OrderIntent("ETH/USD", Side.SELL, notional=notional),
+        ETH,
+        price=price,
+        account=AccountState(equity=100_000.0, positions={"ETH/USD": held}),
+        now=NOW,
+        realized_vol=0.02,
+    )
+    assert outcome.approved
+    broker = FakeAlpaca()
+    result = await Executor(db, broker).execute(outcome, ETH, price=price)
+    assert result.submitted
+    assert broker.submitted[0]["qty"] == held
+    row = await db.fetch_one("SELECT * FROM orders WHERE id = %s", (result.order_id,))
+    assert float(row["qty"]) == held
 
 
 async def test_denied_intent_can_never_reach_the_broker(db: Database):

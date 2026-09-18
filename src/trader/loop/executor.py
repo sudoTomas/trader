@@ -18,7 +18,9 @@ Discipline, each earned in v1:
   risk.
 - **Crypto cannot take notional orders** at Alpaca (notional needs TIF ``day``; crypto
   only supports ``gtc``/``ioc``), so notional is converted to quantity here using the same
-  price the risk chain sized against.
+  price the risk chain sized against. A crypto **sell** is then clamped to held qty —
+  notional/mark conversion overshoots the fee-adjusted book (live 2026-09-18: two ETH
+  closes 403'd requesting 0.196488897 against 0.196485132 available).
 """
 
 from __future__ import annotations
@@ -83,12 +85,18 @@ def new_client_order_id() -> str:
 
 
 def venue_order_params(
-    intent: OrderIntent, symbol: Symbol, price: float
+    intent: OrderIntent,
+    symbol: Symbol,
+    price: float,
+    *,
+    held_qty: float | None = None,
 ) -> tuple[float | None, float | None, str]:
     """(qty, notional, time_in_force) as this venue will accept them."""
     if symbol.asset_class is AssetClass.CRYPTO:
         # Crypto: TIF gtc/ioc only, and notional requires day → always send quantity.
         qty = intent.qty if intent.qty is not None else (intent.notional or 0.0) / price
+        if intent.side is Side.SELL and held_qty is not None:
+            qty = min(qty, held_qty)
         return qty, None, "gtc"
     if intent.notional is not None:
         return None, intent.notional, "day"  # notional requires market + day
@@ -116,7 +124,12 @@ class Executor:
         """Submit an APPROVED intent. Raises ``RiskDenied`` if it was not approved."""
         intent = outcome.executable()  # the chokepoint: no approval, no order
         client_order_id = new_client_order_id()
-        qty, notional, tif = venue_order_params(intent, symbol, price)
+        held_qty = None
+        if intent.side is Side.SELL:
+            row = await self._positions.get(symbol.ticker)
+            if row is not None:
+                held_qty = abs(float(row["qty"]))
+        qty, notional, tif = venue_order_params(intent, symbol, price, held_qty=held_qty)
 
         # Persist BEFORE the venue knows anything, so a crash mid-submit is recoverable.
         order_id = await self._orders.insert(
