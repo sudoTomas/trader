@@ -282,4 +282,16 @@ twelve_data`); fallback exercised through the composite with a simulated primary
 — PASS (30 bars + quote served by TD). Follow-up candidate: switch adapter historical
 bars to `feed=sip` with a ≥16-min-delayed `end` (free consolidated bars; needs care —
 the price the decider sees currently comes from the last bar, so a delayed end must not
-stale the mark).
+stale the mark). SIP historical + quote-first mark shipped in the 9/8–9/17 window.
+
+---
+
+## Operator decision (2026-09-17)
+
+Paid Twelve Data subscription **cancelled**. Verdict A stands: Alpaca free SIP
+historical (≥15-min-delayed `end`) + IEX quotes is the hot path; TD stays the
+composite **fallback** only. Leave the adapter and a Basic/free key wired if the
+account still issues one; do not pay for Grow/hobbyist again. Algo Trader Plus is
+still the later buy if real-time NBBO or a production screener earns it. No code
+change required for the cancel — fallback already fails over, and conftest blanks
+the key in tests.
