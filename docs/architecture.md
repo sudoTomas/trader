@@ -186,4 +186,5 @@ pool). The GPU clock-cap systemd unit on the Spark is load-bearing — do not re
 M0 Foundation (scaffold, CI, service layer + 3 surfaces, store + auth) · M1 Market data ·
 M2 LLM layer · M3 Money path crypto (shadow → gated live-paper) · M4 Research (Desk + briefs
 + sentiment) · M5 Expansion (equities, commodity ETFs, screener, desk, replay eval, IBKR
-add-back). Tracked in the Linear **trader** project.
+add-back). Tracked on GitHub: [sudoTomas/trader/issues](https://github.com/sudoTomas/trader/issues)
+([`docs/tracker.md`](tracker.md)).

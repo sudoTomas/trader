@@ -37,4 +37,6 @@ docker compose -f infra/docker-compose.yml up -d --build
 
 ## Status
 
-M0 (foundation / walking skeleton). Milestones tracked in the Linear **trader** project.
+Live-paper (ETH round trip filled 2026-09-18; SPY still held). Issues:
+[sudoTomas/trader/issues](https://github.com/sudoTomas/trader/issues) —
+[`docs/tracker.md`](docs/tracker.md).

@@ -53,4 +53,6 @@ add-back), migration 017 (journal replay columns).
 
 ## Issue tracker
 
-Linear project **trader**, team Eastwood AI (prefix EAI-).
+GitHub: [sudoTomas/trader/issues](https://github.com/sudoTomas/trader/issues).
+Map of remaining work: [`docs/tracker.md`](docs/tracker.md). Historical `EAI-*` in
+code is provenance from the Linear era, not the tracker.

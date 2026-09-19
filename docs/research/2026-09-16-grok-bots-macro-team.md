@@ -314,21 +314,10 @@ Do **not** run a second OAuth client for the EAI-173 probe while `trader-api` ow
 the refresh lineage (rotating single-use refresh token). Probe with `XAI_API_KEY`,
 or as a one-shot inside the running service.
 
-### Linear epic to file (Eastwood AI / trader)
+### Filed on GitHub (2026-09-19)
 
-This session's client cannot see the Eastwood AI Linear workspace. Do not invent
-issue ids. Create:
-
-- **Epic — Box-local Grok macro desk.** Verdict above. Design:
-  `docs/research/2026-09-16-grok-bots-macro-team.md`. Not hosted Grok Bot.
-- **Child — Extend EAI-173 probe matrix.** `/v1/responses` × {grok-4.3,
-  grok-4-1-fast} × {x_search, web_search} for SuperGrok OAuth *and* `XAI_API_KEY`.
-  Record in `docs/research/xai-api.md`. Respect the single-owner refresh lock.
-- **Child — Capture-scoped API key.** A key that can only
-  `submit_research_note` / `get_research_notes` / `retire_note` / `get_macro_view`.
-  Prerequisite if the runner ever leaves localhost.
-- **Child — crypto-flows seat MVP.** 1×/day, grok-4.3, x_search+web_search,
-  structured note schema, grounding + dedupe, localhost capture,
-  `tags:["grok-desk","crypto-flows"]`. Standalone process, not inside `trader-api`.
-- **Child — sweep citation loop.** After each sweep, `GET /research/view` and log
-  which submitted notes the compiler cites, plus per-sweep `usage_daily` cost.
+- Epic: [#20 box-local Grok macro desk](https://github.com/sudoTomas/trader/issues/20)
+- [#7](https://github.com/sudoTomas/trader/issues/7) probe (was EAI-173)
+- [#8](https://github.com/sudoTomas/trader/issues/8) capture-scoped API key
+- [#9](https://github.com/sudoTomas/trader/issues/9) crypto-flows seat
+- [#10](https://github.com/sudoTomas/trader/issues/10) sweep citation loop
