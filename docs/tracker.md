@@ -16,7 +16,7 @@ Historical `EAI-*` strings in tests and comments are provenance, not the tracker
 | GitHub | Was | What |
 |---|---|---|
 | [#1](https://github.com/sudoTomas/trader/issues/1) | EAI-192 | Flip briefs into the decide lane |
-| [#2](https://github.com/sudoTomas/trader/issues/2) | EAI-176 / epic EAI-164 | Walk first live-paper acceptance (ETH RT filled 9/18) |
+| [#2](https://github.com/sudoTomas/trader/issues/2) **closed 2026-09-19** | EAI-176 / epic EAI-164 | First ETH round trip accepted (journal ↔ Alpaca match; flatten skipped) |
 | [#3](https://github.com/sudoTomas/trader/issues/3) | EAI-186 leftover | SPY equity round trip (still held) |
 | [#4](https://github.com/sudoTomas/trader/issues/4) | EAI-187 | Commodity ETFs |
 | [#5](https://github.com/sudoTomas/trader/issues/5) | EAI-189 | Screener |
