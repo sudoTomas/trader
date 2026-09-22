@@ -260,7 +260,7 @@ def build_registry(
     async def usage(
         days: int = 14, role: str | None = None, day: str | None = None
     ) -> dict[str, Any]:
-        from datetime import date, timedelta
+        from datetime import UTC, date, datetime, timedelta
 
         from trader.store.repos import UsageRepo
 
@@ -273,7 +273,9 @@ def build_registry(
             start = end
         else:
             window = min(max(int(days), 1), 366)
-            end = date.today()
+            # Rows are keyed by UTC date (UsageMeter). A local date hides the
+            # current UTC day for the hours this box is behind UTC.
+            end = datetime.now(tz=UTC).date()
             start = end - timedelta(days=window - 1)
         rows = await UsageRepo(db).between(start, end, role=role or None)
         shaped = [

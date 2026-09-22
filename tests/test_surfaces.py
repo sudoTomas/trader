@@ -111,11 +111,11 @@ def test_audit_parity_across_all_surfaces(clean_db: None, monkeypatch: pytest.Mo
 
 def test_usage_parity_across_all_surfaces(clean_db: None, monkeypatch: pytest.MonkeyPatch):
     """usage_daily is readable, identically, on registry, API, MCP, and CLI."""
-    from datetime import date, timedelta
+    from datetime import UTC, datetime, timedelta
 
     from trader.store.repos import UsageRepo
 
-    today = date.today()
+    today = datetime.now(tz=UTC).date()
     yesterday = today - timedelta(days=1)
 
     async def seed_and_query_direct() -> tuple[dict, dict]:
