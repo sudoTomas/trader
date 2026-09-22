@@ -30,7 +30,7 @@ Historical `EAI-*` strings in tests and comments are provenance, not the tracker
 | [#13](https://github.com/sudoTomas/trader/issues/13) | — | Alpaca account equity, not `shadow_equity` |
 | [#14](https://github.com/sudoTomas/trader/issues/14) | — | Persist `decision_id` on orders |
 | [#15](https://github.com/sudoTomas/trader/issues/15) | — | `Mark.realized_vol` / `unrealized_pnl_frac` |
-| [#16](https://github.com/sudoTomas/trader/issues/16) | — | Usage query surface |
+| [#16](https://github.com/sudoTomas/trader/issues/16) **closed** | — | Usage query (`trader usage` / `GET /usage` / `get_usage`) |
 | [#17](https://github.com/sudoTomas/trader/issues/17) | — | Call FRED |
 | [#18](https://github.com/sudoTomas/trader/issues/18) | — | Replay includes Macro View and briefs |
 | [#19](https://github.com/sudoTomas/trader/issues/19) | EAI-166 | **Epic:** M5 expansion |
