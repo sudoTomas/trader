@@ -252,6 +252,53 @@ def build_registry(
             {**r, "qty": float(r["qty"]), "updated_at": r["updated_at"].isoformat()} for r in rows
         ]
 
+    @reg.register(
+        "usage",
+        kind="query",
+        summary="LLM usage_daily rollup (requests, tokens, USD) for a day or recent window.",
+    )
+    async def usage(
+        days: int = 14, role: str | None = None, day: str | None = None
+    ) -> dict[str, Any]:
+        from datetime import date, timedelta
+
+        from trader.store.repos import UsageRepo
+
+        assert db is not None, "usage requires a store"
+        if day:
+            try:
+                end = date.fromisoformat(day)
+            except ValueError as exc:
+                raise ValueError("day must be YYYY-MM-DD") from exc
+            start = end
+        else:
+            window = min(max(int(days), 1), 366)
+            end = date.today()
+            start = end - timedelta(days=window - 1)
+        rows = await UsageRepo(db).between(start, end, role=role or None)
+        shaped = [
+            {
+                "day": r["day"].isoformat(),
+                "role": r["role"],
+                "provider": r["provider"],
+                "model": r["model"],
+                "requests": int(r["requests"]),
+                "prompt_tokens": int(r["prompt_tokens"]),
+                "completion_tokens": int(r["completion_tokens"]),
+                "cost_usd": float(r["cost_usd"]),
+            }
+            for r in rows
+        ]
+        return {
+            "rows": shaped,
+            "totals": {
+                "requests": sum(r["requests"] for r in shaped),
+                "prompt_tokens": sum(r["prompt_tokens"] for r in shaped),
+                "completion_tokens": sum(r["completion_tokens"] for r in shaped),
+                "cost_usd": round(sum(r["cost_usd"] for r in shaped), 6),
+            },
+        }
+
     @reg.register("orders", kind="query", summary="Recent orders, newest first.")
     async def orders(limit: int = 50) -> list[dict[str, Any]]:
         assert db is not None, "orders requires a store"

@@ -109,6 +109,82 @@ def test_audit_parity_across_all_surfaces(clean_db: None, monkeypatch: pytest.Mo
     assert via_registry == via_api == via_mcp == via_cli
 
 
+def test_usage_parity_across_all_surfaces(clean_db: None, monkeypatch: pytest.MonkeyPatch):
+    """usage_daily is readable, identically, on registry, API, MCP, and CLI."""
+    from datetime import date, timedelta
+
+    from trader.store.repos import UsageRepo
+
+    today = date.today()
+    yesterday = today - timedelta(days=1)
+
+    async def seed_and_query_direct() -> tuple[dict, dict]:
+        db = Database(min_size=1, max_size=1)
+        await db.open()
+        try:
+            repo = UsageRepo(db)
+            await repo.record(
+                day=today,
+                role="sentiment",
+                provider="xai",
+                model="grok-4",
+                prompt_tokens=100,
+                completion_tokens=40,
+                cost_usd=1.10,
+            )
+            await repo.record(
+                day=yesterday,
+                role="compiler",
+                provider="xai",
+                model="grok-4",
+                prompt_tokens=10,
+                completion_tokens=4,
+                cost_usd=0.05,
+            )
+            registry = build_registry(db)
+            via_registry = await registry.get("usage").handler(days=2)
+            async with Client(build_mcp(registry)) as mcp_client:
+                tools = await mcp_client.list_tools()
+                assert "get_usage" in {t.name for t in tools.tools}
+                call = await mcp_client.call_tool("get_usage", {"days": 2})
+            payload = call.structured_content
+            # A bare list is wrapped as {"result": ...}; a dict is the object itself.
+            via_mcp = payload.get("result", payload) if "rows" not in payload else payload
+            return via_registry, via_mcp
+        finally:
+            await db.close()
+
+    via_registry, via_mcp = asyncio.run(seed_and_query_direct())
+
+    app = create_app(DEV_SETTINGS)
+    with TestClient(app) as tc:
+        via_api = tc.get("/usage", params={"days": 2}).json()
+        sentiment = tc.get("/usage", params={"days": 2, "role": "sentiment"}).json()
+        one_day = tc.get("/usage", params={"day": yesterday.isoformat()}).json()
+
+    import trader.surfaces.cli.main as cli
+
+    monkeypatch.setattr(cli, "_client", lambda: TestClient(create_app(DEV_SETTINGS)))
+    result = CliRunner().invoke(cli.app, ["usage", "--days", "2"])
+    assert result.exit_code == 0, result.output
+    via_cli = json.loads(result.output)
+
+    assert via_registry == via_api == via_mcp == via_cli
+    assert [r["role"] for r in via_registry["rows"]] == ["sentiment", "compiler"]
+    assert via_registry["rows"][0]["day"] == today.isoformat()
+    assert via_registry["rows"][0]["cost_usd"] == 1.1
+    assert via_registry["totals"] == {
+        "requests": 2,
+        "prompt_tokens": 110,
+        "completion_tokens": 44,
+        "cost_usd": 1.15,
+    }
+    assert [r["role"] for r in sentiment["rows"]] == ["sentiment"]
+    assert sentiment["totals"]["cost_usd"] == 1.1
+    assert {r["role"] for r in one_day["rows"]} == {"compiler"}
+    assert one_day["totals"]["cost_usd"] == 0.05
+
+
 def test_risk_status_surfaced_on_api(clean_db: None):
     """Risk state is operator-visible on every door (registry → API → MCP → CLI)."""
     with TestClient(create_app(DEV_SETTINGS)) as tc:

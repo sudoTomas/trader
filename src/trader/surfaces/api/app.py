@@ -143,6 +143,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def orders(limit: int = Query(default=50, ge=1, le=200)) -> list[dict]:
         return await registry.get("orders").handler(limit=limit)
 
+    @app.get("/usage")
+    async def usage(
+        days: int = Query(default=14, ge=1, le=366),
+        role: str | None = Query(default=None),
+        day: str | None = Query(default=None, description="YYYY-MM-DD; overrides days"),
+    ) -> dict:
+        try:
+            return await registry.get("usage").handler(days=days, role=role, day=day)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     @app.post("/broker/reconcile")
     async def reconcile() -> dict:
         return await registry.get("reconcile").handler()

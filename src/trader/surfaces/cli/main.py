@@ -170,6 +170,23 @@ def orders(limit: int = typer.Option(50, help="How many orders, newest first."))
     typer.echo(json.dumps(_get("/orders", params={"limit": limit}), indent=2))
 
 
+@app.command()
+def usage(
+    days: int = typer.Option(14, help="How many UTC days back, including today."),
+    role: Annotated[
+        str | None, typer.Option(help="Filter to one role (sentiment, decide, …).")
+    ] = None,
+    day: Annotated[str | None, typer.Option(help="Single YYYY-MM-DD; overrides --days.")] = None,
+) -> None:
+    """Print the usage_daily rollup (requests, tokens, USD)."""
+    params: dict[str, object] = {"days": days}
+    if role:
+        params["role"] = role
+    if day:
+        params["day"] = day
+    typer.echo(json.dumps(_get("/usage", params=params), indent=2))
+
+
 broker_app = typer.Typer(help="Broker reconciliation and emergency flatten.")
 app.add_typer(broker_app, name="broker")
 

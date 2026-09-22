@@ -613,3 +613,14 @@ class UsageRepo:
         return await self._db.fetch_all(
             "SELECT * FROM usage_daily WHERE day = %s ORDER BY role, provider, model", (day,)
         )
+
+    async def between(self, start: date, end: date, *, role: str | None = None) -> list[Row]:
+        """Rows in ``[start, end]`` inclusive, newest day first. ``role`` filters exactly."""
+        return await self._db.fetch_all(
+            """
+            SELECT * FROM usage_daily
+            WHERE day >= %s AND day <= %s AND (%s::text IS NULL OR role = %s)
+            ORDER BY day DESC, role, provider, model
+            """,
+            (start, end, role, role),
+        )
