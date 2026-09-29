@@ -22,6 +22,7 @@ Operational discipline:
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -29,6 +30,7 @@ from typing import Any
 
 import structlog
 
+from trader.brokers.base import BrokerError
 from trader.core.symbols import Symbol
 from trader.data.base import MarketData, MarketDataError
 from trader.llm.registry import LLMRegistry
@@ -51,6 +53,10 @@ log = structlog.get_logger(__name__)
 
 TRANSIENT_BACKOFF_SECONDS = 30.0
 MAX_CRASH_BACKOFF_SECONDS = 300.0
+# Long enough to collapse a burst of reads inside one tick; short enough that the
+# next scheduled tick (default 60s) fetches a fresh snapshot.
+EQUITY_CACHE_SECONDS = 15.0
+EQUITY_FALLBACK = "equity_fallback"
 
 
 @dataclass
@@ -104,7 +110,10 @@ class LoopRunner:
     symbols: list[Symbol]
     shadow: bool = True
     tick_seconds: float = 60.0
-    equity: float = 100_000.0  # fallback when no broker is attached
+    equity: float = (
+        100_000.0  # shadow source; also the journaled last resort before any broker read
+    )
+    broker: Any | None = None  # brokers.base.Broker; absent → equity stays the shadow source
     scheduler: SignalScheduler | None = None
     executor: Any | None = None  # loop.executor.Executor; absent = shadow-only build
     sentiment: Any | None = None  # research.sentiment.SentimentService; absent = no polling
@@ -132,6 +141,9 @@ class LoopRunner:
         self._positions = PositionsRepo(self.db)
         self._sentiment_repo = SentimentRepo(self.db)
         self._last_sentiment_poll: dict[str, datetime] = {}
+        self._equity_as_of: datetime | None = None
+        self._last_good_equity: float | None = None
+        self._equity_fallback_open = False
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
         self._stream_task: asyncio.Task | None = None
@@ -217,6 +229,7 @@ class LoopRunner:
             self.stats.ticks += 1
             self.stats.last_tick_at = now.isoformat()
 
+            equity = await self._resolve_equity(now)
             positions = {row["symbol"]: float(row["qty"]) for row in await self._positions.all()}
             await self._poll_sentiment(now)
             marks = await self._marks(now, positions)
@@ -237,7 +250,7 @@ class LoopRunner:
                 by_symbol.setdefault(trigger.symbol, []).append(trigger)
 
             results = [
-                await self._wakeup(symbol, fired, now, marks, positions)
+                await self._wakeup(symbol, fired, now, marks, positions, equity)
                 for symbol in self.symbols
                 if (fired := by_symbol.get(symbol.ticker))
             ]
@@ -245,6 +258,52 @@ class LoopRunner:
             self.scheduler.mark_dispatched(triggers, now)
             self.stats.wakeups += len(results)
             return results
+
+    async def _resolve_equity(self, now: datetime) -> float:
+        """Equity for this tick. Shadow builds keep ``self.equity``.
+
+        A broker read is cached for ``EQUITY_CACHE_SECONDS``. When Alpaca is down the
+        last good snapshot is reused; the shadow constant is used only if no read has
+        ever landed, and either fallback is journaled (once per outage, not per tick).
+        """
+        if self.broker is None:
+            return self.equity
+        if (
+            self._last_good_equity is not None
+            and self._equity_as_of is not None
+            and (now - self._equity_as_of).total_seconds() < EQUITY_CACHE_SECONDS
+        ):
+            return self._last_good_equity
+        try:
+            snapshot = await self.broker.get_account()
+        except BrokerError as exc:
+            return await self._equity_fallback(exc)
+        equity = float(snapshot.equity)
+        if not math.isfinite(equity) or equity <= 0:
+            return await self._equity_fallback(BrokerError(f"unusable equity {snapshot.equity!r}"))
+        self._last_good_equity = equity
+        self._equity_as_of = now
+        self.equity = equity
+        self._equity_fallback_open = False
+        return equity
+
+    async def _equity_fallback(self, exc: Exception) -> float:
+        if self._last_good_equity is not None:
+            used = self._last_good_equity
+            source = "last_good"
+        else:
+            used = self.equity
+            source = "shadow_equity_constant"
+        if not self._equity_fallback_open:
+            await self._journal.record(
+                trigger=EQUITY_FALLBACK,
+                status=ERROR,
+                raw_output=f"{source} equity={used:.2f}: {exc}",
+                prompt=f"broker equity unavailable; source={source}; equity={used:.2f}",
+            )
+            self._equity_fallback_open = True
+        log.warning("equity_fallback", source=source, used=used, error=str(exc))
+        return used
 
     async def _poll_sentiment(self, now: datetime) -> None:
         """Collect X sentiment on a cadence (shadow record). Never blocks a tick on failure."""
@@ -299,18 +358,23 @@ class LoopRunner:
         now: datetime,
         marks: dict[str, Mark],
         positions: dict[str, float],
+        equity: float,
     ) -> WakeupResult:
         names = [t.type for t in triggers]
         trigger_label = ",".join(names)
         started = time.perf_counter()
 
+        # Equity-fallback rows are an outage audit, not decide context.
+        recent = [
+            row for row in await self._journal.recent(8) if row.get("trigger") != EQUITY_FALLBACK
+        ][:5]
         ctx = await self._context.build(
             symbol,
             now=now,
             triggers=triggers,
             position_qty=positions.get(symbol.ticker, 0.0),
-            equity=self.equity,
-            recent_decisions=await self._journal.recent(5),
+            equity=equity,
+            recent_decisions=recent,
         )
         macro_view_version = ctx.macro_view.version if ctx.macro_view else None
         brief_version = ctx.brief.version if ctx.brief else None
@@ -372,7 +436,7 @@ class LoopRunner:
                 symbol,
                 price=ctx.price,
                 account=AccountState(
-                    equity=self.equity,
+                    equity=equity,
                     positions=positions,
                     trades_today=0,  # real count arrives with the executor (EAI-176)
                 ),

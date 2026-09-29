@@ -405,3 +405,110 @@ async def test_shadow_journal_is_replayable(db: Database):
     replayed = DecisionOutput.model_validate_json(row["raw_output"]).to_decision(row["symbol"])
     assert replayed.action is Action.OPEN
     assert json.loads(json.dumps(row["decision"]))["conviction"] == 0.8
+
+
+# --- account equity (#13) ---------------------------------------------------
+
+
+class StubAccount:
+    """Broker stand-in: only ``get_account`` — the runner's equity source."""
+
+    def __init__(self, equity: float = 100_025.08, *, fail: bool = False) -> None:
+        self.equity = equity
+        self.fail = fail
+        self.calls = 0
+
+    async def get_account(self):
+        from trader.brokers.base import AccountSnapshot, BrokerError
+
+        self.calls += 1
+        if self.fail:
+            raise BrokerError("alpaca down")
+        return AccountSnapshot(
+            equity=self.equity,
+            cash=self.equity,
+            buying_power=self.equity,
+            non_marginable_buying_power=self.equity,
+            status="ACTIVE",
+            tradable=True,
+        )
+
+
+async def test_broker_equity_sizes_the_prompt_not_shadow_equity(db: Database):
+    """A live account snapshot replaces the shadow_equity constant in the prompt."""
+    from trader.risk.breakers import BreakerStore
+
+    broker = StubAccount(equity=100_025.08)
+    runner = build_runner(db, [OPEN])
+    runner.broker = broker
+    results = await runner.tick(NOW)
+
+    assert broker.calls == 1
+    row = await Journal(db).get(results[0].decision_id)
+    assert "Account equity: 100,025.08 USD" in row["prompt"]
+    assert "Account equity: 100,000.00 USD" not in row["prompt"]
+    state = await BreakerStore(db).load()
+    assert state.day_start_equity == pytest.approx(100_025.08)
+    assert state.week_high_equity == pytest.approx(100_025.08)
+
+
+async def test_shadow_build_without_a_broker_keeps_shadow_equity(db: Database):
+    runner = build_runner(db, [HOLD])
+    results = await runner.tick(NOW)
+    row = await Journal(db).get(results[0].decision_id)
+    assert "Account equity: 100,000.00 USD" in row["prompt"]
+    assert await db.fetch_all("SELECT id FROM decisions WHERE trigger = 'equity_fallback'") == []
+
+
+async def test_alpaca_down_keeps_last_good_equity_and_journals_it(db: Database):
+    """A venue blip must not silently resize risk back to the shadow constant."""
+    from trader.loop.runner import EQUITY_CACHE_SECONDS
+
+    broker = StubAccount(equity=100_025.08)
+    runner = build_runner(db, [HOLD, HOLD])
+    runner.broker = broker
+    await runner.tick(NOW)
+    broker.fail = True
+    later = NOW + timedelta(seconds=EQUITY_CACHE_SECONDS + 5)
+    results = await runner.tick(later, force=True)
+
+    row = await Journal(db).get(results[0].decision_id)
+    assert "Account equity: 100,025.08 USD" in row["prompt"]
+    assert "Account equity: 100,000.00 USD" not in row["prompt"]
+    fallbacks = await db.fetch_all(
+        "SELECT raw_output FROM decisions WHERE trigger = 'equity_fallback'"
+    )
+    assert len(fallbacks) == 1
+    assert "last_good" in fallbacks[0]["raw_output"]
+    assert "100025.08" in fallbacks[0]["raw_output"]
+    # The fallback row is an audit of the blip, not an input to the next decide.
+    assert "equity_fallback" not in row["prompt"]
+
+
+async def test_alpaca_down_with_no_last_good_journals_the_constant(db: Database):
+    """No cached equity: the constant may be used only when the journal says so."""
+    broker = StubAccount(fail=True)
+    runner = build_runner(db, [HOLD, HOLD])
+    runner.broker = broker
+    await runner.tick(NOW)
+    await runner.tick(NOW + timedelta(minutes=20), force=True)
+
+    assert broker.calls == 2  # a failure is not cached; the next tick tries again
+    fallbacks = await db.fetch_all(
+        "SELECT raw_output FROM decisions WHERE trigger = 'equity_fallback'"
+    )
+    assert len(fallbacks) == 1  # one row per outage, not one per tick
+    assert "shadow_equity_constant" in fallbacks[0]["raw_output"]
+
+
+async def test_broker_equity_is_cached_for_a_few_seconds(db: Database):
+    from trader.loop.runner import EQUITY_CACHE_SECONDS
+
+    broker = StubAccount(equity=50_000.0)
+    runner = build_runner(db, [HOLD])
+    runner.broker = broker
+    await runner.tick(NOW)
+    await runner.tick(NOW + timedelta(seconds=EQUITY_CACHE_SECONDS - 1))
+    assert broker.calls == 1
+    await runner.tick(NOW + timedelta(seconds=EQUITY_CACHE_SECONDS + 5))
+    assert broker.calls == 2

@@ -367,8 +367,10 @@ def build_runner(db: Database, settings: Settings, sentiment=None, desk=None):
     symbols = [symbols_registry.get(t) for t in tickers]
 
     # A broker is attached only when leaving shadow mode — a shadow build has no way to
-    # reach a venue at all, not merely a flag telling it not to.
+    # reach a venue at all, not merely a flag telling it not to. The same client feeds
+    # account equity (#13); shadow builds keep settings.shadow_equity.
     executor = None
+    broker = None
     if not settings.shadow_mode:
         broker = AlpacaBroker.from_settings(settings)
         executor = Executor(db, broker)
@@ -384,6 +386,7 @@ def build_runner(db: Database, settings: Settings, sentiment=None, desk=None):
         shadow=settings.shadow_mode,
         tick_seconds=settings.loop_tick_seconds,
         equity=settings.shadow_equity,
+        broker=broker,
         scheduler=SignalScheduler(
             symbols,
             TriggerConfig(
