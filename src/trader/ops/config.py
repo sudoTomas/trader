@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     risk_daily_loss_limit_frac: float = 0.03
     risk_weekly_drawdown_limit_frac: float = 0.10
     risk_approval_notional_usd: float = 1000.0
+    # 0 disables parking. A value above the approval cap parks larger opens for a human;
+    # everything between the cap and this band clamps to the cap and executes unattended.
+    risk_park_above_usd: float = 0.0
 
     # --- Research Desk ---
     # Days before an unpinned note auto-stales out of compilation (retire stays explicit).
