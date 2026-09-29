@@ -27,6 +27,7 @@ from trader.risk.limits import RiskLimits
 BTC = default_registry().get("BTC/USD")
 SPY = make_symbol("SPY", AssetClass.US_EQUITY)
 NOSHORT = make_symbol("XYZ", AssetClass.US_EQUITY, shortable=False)
+GLD = default_registry().get("GLD")  # commodity ETF: long-only by class default
 
 # Wednesday 15:00 UTC = 11:00 ET — NYSE open, and crypto is always open.
 NOW = datetime(2026, 8, 12, 15, 0, tzinfo=UTC)
@@ -151,6 +152,31 @@ def test_venue_must_be_open():
     assert denied_by(evaluate_chain(closed)) == "class_policy"
     # Crypto trades through the same instant.
     assert evaluate_chain(ctx(now=SATURDAY)).approved
+
+
+def test_commodity_etf_is_long_only_and_session_gated():
+    """GLD/SLV/USO (#4): a naked short is denied at class policy, a long open passes,
+    a sell that reduces a long is an exit, and the NYSE session binds exactly as for
+    equities."""
+    naked_short = ctx(symbol=GLD, intent=OrderIntent("GLD", Side.SELL, notional=500.0), price=250.0)
+    assert denied_by(evaluate_chain(naked_short)) == "class_policy"
+    assert "not shortable" in evaluate_chain(naked_short).reason
+
+    long_open = ctx(symbol=GLD, intent=OrderIntent("GLD", Side.BUY, notional=500.0), price=250.0)
+    assert evaluate_chain(long_open).approved
+
+    closing = ctx(
+        symbol=GLD,
+        intent=OrderIntent("GLD", Side.SELL, qty=1.0),
+        price=250.0,
+        account=AccountState(equity=100_000.0, positions={"GLD": 2.0}),
+    )
+    assert evaluate_chain(closing).approved
+
+    closed = ctx(
+        symbol=GLD, intent=OrderIntent("GLD", Side.BUY, notional=500.0), price=250.0, now=SATURDAY
+    )
+    assert denied_by(evaluate_chain(closed)) == "class_policy"
 
 
 # --- 5. sizing clamps -------------------------------------------------------
