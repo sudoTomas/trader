@@ -172,6 +172,31 @@ async def test_alpaca_quote_and_errors():
         AlpacaData("", "")
 
 
+async def test_alpaca_data_errors_include_class_status_and_body():
+    """Same empty-string outage as the broker: `alpaca_data: ` hid status, body,
+    and exception class."""
+    body = '{"message":"service unavailable"}' + ("y" * 400)
+
+    def http_500(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text=body)
+
+    data = AlpacaData("k", "s", client=mock_client(http_500))
+    with pytest.raises(MarketDataError, match="HTTPStatusError") as caught:
+        await data.get_bars(BTC, "1m", 2)
+    text = str(caught.value)
+    assert "HTTP 500" in text
+    assert "service unavailable" in text
+    assert "y" * 250 not in text
+
+    def read_timeout(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("")
+
+    data = AlpacaData("k", "s", client=mock_client(read_timeout))
+    with pytest.raises(MarketDataError, match="ReadTimeout") as caught:
+        await data.get_latest_quote(BTC)
+    assert str(caught.value).strip() != "alpaca_data:"
+
+
 # --- twelve data ------------------------------------------------------------
 
 TWELVE_DATA_SERIES = {
