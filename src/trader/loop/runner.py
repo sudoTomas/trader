@@ -75,6 +75,21 @@ def _unrealized_pnl_frac(price: float, qty: float, avg_entry: float | None) -> f
     return move if qty > 0 else -move
 
 
+async def count_trades_today(db: Database, symbol: Symbol, now: datetime) -> int:
+    """Orders already recorded in this symbol's session day.
+
+    Every order row counts, including rejects: a failed submit still consumed an
+    attempt, and the cap is there to limit churn. Shared by the wakeup path and the
+    approval-redeem door so both see the same daily cap.
+    """
+    start, end = _session_window(symbol, now)
+    row = await db.fetch_one(
+        "SELECT count(*) AS n FROM orders WHERE created_at >= %s AND created_at < %s",
+        (start, end),
+    )
+    return int(row["n"]) if row else 0
+
+
 def _session_window(symbol: Symbol, now: datetime) -> tuple[datetime, datetime]:
     """``[start, end)`` covering the venue session day that contains ``now``.
 
@@ -345,17 +360,7 @@ class LoopRunner:
         return used
 
     async def _trades_today(self, symbol: Symbol, now: datetime) -> int:
-        """Orders already recorded in this symbol's session day.
-
-        Every order row counts, including rejects: a failed submit still consumed
-        an attempt, and the cap is there to limit churn.
-        """
-        start, end = _session_window(symbol, now)
-        row = await self.db.fetch_one(
-            "SELECT count(*) AS n FROM orders WHERE created_at >= %s AND created_at < %s",
-            (start, end),
-        )
-        return int(row["n"]) if row else 0
+        return await count_trades_today(self.db, symbol, now)
 
     async def _observe_breakers(self, now: datetime, equity: float) -> None:
         """Roll the session and trip loss breakers off this tick's equity.

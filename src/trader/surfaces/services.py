@@ -145,6 +145,7 @@ def build_registry(
 
         from trader.core.symbols import default_registry
         from trader.data.base import MarketDataError
+        from trader.loop.runner import count_trades_today
         from trader.risk.approvals import payload_to_intent
         from trader.risk.guard import AccountState, RiskDenied
         from trader.store.repos import ApprovalsRepo, PositionsRepo
@@ -188,13 +189,19 @@ def build_registry(
         if not service_redeem.ok or service_redeem.intent is None:
             return {"redeemed": False, "reason": service_redeem.reason or "not redeemable"}
 
+        now = datetime.now(tz=UTC)
         positions = {r["symbol"]: float(r["qty"]) for r in await PositionsRepo(db).all()}
         outcome = await guard.evaluate(
             service_redeem.intent,
             symbol,
             price=price,
-            account=AccountState(equity=float(equity), positions=positions, trades_today=0),
-            now=datetime.now(tz=UTC),
+            account=AccountState(
+                equity=float(equity),
+                positions=positions,
+                # Same count the wakeup path uses: a redeemed open is still a trade today.
+                trades_today=await count_trades_today(db, symbol, now),
+            ),
+            now=now,
             live=False,
             actor=resolved_by,
             decision_id=row["decision_id"],
@@ -309,7 +316,17 @@ def build_registry(
         from trader.risk.breakers import BreakerStore
 
         assert db is not None, "resume_breaker requires a store"
-        baseline = equity if equity is not None else get_settings().shadow_equity
+        if equity is not None:
+            baseline = equity
+        else:
+            # The runner's equity is the last broker read in a live build (the shadow
+            # constant only before any read landed); store-only builds keep the constant.
+            live = getattr(runner, "equity", None)
+            baseline = (
+                float(live)
+                if isinstance(live, (int, float)) and not isinstance(live, bool) and live > 0
+                else get_settings().shadow_equity
+            )
         await BreakerStore(db).resume(equity=baseline)
         await _audit_command("resume_breaker", {"rebaselined_to": baseline})
         return {"halted_reason": None, "rebaselined_to": baseline}

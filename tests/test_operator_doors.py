@@ -214,6 +214,39 @@ async def test_approve_reruns_the_guard_and_does_not_bypass_it(db: Database):
     assert broker.submitted == []
 
 
+async def test_redeem_counts_todays_orders_toward_the_daily_cap(db: Database):
+    """A redeemed open is a trade today. With the cap already spent, redeem must deny —
+    the wakeup path and the approval door count the same rows."""
+    limits = RiskLimits(
+        max_position_frac=0.50,
+        approval_notional_usd=1_000.0,
+        park_above_usd=4_000.0,
+        max_trades_per_day=1,
+    )
+    broker = RecordingBroker()
+    runner = RedeemRunner(db, broker, mid=60_000.0, limits=limits, equity=100_000.0)
+    first = await approve(db, await park_btc(db, notional=5_000.0), runner)
+    assert first["redeemed"] is True and len(broker.submitted) == 1
+    second = await approve(db, await park_btc(db, notional=5_000.0), runner)
+    assert second["redeemed"] is False
+    assert "max_trades_per_day" in second["reason"]
+    assert len(broker.submitted) == 1
+
+
+async def test_resume_breaker_rebaselines_to_the_runner_equity(db: Database):
+    """No explicit equity → the runner's last broker read, not the shadow constant."""
+    from types import SimpleNamespace
+
+    out = (
+        await build_registry(db, runner=SimpleNamespace(equity=98_250.0))
+        .get("resume_breaker")
+        .handler()
+    )
+    assert out["rebaselined_to"] == pytest.approx(98_250.0)
+    store_only = await build_registry(db).get("resume_breaker").handler()
+    assert store_only["rebaselined_to"] == pytest.approx(100_000.0)
+
+
 async def test_redeemed_open_still_obeys_the_position_cap(db: Database):
     """Human approval clears the park band, not the position cap."""
     approval_id = await park_btc(db, notional=50_000.0)

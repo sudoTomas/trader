@@ -91,7 +91,8 @@ def risk_approvals() -> None:
 def risk_approve(
     approval_id: int = typer.Argument(..., help="Approval id from `trader risk approvals`."),
 ) -> None:
-    """Approve a parked intent (NOTE: does not place the order — execution wiring pending)."""
+    """Approve a parked intent and redeem it: fresh quote, TTL + price-tolerance check,
+    RiskGuard re-run, then the executor. Places the order if every step passes."""
     typer.echo(
         json.dumps(
             _post(
