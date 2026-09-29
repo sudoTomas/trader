@@ -382,6 +382,29 @@ def sentiment_fetch(symbol: str = typer.Argument(..., help="Symbol, e.g. ETH/USD
     typer.echo(json.dumps(_post("/research/sentiment/fetch", params={"symbol": symbol}), indent=2))
 
 
+@app.command()
+def doctor(
+    json_output: bool = typer.Option(False, "--json", help="Machine-readable report."),
+) -> None:
+    """Preflight this box: Postgres + migrations, decide endpoint, Alpaca paper account,
+    one market-data quote, xAI credential (optional), and the mode flags. Local like
+    `trader xai` — reads Settings (.env) directly, never the API. Exit 1 when a required
+    check is missing; degraded alone exits 0."""
+    import asyncio
+    import sys
+
+    import structlog
+
+    from trader.ops import doctor as doctor_mod
+
+    if not structlog.is_configured():
+        # Provider clients log on failure; keep that off stdout so --json stays parseable.
+        structlog.configure(logger_factory=structlog.PrintLoggerFactory(sys.stderr))
+    report = asyncio.run(doctor_mod.run_doctor(get_settings()))
+    typer.echo(json.dumps(report.to_dict(), indent=2) if json_output else report.render())
+    raise typer.Exit(report.exit_code)
+
+
 xai_app = typer.Typer(help="SuperGrok OAuth credential management (local, not via the API).")
 app.add_typer(xai_app, name="xai")
 
