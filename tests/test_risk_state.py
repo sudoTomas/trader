@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 import math
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -201,24 +202,62 @@ async def guard_eval(db: Database, intent: OrderIntent, **kwargs):
 
 async def test_guard_approves_clamps_and_audits(db: Database):
     outcome = await guard_eval(db, OrderIntent("BTC/USD", Side.BUY, notional=50_000.0))
-    assert outcome.approval_required  # 5,000 clamp is over the 1,000 threshold
-    assert outcome.approval_id is not None
+    # 5% position cap → 5_000, then the unattended approval cap clamps to 1_000.
+    assert outcome.approved
+    assert not outcome.approval_required
+    assert outcome.approval_id is None
+    assert outcome.executable().notional == pytest.approx(1_000.0)
 
     rows = await db.fetch_all("SELECT * FROM audit_events WHERE category = 'risk'")
     assert len(rows) == 1
     payload = rows[0]["payload"]
-    assert payload["approved"] is False
+    assert payload["approved"] is True
+    assert payload["requested"]["notional"] == 50_000.0
     assert [v["check"] for v in payload["verdicts"]][:2] == ["input_sanity", "paper_gate"]
     assert payload["price"] == 60_000.0
+    approval = next(v for v in payload["verdicts"] if v["check"] == "approval_threshold")
+    assert approval["action"] == "clamp"
+    assert approval["notional"] == 1_000.0
 
 
-async def test_guard_parks_oversized_intent_in_the_approvals_table(db: Database):
-    outcome = await guard_eval(db, OrderIntent("BTC/USD", Side.BUY, notional=3_000.0))
+async def test_guard_parks_only_above_an_explicit_park_band(db: Database):
+    guard = RiskGuard(db, replace(LIMITS, park_above_usd=2_000.0))
+    outcome = await guard.evaluate(
+        OrderIntent("BTC/USD", Side.BUY, notional=3_000.0),
+        BTC,
+        price=60_000.0,
+        account=AccountState(equity=100_000.0),
+        now=NOW,
+        realized_vol=0.02,
+    )
+    assert outcome.approval_required and not outcome.approved
     parked = await ApprovalService(db).pending()
     assert [r["id"] for r in parked] == [outcome.approval_id]
     assert parked[0]["order_intent"]["parked_price"] == 60_000.0
+    assert parked[0]["order_intent"]["notional"] == 3_000.0
     with pytest.raises(RiskDenied):
         outcome.executable()
+
+    # Same size with the band off clamps to the cap and does not join the queue.
+    clamped = await guard_eval(db, OrderIntent("BTC/USD", Side.BUY, notional=3_000.0))
+    assert clamped.approved
+    assert clamped.executable().notional == pytest.approx(1_000.0)
+    assert [r["id"] for r in await ApprovalService(db).pending()] == [outcome.approval_id]
+
+
+async def test_shadow_does_not_park_the_band(db: Database):
+    guard = RiskGuard(db, replace(LIMITS, park_above_usd=2_000.0))
+    outcome = await guard.evaluate(
+        OrderIntent("BTC/USD", Side.BUY, notional=3_000.0),
+        BTC,
+        price=60_000.0,
+        account=AccountState(equity=100_000.0),
+        now=NOW,
+        realized_vol=0.02,
+        shadow=True,
+    )
+    assert outcome.approval_required and outcome.approval_id is None
+    assert await ApprovalService(db).pending() == []
 
 
 async def test_guard_denies_when_a_breaker_is_already_tripped(db: Database):

@@ -14,10 +14,13 @@ Order (deliberate — an audit reader should see the cheap absolute gates first)
 5. sizing clamps — max position fraction, Kelly cap, minimum notional floor
 6. throughput    — concurrent positions, trades per day
 7. breakers      — daily loss, weekly drawdown: block OPENS, exits stay managed
-8. approval      — oversized intents park pending a human instead of executing
+8. approval      — opens above the unattended cap clamp down to it and execute.
+                   Only an explicit park band above that cap waits for a human.
+                   A clamp under the notional floor is a deny (no dust order).
 
 Risk-reducing intents (closing//reducing an existing position) skip 5-8: a limit that
-trapped an open position would be a larger risk than the one it guards.
+trapped an open position would be a larger risk than the one it guards. Exits are
+never clamped to the approval cap — closes must land.
 
 **The Macro View / research is never an input here** (advisory firewall): research shapes
 direction and conviction, never sizing or breakers. A test asserts this module tree never
@@ -84,6 +87,7 @@ class RiskContext:
     realized_vol: float | None = None  # measured locally; None → no vol scaling
     live: bool = False  # caller is asking to route to a LIVE broker
     live_enabled: bool = False  # TRADER_ALPACA_LIVE_ENABLED
+    human_approved: bool = False  # a human already cleared the park band; do not re-clamp it
 
     @property
     def position_qty(self) -> float:
@@ -278,15 +282,52 @@ def evaluate_chain(ctx: RiskContext) -> RiskOutcome:
     allow("breaker", notional)
 
     # --- 8. approval threshold ----------------------------------------------
-    sized = _resize(ctx.intent, notional, ctx.price)
-    if notional > ctx.limits.approval_notional_usd:
-        reason = f"{notional:.2f} exceeds the {ctx.limits.approval_notional_usd:.2f} threshold"
+    # Unattended opens clamp to the cap. Parking is opt-in, and only above that cap.
+    # Exits returned at the reducing-position check and never reach this step.
+    # A human approval clears THIS step only — sizing, breakers, and class policy
+    # still bind, so redemption cannot trade a size the chain would not allow.
+    if ctx.human_approved:
+        allow(
+            "approval_threshold",
+            notional,
+            "human-approved; unattended cap already cleared",
+        )
+        return RiskOutcome(True, _resize(ctx.intent, notional, ctx.price), verdicts)
+    threshold = ctx.limits.approval_notional_usd
+    if not _finite_positive(threshold):
+        return deny("approval_threshold", "approval cap is missing or not a positive finite number")
+    park_above = ctx.limits.park_above_usd
+    if park_above is not None and park_above > threshold and notional > park_above:
+        sized = _resize(ctx.intent, notional, ctx.price)
+        reason = (
+            f"{notional:.2f} exceeds the {park_above:.2f} park band"
+            f" (unattended cap {threshold:.2f})"
+        )
         verdicts.append(Verdict("approval_threshold", DENY, reason, notional))
         return RiskOutcome(
-            False, sized, verdicts, reason=f"approval_threshold: {reason}", approval_required=True
+            False,
+            sized,
+            verdicts,
+            reason=f"approval_threshold: {reason}",
+            approval_required=True,
         )
-    allow("approval_threshold", notional)
-    return RiskOutcome(True, sized, verdicts)
+    if notional > threshold:
+        floor = max(ctx.limits.min_notional_usd, ctx.symbol.min_notional)
+        if threshold < floor:
+            return deny(
+                "min_notional",
+                f"approval cap {threshold:.2f} is below the {floor:.2f} floor; refusing dust",
+            )
+        before = notional
+        notional = threshold
+        clamp(
+            "approval_threshold",
+            notional,
+            f"clamped from {before:.2f} to the {threshold:.2f} unattended cap",
+        )
+    else:
+        allow("approval_threshold", notional)
+    return RiskOutcome(True, _resize(ctx.intent, notional, ctx.price), verdicts)
 
 
 # ---------------------------------------------------------------------------
@@ -304,6 +345,10 @@ class RiskGuard:
         self.breakers = BreakerStore(db)
         self.approvals = ApprovalService(db)
 
+    @property
+    def limits(self) -> RiskLimits:
+        return self._limits
+
     async def evaluate(
         self,
         intent: OrderIntent,
@@ -317,6 +362,7 @@ class RiskGuard:
         actor: str = "loop",
         decision_id: int | None = None,
         shadow: bool = False,
+        human_approved: bool = False,
     ) -> RiskOutcome:
         """Run the chain. Returns the (possibly clamped) intent only when approved.
 
@@ -342,6 +388,7 @@ class RiskGuard:
                 realized_vol=realized_vol,
                 live=live,
                 live_enabled=self._live_enabled,
+                human_approved=human_approved,
             )
         )
 

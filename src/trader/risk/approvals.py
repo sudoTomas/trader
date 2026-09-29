@@ -1,10 +1,10 @@
 """Human-in-the-loop approvals — the HITL mechanism (an approvals table, not a graph
 interrupt; docs/architecture.md).
 
-Intents above the approval threshold park here instead of executing. An approval that a
-human later grants is **not** a licence to trade at any price: redemption re-validates
-freshness and price, because an approval granted against a stale quote is exactly how v1
-produced stale fills (v1:EAI-46).
+Opens the operator opted to park (above ``park_above_usd``) land here instead of
+executing. An approval that a human later grants is **not** a licence to trade at any
+price: redemption re-validates freshness and price, because an approval granted against
+a stale quote is exactly how v1 produced stale fills (v1:EAI-46).
 """
 
 from __future__ import annotations

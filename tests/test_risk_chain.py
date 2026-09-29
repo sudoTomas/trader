@@ -258,15 +258,237 @@ def test_breaker_halts_opens_but_never_traps_an_exit():
 # --- 8. approval threshold --------------------------------------------------
 
 
-def test_oversized_intent_parks_instead_of_executing():
+def test_open_above_approval_cap_is_clamped_and_approved():
+    """Unattended opens clamp to the cap and execute. The verdict keeps the original size."""
     outcome = evaluate_chain(
         ctx(limits=APPROVAL_LIMITS, intent=OrderIntent("BTC/USD", Side.BUY, notional=5_000.0))
     )
+    assert outcome.approved
+    assert not outcome.approval_required
+    assert outcome.executable().notional == pytest.approx(1_000.0)
+    verdict = next(v for v in outcome.verdicts if v.check == "approval_threshold")
+    assert verdict.action == "clamp"
+    assert verdict.notional == pytest.approx(1_000.0)
+    assert "5000.00" in verdict.reason
+    assert "1000.00" in verdict.reason
+
+
+def test_approval_clamp_below_min_notional_is_denied():
+    """A clamp that would submit dust is a deny, not an order and not a park."""
+    dust = replace(APPROVAL_LIMITS, approval_notional_usd=1.0, min_notional_usd=5.0)
+    outcome = evaluate_chain(
+        ctx(limits=dust, intent=OrderIntent("BTC/USD", Side.BUY, notional=100.0))
+    )
+    assert denied_by(outcome) == "min_notional"
+    assert outcome.intent is None
+    assert not outcome.approval_required
+    with pytest.raises(RiskDenied):
+        outcome.executable()
+
+
+def test_exit_above_approval_cap_is_not_clamped():
+    """Closes must land whole. Exits never take the approval clamp."""
+    outcome = evaluate_chain(
+        ctx(
+            limits=APPROVAL_LIMITS,
+            intent=OrderIntent("BTC/USD", Side.SELL, notional=5_000.0),
+            account=AccountState(equity=100_000.0, positions={"BTC/USD": 1.0}),
+        )
+    )
+    assert outcome.approved
+    assert not outcome.approval_required
+    assert outcome.executable().notional == pytest.approx(5_000.0)
+    assert "approval_threshold" not in checks(outcome)
+
+    qty_exit = evaluate_chain(
+        ctx(
+            limits=APPROVAL_LIMITS,
+            intent=OrderIntent("BTC/USD", Side.SELL, qty=0.1),  # 6_000 notional
+            account=AccountState(equity=100_000.0, positions={"BTC/USD": 0.5}),
+        )
+    )
+    assert qty_exit.approved
+    assert qty_exit.executable().qty == pytest.approx(0.1)
+
+
+def test_open_between_cap_and_park_band_is_clamped():
+    limits = replace(APPROVAL_LIMITS, park_above_usd=4_000.0)
+    outcome = evaluate_chain(
+        ctx(limits=limits, intent=OrderIntent("BTC/USD", Side.BUY, notional=3_000.0))
+    )
+    assert outcome.approved
+    assert not outcome.approval_required
+    assert outcome.executable().notional == pytest.approx(1_000.0)
+
+
+def test_open_above_park_band_stays_parked():
+    limits = replace(APPROVAL_LIMITS, park_above_usd=4_000.0)
+    outcome = evaluate_chain(
+        ctx(limits=limits, intent=OrderIntent("BTC/USD", Side.BUY, notional=5_000.0))
+    )
     assert outcome.approval_required
     assert not outcome.approved
-    assert outcome.intent is not None  # sized, ready for a human to approve
+    assert outcome.intent is not None
+    assert outcome.intent.notional == pytest.approx(5_000.0)
     with pytest.raises(RiskDenied):
-        outcome.executable()  # ...but NOT executable
+        outcome.executable()
+
+
+def test_open_exactly_at_park_band_is_clamped_not_parked():
+    """``park_above`` is exclusive: the boundary itself still clamps and executes."""
+    limits = replace(APPROVAL_LIMITS, park_above_usd=4_000.0)
+    outcome = evaluate_chain(
+        ctx(limits=limits, intent=OrderIntent("BTC/USD", Side.BUY, notional=4_000.0))
+    )
+    assert outcome.approved
+    assert not outcome.approval_required
+    assert outcome.executable().notional == pytest.approx(1_000.0)
+
+
+def test_open_exactly_at_approval_cap_is_not_clamped():
+    outcome = evaluate_chain(
+        ctx(limits=APPROVAL_LIMITS, intent=OrderIntent("BTC/USD", Side.BUY, notional=1_000.0))
+    )
+    assert outcome.approved
+    assert outcome.executable().notional == pytest.approx(1_000.0)
+    verdict = next(v for v in outcome.verdicts if v.check == "approval_threshold")
+    assert verdict.action == "allow"
+
+
+def test_quantity_open_clamps_to_the_approval_cap_in_quantity():
+    limits = replace(APPROVAL_LIMITS, max_position_frac=0.50)
+    outcome = evaluate_chain(ctx(limits=limits, intent=OrderIntent("BTC/USD", Side.BUY, qty=0.1)))
+    executable = outcome.executable()
+    assert executable.notional is None
+    assert executable.qty == pytest.approx(1_000.0 / 60_000.0)
+
+
+def test_approval_clamp_stacks_after_kelly():
+    limits = replace(KELLY_BINDS, approval_notional_usd=1_000.0)
+    outcome = evaluate_chain(
+        ctx(limits=limits, intent=OrderIntent("BTC/USD", Side.BUY, notional=50_000.0))
+    )
+    assert outcome.executable().notional == pytest.approx(1_000.0)
+    assert "kelly_cap" in checks(outcome)
+    assert "approval_threshold" in checks(outcome)
+
+
+def test_approval_clamp_below_symbol_floor_is_denied():
+    pricey = make_symbol("BTC/USD", AssetClass.CRYPTO, min_notional=50.0)
+    limits = replace(APPROVAL_LIMITS, approval_notional_usd=10.0, min_notional_usd=5.0)
+    outcome = evaluate_chain(
+        ctx(
+            symbol=pricey,
+            limits=limits,
+            intent=OrderIntent("BTC/USD", Side.BUY, notional=100.0),
+        )
+    )
+    assert denied_by(outcome) == "min_notional"
+    assert not outcome.approval_required
+
+
+def test_approval_clamp_exactly_at_the_floor_is_allowed():
+    limits = replace(APPROVAL_LIMITS, approval_notional_usd=5.0, min_notional_usd=5.0)
+    outcome = evaluate_chain(
+        ctx(limits=limits, intent=OrderIntent("BTC/USD", Side.BUY, notional=100.0))
+    )
+    assert outcome.approved
+    assert outcome.executable().notional == pytest.approx(5.0)
+
+
+def test_unreadable_approval_cap_is_denied():
+    bad = replace(LIMITS, approval_notional_usd=math.nan)
+    assert denied_by(evaluate_chain(ctx(limits=bad))) == "approval_threshold"
+    with pytest.raises(RiskDenied):
+        evaluate_chain(ctx(limits=bad)).executable()
+
+
+def test_approved_open_never_exceeds_the_approval_cap():
+    for requested in (10.0, 1_000.0, 1_000.01, 3_000.0, 50_000.0):
+        outcome = evaluate_chain(
+            ctx(
+                limits=APPROVAL_LIMITS,
+                intent=OrderIntent("BTC/USD", Side.BUY, notional=requested),
+            )
+        )
+        if outcome.approved:
+            assert outcome.executable().notional <= 1_000.0 + 1e-9
+            assert outcome.executable().notional <= requested + 1e-9
+
+
+def test_human_approved_open_is_not_reclamped_to_the_cap():
+    """Redemption clears the park band. It does not shrink the size the human approved."""
+    limits = replace(APPROVAL_LIMITS, park_above_usd=4_000.0, max_position_frac=0.50)
+    outcome = evaluate_chain(
+        ctx(
+            limits=limits,
+            human_approved=True,
+            intent=OrderIntent("BTC/USD", Side.BUY, notional=5_000.0),
+        )
+    )
+    assert outcome.approved
+    assert not outcome.approval_required
+    assert outcome.executable().notional == pytest.approx(5_000.0)
+
+
+def test_human_approved_open_still_clamps_to_the_position_cap():
+    outcome = evaluate_chain(
+        ctx(
+            limits=replace(APPROVAL_LIMITS, park_above_usd=4_000.0),
+            human_approved=True,
+            intent=OrderIntent("BTC/USD", Side.BUY, notional=50_000.0),
+        )
+    )
+    assert outcome.approved
+    assert outcome.executable().notional == pytest.approx(5_000.0)
+
+
+def test_human_approved_does_not_bypass_a_breaker():
+    outcome = evaluate_chain(
+        ctx(
+            limits=replace(APPROVAL_LIMITS, park_above_usd=4_000.0),
+            human_approved=True,
+            state=RiskState(halted_reason="daily_loss"),
+            intent=OrderIntent("BTC/USD", Side.BUY, notional=5_000.0),
+        )
+    )
+    assert denied_by(outcome) == "breaker"
+
+
+def test_park_band_must_sit_above_the_cap():
+    with pytest.raises(ValueError):
+        replace(APPROVAL_LIMITS, park_above_usd=1_000.0)
+    with pytest.raises(ValueError):
+        replace(APPROVAL_LIMITS, park_above_usd=0.0)
+
+
+def test_park_band_defaults_off_and_is_config_driven():
+    from trader.ops.config import Settings
+    from trader.risk.limits import limits_from_settings
+
+    off = limits_from_settings(Settings(auth_disabled=True))
+    assert off.park_above_usd is None
+    assert off.approval_notional_usd == pytest.approx(1_000.0)
+
+    on = limits_from_settings(
+        Settings(
+            auth_disabled=True,
+            risk_park_above_usd=5_000.0,
+            risk_approval_notional_usd=1_000.0,
+        )
+    )
+    assert on.park_above_usd == pytest.approx(5_000.0)
+
+    with pytest.raises(ValueError):
+        limits_from_settings(
+            Settings(
+                auth_disabled=True,
+                risk_park_above_usd=500.0,
+                risk_approval_notional_usd=1_000.0,
+            )
+        )
+    with pytest.raises(ValueError):
+        limits_from_settings(Settings(auth_disabled=True, risk_park_above_usd=-1.0))
 
 
 # --- ordering + no-bypass ---------------------------------------------------
@@ -300,7 +522,7 @@ DENIAL_CASES = [
     (
         "approval_threshold",
         {
-            "limits": APPROVAL_LIMITS,
+            "limits": replace(APPROVAL_LIMITS, park_above_usd=2_000.0),
             "intent": OrderIntent("BTC/USD", Side.BUY, notional=5_000.0),
         },
     ),
