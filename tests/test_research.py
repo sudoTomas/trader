@@ -7,6 +7,7 @@ and the three capture doors (API / MCP / CLI). Runs against the real compose Pos
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -91,8 +92,6 @@ async def test_authored_at_is_the_second_date_and_anchors_freshness(db: Database
     """Two date fields (Hermes capture requirement): created_at = when SUBMITTED (db
     default), authored_at = when the research was CREATED. Recency and auto-stale key
     off authored_at when given — an old article submitted today is old information."""
-    from datetime import UTC, datetime, timedelta
-
     desk = ResearchDesk(db, stale_days=30)
     authored = datetime.now(tz=UTC) - timedelta(days=10)
     note = await desk.submit(title="aged article", body="content", authored_at=authored)
@@ -130,14 +129,17 @@ async def test_authored_at_rejects_future_and_naive_datetimes(db: Database):
 
 
 def test_authored_at_flows_through_the_api_door(clean_db: None):
+    # Relative, not a fixed date: freshness anchors on authored_at, so a hard-coded
+    # date silently ages past the 30-day stale window and drops out of the listing
+    # (this test went red on 2026-09-24 for exactly that reason).
+    authored = (datetime.now(tz=UTC) - timedelta(days=5)).replace(microsecond=0).isoformat()
     with TestClient(create_app(DEV_SETTINGS)) as tc:
         out = tc.post(
-            "/research/notes",
-            json={"title": "aged", "body": "b", "authored_at": "2026-08-25T12:00:00+00:00"},
+            "/research/notes", json={"title": "aged", "body": "b", "authored_at": authored}
         ).json()
-        assert out["authored_at"] == "2026-08-25T12:00:00+00:00"
+        assert out["authored_at"] == authored
         listed = tc.get("/research/notes").json()
-    assert listed[0]["authored_at"] == "2026-08-25T12:00:00+00:00"
+    assert listed[0]["authored_at"] == authored
 
 
 async def test_submit_rejects_blank_notes(db: Database):
