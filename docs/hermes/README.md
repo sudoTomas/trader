@@ -17,15 +17,29 @@ You cannot place orders — no such tool exists on any surface, by design.
 | Surface | Where | Notes |
 |---|---|---|
 | REST API | `http://<trader-host>:8080` | LAN address of the host; `http://localhost:8080` when on the box |
-| MCP server | `http://<trader-host>:8080/mcp` | Streamable HTTP (FastMCP). Add as a remote MCP server in Hermes |
+| MCP server (capture) | `http://<trader-host>:8080/mcp-capture/` | **Hermes uses this one.** Streamable HTTP; exposes only the four capture tools below |
+| MCP server (operator) | `http://<trader-host>:8080/mcp/` | Every tool; operator key only |
 | Health (no auth ever) | `GET /health` | `{"status":"ok","db":"ok"}` when healthy |
 
-**Auth (enabled 2026-09-10)**: every request — REST and `/mcp` alike — must carry an
-`X-API-Key` header matching `TRADER_API_KEY` in the trader's `.env` on the host
-(`/health` is the only exemption). Missing/wrong key → 401. When configuring Hermes's
-remote MCP server, set the endpoint to `http://<trader-host>:8080/mcp/` (note the
-trailing slash) with the `X-API-Key` custom header; read the key off the box, never
-hard-code it into shared docs.
+**Auth (enabled 2026-09-10; capture scope added with #8)**: every request — REST and
+MCP alike — must carry an `X-API-Key` header (`/health` is the only exemption).
+Missing/wrong key → 401. Two keys exist in the trader's `.env` on the host:
+
+| Key | Who holds it | What it opens |
+|---|---|---|
+| `TRADER_CAPTURE_API_KEY` | **Hermes** (and any other external research agent) | `POST /research/notes`, `GET /research/notes`, `POST /research/notes/{id}/retire`, `GET /research/view`, `GET /health`, and the `/mcp-capture/` mount (tools `submit_research_note`, `get_research_notes`, `retire_note`, `get_macro_view`). **Nothing else**: any other REST route, and `/mcp/`, answers `403 {"scope": "capture", ...}` |
+| `TRADER_API_KEY` | the operator only | everything, on every surface |
+
+Hermes gets the **capture key**, never the operator key. So it cannot pause, resume,
+flatten, wake the loop, resolve approvals, adopt venue positions, run replays, spend the
+X-sentiment cap, force a compile, or export the mirror — the code now refuses those, not
+just this document. It also cannot read the journal, ledger, orders, risk state, briefs,
+sentiment, usage or audit; if Hermes needs one of those reads, the operator runs it.
+When configuring Hermes's remote MCP server, set the endpoint to
+`http://<trader-host>:8080/mcp-capture/` (note the trailing slash) with the `X-API-Key`
+custom header carrying the capture key; read the key off the box, never hard-code it
+into shared docs. A capture key that is blank on the host means no second key exists,
+and an empty header never matches either key.
 
 > History: until 2026-09-10 the service ran auth-disabled AND bound to localhost only —
 > a remote client got connection-refused (reported as "no MCP built out"). Both fixed:
@@ -34,6 +48,10 @@ hard-code it into shared docs.
 ## The capability surface (identical on MCP, REST, and the `trader` CLI)
 
 ### Read tools (safe, use freely)
+
+With the capture key only `get_health`, `get_macro_view` and `get_research_notes` from this
+table are reachable; the rest need the operator key and are listed so you can read the
+journal when the operator runs a query for you.
 
 | MCP tool | REST | What you get |
 |---|---|---|
@@ -61,12 +79,14 @@ hard-code it into shared docs.
   (install that skill into Hermes).
 - `retire_note` — withdraw a note (corrections are a *new* note; notes are immutable).
 - `compile_macro_view` / `compile_brief` — force a recompile now (normally debounced
-  and automatic on note changes; rarely needed).
+  and automatic on note changes; rarely needed, and operator-key only: the capture key
+  cannot call them, and does not need to — a submitted note triggers the recompile).
 
 Example capture:
 
 ```bash
 curl -s -X POST http://<trader-host>:8080/research/notes \
+  -H "X-API-Key: $TRADER_CAPTURE_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"title":"ETF flows negative 2nd week","body":"<distilled markdown>",
        "symbols":["ETH/USD"],"source":"https://example.com/article",
@@ -77,9 +97,10 @@ curl -s -X POST http://<trader-host>:8080/research/notes \
 
 `pause`, `resume`, `resume_breaker`, `flatten_all`, `wake_trader`, `resolve_approval`,
 `adopt_venue_positions`, `run_replay_eval`, `fetch_x_sentiment` (spends against a daily
-cap), `export_research_mirror`. They exist
-for the operator's surfaces. `flatten_all` closes every position; treat the whole group
-as off-limits unless the operator explicitly directs otherwise in the moment.
+cap), `export_research_mirror`. They exist for the operator's surfaces and are enforced
+by key scope: none of them is mounted on `/mcp-capture/`, and the capture key gets a 403
+on their REST routes and on `/mcp/`. `flatten_all` closes every position; treat the whole
+group as off-limits even if the operator hands you the operator key in the moment.
 
 ## Invariants that keep this safe (do not engineer around them)
 
@@ -91,6 +112,9 @@ as off-limits unless the operator explicitly directs otherwise in the moment.
    Hermes loses convenience, not function.
 4. Notes are immutable, auto-stale ~30 days after `authored_at` unless pinned, and every
    capture leaves an audit row.
+5. **Key scope is enforced in code** (#8): the capture key reaches four routes and one
+   MCP mount, nothing else. Losing the capture key exposes research capture, not the
+   risk chain, the broker, or the loop.
 
 ## Reading the journal usefully
 
