@@ -14,6 +14,15 @@ from collections.abc import AsyncIterator
 import pytest
 import structlog
 
+from trader.ops.config import Settings
+
+# The suite must never read the operator's .env: pydantic-settings loads it from the cwd on
+# every Settings(...) construction, so the live loop symbols / API key / flags would leak
+# into tests that run from the deployed checkout (tests/test_doctor.py went red exactly
+# that way on 2026-09-29 while passing in a worktree with no .env). Pins below cover the
+# process environment; this covers the file.
+Settings.model_config["env_file"] = None
+
 os.environ.setdefault("TRADER_AUTH_DISABLED", "true")
 # Tests must be immune to the operator's .env: never build the live loop (and with it a
 # real broker) off ambient config. Real env vars outrank the .env file in pydantic-settings.
