@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from pydantic import AliasChoices, Field
+import json
+
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -71,8 +73,31 @@ class Settings(BaseSettings):
     sentiment_x_handles: str = ""  # comma-separated allowlist for x_search; empty = open
 
     # --- LLM endpoints ---
+    # Nemotron preset (TRADER_NEMOTRON_*). Used for decide/analyst when
+    # TRADER_DECIDE_BASE_URL is empty, and the client bakes enable_thinking:false.
+    # A generic URL equal to this base URL gets the same flag forced on.
+    # Swapping the decide model on an existing box is a decide-behavior change
+    # (docs/runbooks/decide-change-gate.md). For a new user it is the first run.
     nemotron_base_url: str = "http://localhost:8009/v1"
     nemotron_model: str = "nemotron-3-super"  # served model id on the Spark vLLM
+    # Any OpenAI-compatible /v1 (OpenAI, Groq, Together, Ollama, vLLM, xAI).
+    # Empty base URL selects the Nemotron preset above — do not send
+    # chat_template_kwargs to a vendor API; OpenAI rejects the argument.
+    decide_base_url: str = ""
+    decide_model: str = ""
+    decide_api_key: str = ""
+    decide_extra_body: str = ""  # JSON object merged into the chat-completions body
+    # USD per 1M tokens. 0 → PRICES table, else $0. Non-zero overrides the table.
+    decide_price_in: float = 0.0
+    decide_price_out: float = 0.0
+    # Same shape for brief/compiler/critic (and the registry sentiment role).
+    # Empty keeps xAI-if-configured, else the decide client. x_search stays xAI-only.
+    research_base_url: str = ""
+    research_model: str = ""
+    research_api_key: str = ""
+    research_extra_body: str = ""
+    research_price_in: float = 0.0
+    research_price_out: float = 0.0
     xai_base_url: str = "https://api.x.ai/v1"
     xai_model: str = "grok-4"
     xai_api_key: str = Field(
@@ -82,6 +107,20 @@ class Settings(BaseSettings):
     # OAuth disabled and the provider resolves to XAI_API_KEY alone).
     xai_token_key: str = ""
     xai_token_path: str = "~/.config/trader/xai_token.enc"
+
+    @field_validator("decide_extra_body", "research_extra_body")
+    @classmethod
+    def extra_body_is_json_object(cls, value: str) -> str:
+        text = value.strip()
+        if not text:
+            return ""
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError("must be a JSON object") from exc
+        if not isinstance(parsed, dict):
+            raise ValueError("must be a JSON object")
+        return text
 
     # --- Market data / broker credentials ---
     # Provider-conventional env names (no TRADER_ prefix), as documented in .env.example.
