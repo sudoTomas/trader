@@ -11,7 +11,7 @@ docs have one home. None of it is an invariant of the codebase.
 | Fact | Value on this box | Generic equivalent |
 |---|---|---|
 | Hardware | NVIDIA DGX Spark, 128 GB unified CPU/GPU memory | any Linux host with Docker (or Python 3.12 + uv) |
-| Hostname / LAN address | `spark-4b1a` / `192.168.195.251` | `<host>` / `<trader-host>` in the docs |
+| Hostname / LAN address | `<host>` / `<lan-ip>` (redacted; the real values live only in the operator's notes) | `<host>` / `<trader-host>` in the docs |
 | Repo checkout | `~/repos/trader` (`main`) | `TRADER_REPO`, `%h/repos/trader` in the unit templates |
 | `uv` | Homebrew on Linux: `/home/linuxbrew/.linuxbrew/bin/uv` | `%h/.local/bin/uv` (the installer default) or `PATH` |
 | Host `psql` | not installed — query through `docker exec` into the compose db | `scripts/desk-watch.sh` handles both |
