@@ -19,11 +19,11 @@ embry0 stays on GitHub (`sudoTomas/embry0`).
 | [#1](https://github.com/sudoTomas/trader/issues/1) | EAI-192 | Flip briefs into the decide lane |
 | [#2](https://github.com/sudoTomas/trader/issues/2) **closed 2026-09-19** | EAI-176 / epic EAI-164 | First ETH round trip accepted (journal ↔ Alpaca match; flatten skipped) |
 | [#3](https://github.com/sudoTomas/trader/issues/3) | EAI-186 leftover | SPY equity round trip (still held) |
-| [#4](https://github.com/sudoTomas/trader/issues/4) | EAI-187 | Commodity ETFs |
-| [#5](https://github.com/sudoTomas/trader/issues/5) | EAI-189 | Screener |
+| [#4](https://github.com/sudoTomas/trader/issues/4) **closed 2026-09-29 (PR #59; shadow-first)** | EAI-187 | Commodity ETFs |
+| [#5](https://github.com/sudoTomas/trader/issues/5) **closed 2026-09-29 (PR #60)** | EAI-189 | Screener |
 | [#6](https://github.com/sudoTomas/trader/issues/6) **closed 2026-09-29** | EAI-191 | IBKR decision record (deferred; re-file when wanted) |
 | [#7](https://github.com/sudoTomas/trader/issues/7) | EAI-173 | Probe SuperGrok OAuth vs `/v1/responses` |
-| [#8](https://github.com/sudoTomas/trader/issues/8) | — | Capture-scoped API key |
+| [#8](https://github.com/sudoTomas/trader/issues/8) **closed 2026-09-29 (PR #58)** | — | Capture-scoped API key |
 | [#9](https://github.com/sudoTomas/trader/issues/9) | — | crypto-flows Grok desk seat |
 | [#10](https://github.com/sudoTomas/trader/issues/10) | — | Sweep citation loop |
 | [#11](https://github.com/sudoTomas/trader/issues/11) **closed 2026-09-29 (PR #39)** | — | Wire `ApprovalService.redeem()` |
@@ -36,7 +36,7 @@ embry0 stays on GitHub (`sudoTomas/embry0`).
 | [#18](https://github.com/sudoTomas/trader/issues/18) **closed 2026-09-29 (PR #37)** | — | Replay includes Macro View and briefs |
 | [#19](https://github.com/sudoTomas/trader/issues/19) | EAI-166 | **Epic:** M5 expansion |
 | [#20](https://github.com/sudoTomas/trader/issues/20) | — | **Epic:** box-local Grok macro desk |
-| [#21](https://github.com/sudoTomas/trader/issues/21) | — | **Epic:** money-path honesty |
+| [#21](https://github.com/sudoTomas/trader/issues/21) **closed 2026-09-29** | — | **Epic:** money-path honesty |
 
 ## Filed 2026-09-29 (review of live performance + open-source readiness)
 
@@ -59,6 +59,11 @@ embry0 stays on GitHub (`sudoTomas/embry0`).
 
 Batch one (2026-09-29) merged as PRs #36 (D), #39 (B), #38 (C), #37 (E), #40 (A); report in
 `docs/reports/2026-09-29-batch-one.md`. Deployed only after the operator restarts `trader-api`.
+
+Batch three (2026-09-29): #8 (PR #58), #4 (PR #59), #7 probe capability (PR #61, issue open until the
+matrix is recorded), #5 (PR #60), fixes lane (PR #62: single-source version, FRED door for #17, replay
+lane flags for #1, mark-vol cache). New: [#63](https://github.com/sudoTomas/trader/issues/63) shared
+xAI credential manager.
 
 Batch two (2026-09-29): #27, #29, #30, #33, #32 merged as PRs #54, #53, #55, #56, #57. Epic #35's remaining
 items are operator-only: PyPI trusted publisher for `trader-agent`, flip visibility, tag `v0.1.0`.
