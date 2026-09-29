@@ -230,6 +230,9 @@ class LoopRunner:
             self.stats.last_tick_at = now.isoformat()
 
             equity = await self._resolve_equity(now)
+            # Holds never reach RiskGuard.evaluate, so the session would otherwise
+            # stay frozen until the model wants to trade (#24).
+            await self._observe_breakers(now, equity)
             positions = {row["symbol"]: float(row["qty"]) for row in await self._positions.all()}
             await self._poll_sentiment(now)
             marks = await self._marks(now, positions)
@@ -304,6 +307,28 @@ class LoopRunner:
             self._equity_fallback_open = True
         log.warning("equity_fallback", source=source, used=used, error=str(exc))
         return used
+
+    async def _observe_breakers(self, now: datetime, equity: float) -> None:
+        """Roll the session and trip loss breakers off this tick's equity.
+
+        The guard still observes again when an intent arrives, so a trade sees
+        state at least as fresh as this tick. One row per process: use the latest
+        session day among venues that are actually open.
+        """
+        open_days = [
+            symbol.market_calendar.session_day(now)
+            for symbol in self.symbols
+            if symbol.market_calendar.is_open(now)
+        ]
+        if not open_days:
+            return
+        limits = self.guard._limits
+        await self.guard.breakers.observe(
+            equity=equity,
+            session_day=max(open_days),
+            daily_loss_limit_frac=limits.daily_loss_limit_frac,
+            weekly_drawdown_limit_frac=limits.weekly_drawdown_limit_frac,
+        )
 
     async def _poll_sentiment(self, now: datetime) -> None:
         """Collect X sentiment on a cadence (shadow record). Never blocks a tick on failure."""

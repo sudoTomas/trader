@@ -512,3 +512,58 @@ async def test_broker_equity_is_cached_for_a_few_seconds(db: Database):
     assert broker.calls == 1
     await runner.tick(NOW + timedelta(seconds=EQUITY_CACHE_SECONDS + 5))
     assert broker.calls == 2
+
+
+def _utc_midnight_pair() -> tuple[datetime, datetime]:
+    """Two aware timestamps on opposite sides of the current UTC midnight."""
+    now = datetime.now(tz=UTC).replace(minute=0, second=0, microsecond=0)
+    if now.hour >= 12:
+        before = now.replace(hour=22)
+        after = (before + timedelta(days=1)).replace(hour=1)
+    else:
+        after = now.replace(hour=1)
+        before = (after - timedelta(days=1)).replace(hour=22)
+    return before, after
+
+
+async def test_holds_across_a_utc_day_roll_the_breaker_session(db: Database):
+    """A run of holds must still roll day_session and re-baseline daily equity."""
+    from trader.risk.breakers import BreakerStore
+
+    before, after = _utc_midnight_pair()
+    broker = StubAccount(equity=100_000.0)
+    runner = build_runner(db, [HOLD, HOLD])
+    runner.broker = broker
+
+    await runner.tick(before, force=True)
+    state = await BreakerStore(db).load()
+    assert state.day_session == before.date()
+    assert state.day_start_equity == pytest.approx(100_000.0)
+
+    broker.equity = 100_025.0
+    await runner.tick(after, force=True)
+    state = await BreakerStore(db).load()
+    assert state.day_session == after.date()
+    assert state.day_start_equity == pytest.approx(100_025.0)
+    rows = await db.fetch_all(
+        "SELECT decision, risk_verdicts FROM decisions WHERE trigger != 'equity_fallback'"
+    )
+    assert len(rows) == 2
+    assert all(row["decision"]["action"] == "hold" for row in rows)
+    assert all(row["risk_verdicts"] is None for row in rows)
+
+
+async def test_a_hold_tick_trips_daily_loss_when_equity_bleeds(db: Database):
+    from trader.loop.runner import EQUITY_CACHE_SECONDS
+    from trader.risk.breakers import DAILY_LOSS, BreakerStore
+
+    now = datetime.now(tz=UTC)
+    broker = StubAccount(equity=100_000.0)
+    runner = build_runner(db, [HOLD, HOLD])
+    runner.broker = broker
+    await runner.tick(now, force=True)
+    broker.equity = 96_000.0  # -4%, outside the 3% daily-loss limit
+    await runner.tick(now + timedelta(seconds=EQUITY_CACHE_SECONDS + 5), force=True)
+    state = await BreakerStore(db).load()
+    assert state.halted_reason == DAILY_LOSS
+    assert state.day_start_equity == pytest.approx(100_000.0)
