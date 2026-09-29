@@ -39,6 +39,16 @@ class ResearchNoteIn(BaseModel):
     authored_at: str | None = None
 
 
+class XaiProbeIn(BaseModel):
+    """``POST /xai/probe`` body. Every field optional: the service fills the #7 matrix
+    defaults (models × both endpoints × none/x_search/web_search, credential auto)."""
+
+    models: list[str] | None = None
+    endpoints: list[str] | None = None
+    tools: list[str] | None = None  # "none" | "x_search" | "web_search"
+    credential: str = "auto"  # auto | oauth | api_key
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     settings.require_auth()
@@ -52,7 +62,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     compiler = build_compiler(db, settings, mirror)
     briefs = build_briefs(db, settings)
     evaluator = build_evaluator(db, settings, desk)
-    registry = build_registry(db, runner, compiler, mirror, sentiment, evaluator, briefs)
+    registry = build_registry(
+        db,
+        runner,
+        compiler,
+        mirror,
+        sentiment,
+        evaluator,
+        briefs,
+        xai_http=build_xai_http(settings),
+    )
     mcp = build_mcp(registry)
     capture_mcp = build_mcp(registry, only=CAPTURE_CAPABILITIES, name="trader-capture")
     # Our ApiKeyMiddleware gates both mounts, and the host is reached over the LAN — the
@@ -257,6 +276,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def eval_run(run_id: int) -> dict | None:
         return await registry.get("eval_run").handler(run_id=run_id)
 
+    @app.post("/xai/probe")
+    async def probe_xai(body: XaiProbeIn) -> dict:
+        try:
+            return await registry.get("probe_xai").handler(**body.model_dump())
+        except ValueError as exc:  # unknown endpoint / tool / credential
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     app.mount("/mcp", mcp_app)
     app.mount("/mcp-capture", capture_mcp_app)
     return app
@@ -411,6 +437,14 @@ def build_runner(db: Database, settings: Settings, sentiment=None, desk=None):
         briefs_enabled=settings.briefs_enabled,
         desk=desk if settings.desk_enabled else None,
     )
+
+
+def build_xai_http(settings: Settings):
+    """The service's authenticated api.x.ai client for the operator diagnostics
+    (`trader xai probe`): the roles' credential path, None without any xAI credential."""
+    from trader.llm.xai import xai_http_client
+
+    return xai_http_client(settings)
 
 
 app = create_app()

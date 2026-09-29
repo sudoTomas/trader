@@ -63,6 +63,7 @@ def build_registry(
     sentiment: Any | None = None,
     evaluator: Any | None = None,
     briefs: Any | None = None,
+    xai_http: Any | None = None,
 ) -> ServiceRegistry:
     """Construct the registry with the capabilities available in this build.
 
@@ -70,7 +71,9 @@ def build_registry(
     so the registry can be built before the lifespan opens the pool. ``runner`` is the
     decide loop, present only when this build runs one; ``compiler`` is the Macro View
     compiler, ``briefs`` the per-candidate brief compiler, and ``mirror`` the one-way
-    markdown exporter (research.*), absent in store-less builds.
+    markdown exporter (research.*), absent in store-less builds. ``xai_http`` is the
+    service's authenticated api.x.ai client (``llm.xai.xai_http_client``), None without
+    an xAI credential path; only the operator diagnostics use it.
     """
     reg = ServiceRegistry()
 
@@ -695,6 +698,88 @@ def build_registry(
             for s in await repo.steps_summary(run_id)
         ]
         return {**_run_out(row), "steps": steps}
+
+    # --- diagnostics (operator-only) -----------------------------------------
+
+    @reg.register(
+        "probe_xai",
+        kind="command",
+        summary="Probe xAI endpoints × models × tools with the service's own credential"
+        " (OAuth first, XAI_API_KEY fallback); diagnostics, unmetered, one audit row."
+        " tools: 'none' | 'x_search' | 'web_search'; credential: auto | oauth | api_key.",
+    )
+    async def probe_xai(
+        models: list[str] | None = None,
+        endpoints: list[str] | None = None,
+        tools: list[str] | None = None,
+        credential: str = "auto",
+    ) -> dict[str, Any]:
+        from trader.llm import xai_probe
+
+        chosen_models = list(models) if models is not None else list(xai_probe.DEFAULT_MODELS)
+        chosen_endpoints = list(endpoints) if endpoints is not None else list(xai_probe.ENDPOINTS)
+        chosen_tools: list[str | None] = (
+            [None if t in ("none", "", None) else t for t in tools]
+            if tools is not None
+            else [None, *xai_probe.TOOLS]
+        )
+        if not chosen_models or not all(isinstance(m, str) and m.strip() for m in chosen_models):
+            raise ValueError("models must be a non-empty list of model ids")
+        for endpoint in chosen_endpoints:
+            if endpoint not in xai_probe.ENDPOINTS:
+                raise ValueError(f"endpoint must be one of {xai_probe.ENDPOINTS}, got {endpoint!r}")
+        for tool in chosen_tools:
+            if tool is not None and tool not in xai_probe.TOOLS:
+                raise ValueError(f"tool must be 'none' or one of {xai_probe.TOOLS}, got {tool!r}")
+        if credential not in xai_probe.CREDENTIALS:
+            raise ValueError(
+                f"credential must be one of {xai_probe.CREDENTIALS}, got {credential!r}"
+            )
+
+        if xai_http is None:
+            return {"status": "unavailable", "reason": "no xAI credential in this build"}
+
+        results = await xai_probe.probe_matrix(
+            xai_http,
+            models=chosen_models,
+            endpoints=chosen_endpoints,
+            tools=chosen_tools,
+            credential=credential,
+        )
+        summary: dict[str, int] = {"probes": len(results), "ok": sum(1 for r in results if r.ok)}
+        for r in results:
+            if r.error_class:
+                summary[r.error_class] = summary.get(r.error_class, 0) + 1
+        matrix = [
+            {
+                "endpoint": r.endpoint,
+                "model": r.model,
+                "tool": r.tool,
+                "credential_used": r.credential_used,
+                "status_code": r.status_code,
+                "ok": r.ok,
+                "error_class": r.error_class,
+                "citations_count": r.citations_count,
+            }
+            for r in results
+        ]
+        await _audit_command(
+            "probe_xai",
+            {
+                "models": chosen_models,
+                "endpoints": chosen_endpoints,
+                "tools": [t or "none" for t in chosen_tools],
+                "credential": credential,
+                "summary": summary,
+                "matrix": matrix,
+            },
+        )
+        return {
+            "status": "ok",
+            "credential": credential,
+            "summary": summary,
+            "results": [r.as_dict() for r in results],
+        }
 
     async def _audit_command(action: str, payload: dict[str, Any]) -> None:
         """Commands are state-changing: every one leaves an append-only trace."""
