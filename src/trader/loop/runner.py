@@ -42,6 +42,7 @@ from trader.loop.journal import (
     DENIED,
     ERROR,
     EXECUTED,
+    PENDING,
     SHADOW,
     SUPPRESSED,
     Journal,
@@ -504,13 +505,38 @@ class LoopRunner:
             elif self.shadow or self.executor is None or symbol.ticker in self.shadow_symbols:
                 status = SHADOW
             else:
-                # Live-paper: the executor takes ONLY outcome.executable(), which raises
-                # unless the chain approved. There is no other path to the broker.
+                # Persist the decision BEFORE submit so orders.decision_id can point
+                # at it. The executor still receives only outcome.executable().
+                decision_id = await self._journal.record(
+                    trigger=trigger_label,
+                    status=PENDING,
+                    symbol=symbol.ticker,
+                    asset_class=symbol.asset_class,
+                    prompt=result.prompt,
+                    raw_output=result.raw_output,
+                    decision=decision,
+                    risk_verdicts=verdicts,
+                    desk_verdicts=desk_verdicts,
+                    macro_view_version=macro_view_version,
+                    brief_version=brief_version,
+                    cost_usd=result.completion.cost_usd,
+                    latency_ms=int((time.perf_counter() - started) * 1000),
+                )
                 execution = await self.executor.execute(
-                    outcome, symbol, price=ctx.price, decision_id=None
+                    outcome, symbol, price=ctx.price, decision_id=decision_id
                 )
                 status = EXECUTED if execution.submitted else ERROR
                 reason = execution.reason or reason
+                await self._journal.set_status(decision_id, status)
+                self.stats.decisions += 1
+                return WakeupResult(
+                    symbol.ticker,
+                    names,
+                    status,
+                    decision_id,
+                    action=decision.action,
+                    reason=reason,
+                )
 
         decision_id = await self._journal.record(
             trigger=trigger_label,

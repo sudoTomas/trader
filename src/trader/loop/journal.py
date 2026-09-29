@@ -23,6 +23,7 @@ log = structlog.get_logger(__name__)
 # `suppressed` = a wakeup that produced no decision (e.g. no usable market data).
 SHADOW = "shadow"
 PROPOSED = "proposed"
+PENDING = "pending"  # provisional row written before a live submit, so orders can link it
 DENIED = "denied"
 EXECUTED = "executed"
 ERROR = "error"
@@ -37,6 +38,7 @@ def decision_to_json(decision: Decision | None) -> dict[str, Any] | None:
 
 class Journal:
     def __init__(self, db: Database) -> None:
+        self._db = db
         self._repo = DecisionsRepo(db)
 
     async def record(
@@ -80,6 +82,18 @@ class Journal:
             action=decision.action if decision else None,
         )
         return decision_id
+
+    async def set_status(self, decision_id: int, status: str) -> None:
+        """Move a provisional row to its terminal status after the submit attempt.
+
+        The row is inserted before ``Executor.execute`` so the order can store
+        ``decision_id``. Payload columns are already final; only status changes.
+        """
+        await self._db.execute(
+            "UPDATE decisions SET status = %s WHERE id = %s",
+            (status, decision_id),
+        )
+        log.info("decision_status_set", decision_id=decision_id, status=status)
 
     async def recent(self, limit: int = 20) -> list[dict[str, Any]]:
         rows = await self._repo.recent(limit)

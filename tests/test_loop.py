@@ -614,3 +614,41 @@ async def test_orders_from_the_previous_session_do_not_spend_the_cap(db: Databas
     runner = build_runner(db, [OPEN], guard=_capped_guard(db, 1))
     results = await runner.tick(now, force=True)
     assert results[0].status == SHADOW
+
+
+# --- decision_id on live orders (#14) ---------------------------------------
+
+
+async def test_live_order_carries_the_decision_id(db: Database):
+    from tests.test_executor import FakeAlpaca
+    from trader.loop.executor import Executor
+    from trader.loop.journal import EXECUTED
+
+    broker = FakeAlpaca()
+    runner = build_runner(db, [OPEN], shadow=False, executor=Executor(db, broker))
+    results = await runner.tick(datetime.now(tz=UTC), force=True)
+
+    assert results[0].status == EXECUTED
+    assert len(broker.submitted) == 1
+    order = await db.fetch_one("SELECT decision_id, status FROM orders")
+    assert order["status"] == "submitted"
+    assert order["decision_id"] == results[0].decision_id
+    row = await Journal(db).get(results[0].decision_id)
+    assert row["status"] == EXECUTED
+    assert row["decision"]["action"] == "open"
+    assert row["risk_verdicts"]
+
+
+async def test_rejected_submit_still_links_the_order_to_its_decision(db: Database):
+    from tests.test_executor import FakeAlpaca
+    from trader.loop.executor import Executor
+    from trader.loop.journal import ERROR
+
+    broker = FakeAlpaca(fail="error")
+    runner = build_runner(db, [OPEN], shadow=False, executor=Executor(db, broker))
+    results = await runner.tick(datetime.now(tz=UTC), force=True)
+
+    assert results[0].status == ERROR
+    order = await db.fetch_one("SELECT decision_id FROM orders")
+    assert order["decision_id"] == results[0].decision_id
+    assert (await Journal(db).get(results[0].decision_id))["status"] == ERROR
