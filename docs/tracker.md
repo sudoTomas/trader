@@ -46,10 +46,10 @@ Historical `EAI-*` strings in tests and comments are provenance, not the tracker
 | [#24](https://github.com/sudoTomas/trader/issues/24) **closed 2026-09-29 (PR #40)** | Breakers: roll `day_session` every tick, not only on intents |
 | [#25](https://github.com/sudoTomas/trader/issues/25) **closed 2026-09-29 (PR #36)** | Broker/data errors lose their detail (`alpaca: `) |
 | [#26](https://github.com/sudoTomas/trader/issues/26) **closed 2026-09-29 (PR #38)** | Generic decide LLM provider (any OpenAI-compatible endpoint) |
-| [#27](https://github.com/sudoTomas/trader/issues/27) | Config reference generated from Settings; complete `.env.example` |
+| [#27](https://github.com/sudoTomas/trader/issues/27) **closed 2026-09-29 (PR #54)** | Config reference generated from Settings; complete `.env.example` |
 | [#28](https://github.com/sudoTomas/trader/issues/28) **closed 2026-09-29 (PR #36)** | License (MIT), disclaimer, contribution scaffolding |
-| [#29](https://github.com/sudoTomas/trader/issues/29) | Strip machine-specific references; infra reproducible off the Spark |
-| [#30](https://github.com/sudoTomas/trader/issues/30) | `trader doctor` preflight + shadow-only quickstart |
+| [#29](https://github.com/sudoTomas/trader/issues/29) **closed 2026-09-29 (PR #53)** | Strip machine-specific references; infra reproducible off the Spark |
+| [#30](https://github.com/sudoTomas/trader/issues/30) **closed 2026-09-29 (PR #55)** | `trader doctor` preflight + shadow-only quickstart |
 | [#31](https://github.com/sudoTomas/trader/issues/31) **closed 2026-09-29 (PR #36)** | Publish: Docker image on GHCR + PyPI (`uvx trader`) |
 | [#32](https://github.com/sudoTomas/trader/issues/32) | Translate Linear/v1 provenance into readable rationale |
 | [#33](https://github.com/sudoTomas/trader/issues/33) | README overhaul |
@@ -58,6 +58,8 @@ Historical `EAI-*` strings in tests and comments are provenance, not the tracker
 
 Batch one (2026-09-29) merged as PRs #36 (D), #39 (B), #38 (C), #37 (E), #40 (A); report in
 `docs/reports/2026-09-29-batch-one.md`. Deployed only after the operator restarts `trader-api`.
+
+Batch two (2026-09-29): #27, #29, #30 merged as PRs #54, #53, #55; #33 next, #32 alone after.
 
 Decisions recorded 2026-09-29: MIT; no TypeScript rewrite; Grok desk (#20) follows #21 and
 precedes the distribution tail; #6 closed as deferred.
