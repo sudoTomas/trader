@@ -1,5 +1,5 @@
-# Tag vX.Y.Z. pyproject.toml is the publish version; the job refuses the tag
-# unless src/trader/surfaces/services.py VERSION is the same string.
+# Tag vX.Y.Z. pyproject.toml is the single version (services.VERSION reads it
+# through package metadata); the job refuses a tag that does not match it.
 # Pushes ghcr.io/<owner>/trader for linux/amd64 and linux/arm64, then publishes
 # to PyPI with trusted publishing (environment name: pypi). GitHub release
 # notes are the changelog — there is no CHANGELOG file.
@@ -49,23 +49,8 @@ jobs:
           set -euo pipefail
           tag="${GITHUB_REF_NAME#v}"
           py=$(uv run python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')
-          svc=$(uv run python -c '
-          import ast
-          from pathlib import Path
-          tree = ast.parse(Path("src/trader/surfaces/services.py").read_text())
-          found = None
-          for node in tree.body:
-              if isinstance(node, ast.Assign):
-                  for target in node.targets:
-                      if isinstance(target, ast.Name) and target.id == "VERSION":
-                          found = ast.literal_eval(node.value)
-          if not isinstance(found, str):
-              raise SystemExit("services.VERSION not found")
-          print(found)
-          ')
-          echo "tag=$tag pyproject=$py services=$svc"
+          echo "tag=$tag pyproject=$py"
           test "$py" = "$tag"
-          test "$svc" = "$py"
       - name: Lint
         run: uv run ruff check .
       - name: Format check

@@ -15,7 +15,27 @@ from typing import Any
 
 from trader.store.db import Database
 
-VERSION = "0.1.0"
+
+def _read_version() -> str:
+    """The published version, from installed metadata; else from pyproject.toml.
+
+    pyproject.toml is the single source (the release workflow checks the tag against
+    it). A worktree run after ``uv sync`` has the metadata; a bare checkout on
+    ``sys.path`` does not, so the fallback reads the file the metadata came from.
+    """
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("trader-agent")
+    except PackageNotFoundError:
+        import tomllib
+        from pathlib import Path
+
+        pyproject = Path(__file__).resolve().parents[3] / "pyproject.toml"
+        return tomllib.loads(pyproject.read_text())["project"]["version"]
+
+
+VERSION = _read_version()
 
 
 @dataclass(frozen=True)

@@ -44,6 +44,32 @@ def test_health_reports_db_reachability(clean_db: None):
     assert body["db"] == "ok"
 
 
+def test_health_reports_the_pyproject_version(clean_db: None):
+    """pyproject.toml is the single version; services.VERSION reads it, never restates it."""
+    import ast
+    import tomllib
+    from pathlib import Path
+
+    import trader.surfaces.services as services
+
+    root = Path(services.__file__).resolve().parents[3]
+    pyproject = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]
+    with TestClient(create_app(DEV_SETTINGS)) as tc:
+        body = tc.get("/health").json()
+    assert body["version"] == pyproject
+    assert services.VERSION == pyproject
+
+    tree = ast.parse(Path(services.__file__).read_text())
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                assert not (
+                    isinstance(target, ast.Name)
+                    and target.id == "VERSION"
+                    and isinstance(node.value, ast.Constant)
+                ), "services.VERSION must not be a second literal copy of the version"
+
+
 def test_api_key_gating(clean_db: None):
     app = create_app(Settings(api_key="sekret", auth_disabled=False))
     with TestClient(app) as tc:
