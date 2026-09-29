@@ -15,7 +15,27 @@ from typing import Any
 
 from trader.store.db import Database
 
-VERSION = "0.1.0"
+
+def _read_version() -> str:
+    """The published version, from installed metadata; else from pyproject.toml.
+
+    pyproject.toml is the single source (the release workflow checks the tag against
+    it). A worktree run after ``uv sync`` has the metadata; a bare checkout on
+    ``sys.path`` does not, so the fallback reads the file the metadata came from.
+    """
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("trader-agent")
+    except PackageNotFoundError:
+        import tomllib
+        from pathlib import Path
+
+        pyproject = Path(__file__).resolve().parents[3] / "pyproject.toml"
+        return tomllib.loads(pyproject.read_text())["project"]["version"]
+
+
+VERSION = _read_version()
 
 
 @dataclass(frozen=True)
@@ -637,6 +657,48 @@ def build_registry(
             return {"status": "unavailable", "reason": "no xAI credential in this build"}
         return await sentiment.get_x_sentiment(default_registry().get(symbol))
 
+    # --- fred macro series ---------------------------------------------------
+
+    fred_from_settings: Any | None = None
+
+    def _fred_client() -> Any | None:
+        """The loop's client when this build runs one (its TTL cache is shared with the
+        decide context); otherwise one built from FRED_API_KEY on first use; None
+        without a key. Fetch-on-use either way — nothing is stored."""
+        nonlocal fred_from_settings
+        client = getattr(getattr(runner, "market_data", None), "fred", None)
+        if client is not None:
+            return client
+        if fred_from_settings is None:
+            from trader.data.fred import Fred
+            from trader.ops.config import get_settings
+
+            key = get_settings().fred_api_key
+            if key:
+                fred_from_settings = Fred(key)
+        return fred_from_settings
+
+    @reg.register(
+        "fred",
+        kind="query",
+        summary="Latest observations of one FRED macro series (VIXCLS by default),"
+        " newest first — the prints the decide context sees.",
+    )
+    async def fred(series: str = "VIXCLS", limit: int = 10) -> dict[str, Any]:
+        client = _fred_client()
+        if client is None:
+            return {"status": "unavailable", "reason": "FRED_API_KEY is not configured"}
+        try:
+            rows = await client.get_series(series, min(max(int(limit), 1), 100))
+        except Exception as exc:  # noqa: BLE001 - a read door reports, never raises
+            return {"status": "unavailable", "reason": str(exc)}
+        return {
+            "series": series,
+            "observations": [
+                {"date": obs_date.isoformat(), "value": value} for obs_date, value in reversed(rows)
+            ],
+        }
+
     # --- replay eval (M5) ----------------------------------------------------
 
     def _run_out(row: dict[str, Any]) -> dict[str, Any]:
@@ -653,8 +715,16 @@ def build_registry(
         summary="Replay the decide stage over a historical window (background; offline only).",
     )
     async def run_replay_eval(
-        symbol: str, start: str, end: str, label: str = "replay", desk: bool = False
+        symbol: str,
+        start: str,
+        end: str,
+        label: str = "replay",
+        desk: bool = False,
+        briefs: bool = True,
+        macro_view: bool = True,
     ) -> dict[str, Any]:
+        """``briefs`` / ``macro_view`` drop a research lane from the replayed prompt;
+        a baseline with ``briefs=False`` matches the live path while that lane is dark."""
         import asyncio
         from datetime import datetime
 
@@ -663,16 +733,17 @@ def build_registry(
         if evaluator is None:
             return {"run_id": None, "status": "unavailable", "reason": "no evaluator in build"}
         sym = default_registry().get(symbol)
+        config = {"desk": desk, "briefs": briefs, "macro_view": macro_view}
         run_id = await evaluator.create_run(
             sym,
             datetime.fromisoformat(start),
             datetime.fromisoformat(end),
             label=label,
-            config={"desk": desk},
+            config=config,
         )
         asyncio.create_task(evaluator.execute(run_id, sym), name=f"replay-eval-{run_id}")
         await _audit_command(
-            "run_replay_eval", {"run_id": run_id, "symbol": symbol, "label": label, "desk": desk}
+            "run_replay_eval", {"run_id": run_id, "symbol": symbol, "label": label, **config}
         )
         return {"run_id": run_id, "status": "running"}
 

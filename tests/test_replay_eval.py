@@ -264,7 +264,53 @@ async def test_replay_can_ablate_briefs_without_dropping_the_macro_view(db: Data
     assert "brief_version" not in step["decision"]
 
 
+async def test_replay_can_ablate_the_macro_view_without_dropping_briefs(db: Database):
+    """The symmetrical switch: a run can score the brief lane alone."""
+    await seed_hourly_bars(db)
+    start = NOW - timedelta(hours=1)
+    version = await MacroViewsRepo(db).add(
+        compiled_by="stub:stub-model",
+        global_thesis="Macro should stay out [note:1]",
+        sections={"crypto": "Crypto section out too [note:1]"},
+        note_ids=[1],
+    )
+    await _stamp_research(db, "macro_views", version, "created_at", start - timedelta(minutes=5))
+    brief = await BriefsRepo(db).add(
+        symbol="BTC/USD",
+        compiled_by="stub:stub-model",
+        thesis="Brief still here [note:1]",
+        points=[],
+        note_ids=[1],
+    )
+    await _stamp_research(db, "briefs", brief, "ts", start - timedelta(minutes=5))
+
+    harness = ReplayHarness(db, StubLLM([HOLD]), StubMarketData())
+    run = await harness.run(BTC, start, NOW, label="macro-off", config={"macro_view": False})
+    assert run["status"] == "done"
+    step = await db.fetch_one("SELECT prompt, decision FROM eval_steps")
+    assert step is not None
+    assert "Brief still here" in step["prompt"]
+    assert step["decision"]["brief_version"] == brief
+    assert "Operator Macro View" not in step["prompt"]
+    assert "Macro should stay out" not in step["prompt"]
+    assert "macro_view_version" not in step["decision"]
+
+
 # --- surfaces ----------------------------------------------------------------
+
+
+class RecordingEvaluator:
+    """Stands in for the harness on the API/CLI doors: records each run's config."""
+
+    def __init__(self) -> None:
+        self.configs: list[dict] = []
+
+    async def create_run(self, symbol, start, end, *, label, config) -> int:
+        self.configs.append(config)
+        return len(self.configs)
+
+    async def execute(self, run_id, symbol) -> dict:
+        return {"id": run_id, "status": "done"}
 
 
 async def test_registry_runs_eval_in_background_and_lists_it(db: Database):
@@ -295,6 +341,72 @@ async def test_registry_runs_eval_in_background_and_lists_it(db: Database):
 
     listed = await reg.get("eval_runs").handler()
     assert [r["label"] for r in listed] == ["via-registry"]
+
+
+async def test_registry_forwards_the_research_lane_flags_into_the_run_config(db: Database):
+    from trader.surfaces.services import build_registry
+
+    evaluator = RecordingEvaluator()
+    reg = build_registry(db, evaluator=evaluator)
+    window = {"start": (NOW - timedelta(hours=2)).isoformat(), "end": NOW.isoformat()}
+
+    await reg.get("run_replay_eval").handler(symbol="BTC/USD", **window)
+    await reg.get("run_replay_eval").handler(
+        symbol="BTC/USD", briefs=False, macro_view=False, **window
+    )
+    assert evaluator.configs == [
+        {"desk": False, "briefs": True, "macro_view": True},
+        {"desk": False, "briefs": False, "macro_view": False},
+    ]
+    audit = await db.fetch_all("SELECT payload FROM audit_events ORDER BY id")
+    assert audit[-1]["payload"]["briefs"] is False
+    assert audit[-1]["payload"]["macro_view"] is False
+
+
+def test_eval_run_lane_flags_on_api_and_cli(clean_db: None, monkeypatch):
+    from fastapi.testclient import TestClient
+    from typer.testing import CliRunner
+
+    import trader.surfaces.api.app as app_mod
+    import trader.surfaces.cli.main as cli
+    from trader.ops.config import Settings
+
+    evaluator = RecordingEvaluator()
+    monkeypatch.setattr(app_mod, "build_evaluator", lambda db, settings, desk=None: evaluator)
+    settings = Settings(auth_disabled=True)
+    window = {"start": (NOW - timedelta(hours=2)).isoformat(), "end": NOW.isoformat()}
+
+    with TestClient(app_mod.create_app(settings)) as tc:
+        assert tc.post("/eval/replay", params={"symbol": "BTC/USD", **window}).status_code == 200
+        resp = tc.post(
+            "/eval/replay",
+            params={"symbol": "BTC/USD", "briefs": False, "macro_view": False, **window},
+        )
+        assert resp.status_code == 200
+    assert evaluator.configs == [
+        {"desk": False, "briefs": True, "macro_view": True},
+        {"desk": False, "briefs": False, "macro_view": False},
+    ]
+
+    evaluator.configs.clear()
+    monkeypatch.setattr(cli, "_client", lambda: TestClient(app_mod.create_app(settings)))
+    base = [
+        "eval",
+        "run",
+        "--symbol",
+        "BTC/USD",
+        "--start",
+        window["start"],
+        "--end",
+        window["end"],
+    ]
+    assert CliRunner().invoke(cli.app, base).exit_code == 0
+    result = CliRunner().invoke(cli.app, [*base, "--no-briefs", "--no-macro-view"])
+    assert result.exit_code == 0, result.output
+    assert evaluator.configs == [
+        {"desk": False, "briefs": True, "macro_view": True},
+        {"desk": False, "briefs": False, "macro_view": False},
+    ]
 
 
 def test_eval_runs_surfaced_on_api_and_cli(clean_db: None, monkeypatch):

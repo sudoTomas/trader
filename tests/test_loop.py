@@ -720,6 +720,80 @@ async def test_mark_vol_stays_empty_when_bars_are_unavailable(db: Database):
     assert seen["BTC/USD"].unrealized_pnl_frac is None
 
 
+class CountingBars(StubMarketData):
+    """Counts vol-mark bar fetches separately from the context builder's (same
+    interval/lookback, so the split is by call site: marks run before the wakeup)."""
+
+    def __init__(self, series=None) -> None:
+        super().__init__(series)
+        self.fail = False
+
+    async def get_bars(self, symbol, interval, lookback):
+        if self.fail:
+            from trader.data.base import MarketDataError
+
+            raise MarketDataError("bars down")
+        return await super().get_bars(symbol, interval, lookback)
+
+
+async def test_mark_vol_is_cached_for_the_heartbeat_cadence(db: Database):
+    """A 60 s tick must not refetch 100 bars per symbol for a per-bar value: one vol
+    fetch per heartbeat cadence (900 s crypto), not one per tick."""
+    data = CountingBars([100.0 + i for i in range(60)])
+    scheduler, seen = _capturing_scheduler()
+    runner = build_runner(db, [HOLD] * 3, market_data=data, scheduler=scheduler)
+
+    results = await runner.tick(NOW)
+    assert [r.status for r in results] == [SHADOW]
+    first_vol = seen["BTC/USD"].realized_vol
+    assert first_vol is not None
+    assert data.bar_calls == 2  # one for the mark, one for the decide context
+
+    for minutes in (1, 2, 3, 14):  # inside the 900 s crypto cadence: no wakeup, no fetch
+        assert await runner.tick(NOW + timedelta(minutes=minutes)) == []
+        assert seen["BTC/USD"].realized_vol == first_vol
+    assert data.bar_calls == 2
+
+    results = await runner.tick(NOW + timedelta(minutes=15))  # cadence elapsed
+    assert [r.status for r in results] == [SHADOW]
+    assert data.bar_calls == 4  # a fresh vol fetch plus the heartbeat's context fetch
+
+
+async def test_mark_vol_ttl_follows_the_scheduler_cadence_or_falls_back(db: Database):
+    runner = build_runner(db, [HOLD], symbols=[BTC, SPY])
+    assert runner._mark_vol_ttl(BTC) == 900.0
+    assert runner._mark_vol_ttl(SPY) == 1800.0
+
+    class OpaqueScheduler(SignalScheduler):
+        pass
+
+    opaque = OpaqueScheduler([BTC])
+    del opaque._config  # a scheduler that does not expose its cadence
+    fallback = build_runner(db, [HOLD], scheduler=opaque)
+    assert fallback._mark_vol_ttl(BTC) == 300.0
+
+
+async def test_mark_vol_outage_keeps_the_last_value(db: Database):
+    data = CountingBars([100.0 + i for i in range(60)])
+    scheduler, seen = _capturing_scheduler()
+    runner = build_runner(db, [HOLD] * 3, market_data=data, scheduler=scheduler)
+    await runner.tick(NOW)
+    good = seen["BTC/USD"].realized_vol
+    assert good is not None
+
+    data.fail = True
+    later = NOW + timedelta(minutes=20)  # past the 900 s cadence: a refetch is due
+    results = await runner.tick(later)
+    assert seen["BTC/USD"].realized_vol == good  # last known vol, not None
+    assert seen["BTC/USD"].price == pytest.approx(159.0)  # the quote still marks
+    assert results[0].status == SHADOW  # and still decides
+
+    data.fail = False  # the next tick after the outage refetches rather than waiting a TTL
+    await runner.tick(later + timedelta(minutes=1))
+    assert seen["BTC/USD"].realized_vol == good
+    assert data.bar_calls >= 3
+
+
 # --- sentiment cadence (#22) ------------------------------------------------
 
 

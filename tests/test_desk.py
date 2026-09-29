@@ -508,4 +508,4 @@ async def test_run_replay_eval_service_forwards_the_desk_flag(db):
         desk=True,
     )
     assert out["run_id"] == 7
-    assert evaluator.created[0]["config"] == {"desk": True}
+    assert evaluator.created[0]["config"]["desk"] is True  # research lanes ride alongside

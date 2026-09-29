@@ -254,6 +254,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def fetch_x_sentiment(symbol: str = Query()) -> dict:
         return await registry.get("fetch_x_sentiment").handler(symbol=symbol)
 
+    @app.get("/fred")
+    async def fred(
+        series: str = Query(default="VIXCLS", description="FRED series id."),
+        limit: int = Query(default=10, ge=1, le=100),
+    ) -> dict:
+        return await registry.get("fred").handler(series=series, limit=limit)
+
     @app.post("/eval/replay")
     async def run_replay_eval(
         symbol: str = Query(),
@@ -261,10 +268,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         end: str = Query(),
         label: str = Query(default="replay"),
         desk: bool = Query(default=False),
+        briefs: bool = Query(default=True, description="Include the brief lane."),
+        macro_view: bool = Query(default=True, description="Include the Macro View lane."),
     ) -> dict:
         try:
             return await registry.get("run_replay_eval").handler(
-                symbol=symbol, start=start, end=end, label=label, desk=desk
+                symbol=symbol,
+                start=start,
+                end=end,
+                label=label,
+                desk=desk,
+                briefs=briefs,
+                macro_view=macro_view,
             )
         except (ValueError, KeyError) as exc:  # bad window / unknown symbol
             raise HTTPException(status_code=422, detail=str(exc)) from exc

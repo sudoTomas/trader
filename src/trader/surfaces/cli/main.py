@@ -295,9 +295,23 @@ def eval_run_cmd(
     end: str = typer.Option(..., help="Window end (ISO-8601, tz-aware)."),
     label: str = typer.Option("replay", help="Name this run for later comparison."),
     desk: bool = typer.Option(False, "--desk", help="Replay with the decision desk on."),
+    briefs: bool = typer.Option(
+        True, "--briefs/--no-briefs", help="Brief lane in the prompt (--no-briefs matches live)."
+    ),
+    macro_view: bool = typer.Option(
+        True, "--macro-view/--no-macro-view", help="Macro View lane in the prompt."
+    ),
 ) -> None:
     """Start a background replay over [start, end); poll with `trader eval show`."""
-    params = {"symbol": symbol, "start": start, "end": end, "label": label, "desk": desk}
+    params = {
+        "symbol": symbol,
+        "start": start,
+        "end": end,
+        "label": label,
+        "desk": desk,
+        "briefs": briefs,
+        "macro_view": macro_view,
+    }
     typer.echo(json.dumps(_post("/eval/replay", params=params), indent=2))
 
 
@@ -380,6 +394,19 @@ def sentiment_history(
 def sentiment_fetch(symbol: str = typer.Argument(..., help="Symbol, e.g. ETH/USD.")) -> None:
     """Poll X sentiment for one symbol now (counts against the daily cap)."""
     typer.echo(json.dumps(_post("/research/sentiment/fetch", params={"symbol": symbol}), indent=2))
+
+
+fred_app = typer.Typer(help="FRED macro series (VIX etc.) — the prints the decide context sees.")
+app.add_typer(fred_app, name="fred")
+
+
+@fred_app.command("latest")
+def fred_latest(
+    series: str = typer.Option("VIXCLS", help="FRED series id, e.g. VIXCLS, DGS10."),
+    limit: int = typer.Option(10, help="How many observations, newest first."),
+) -> None:
+    """Print the latest observations of one FRED series (unavailable without FRED_API_KEY)."""
+    typer.echo(json.dumps(_get("/fred", params={"series": series, "limit": limit}), indent=2))
 
 
 @app.command()
