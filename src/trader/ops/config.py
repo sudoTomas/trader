@@ -313,6 +313,28 @@ class Settings(BaseSettings):
         section="Research Desk",
         description="Comma-separated allowlist of X handles for x_search; empty = open search.",
     )
+    screener_min_dollar_volume_usd: float = setting(
+        50_000_000.0,
+        category=TUNING,
+        section="Research Desk",
+        description=(
+            "Screener liquidity floor: symbols whose 20-day average dollar volume "
+            "(close x volume) is below this are skipped before ranking. The screener is a "
+            "query (`GET /screener`, `get_screener`, `trader screener run`); it is not wired "
+            "into the decide loop."
+        ),
+    )
+    screener_lookback_days: int = setting(
+        90,
+        category=TUNING,
+        section="Research Desk",
+        description=(
+            "Daily bars the screener fetches per symbol (one or two multi-symbol Alpaca "
+            "requests per query, nothing stored). Must cover the 60-day momentum window: "
+            "at least 61 trading days; 90 leaves slack for holidays."
+        ),
+        ge=61,
+    )
 
     # --- LLM endpoints ---
     nemotron_base_url: str = setting(

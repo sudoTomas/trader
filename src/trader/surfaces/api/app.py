@@ -71,6 +71,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         evaluator,
         briefs,
         xai_http=build_xai_http(settings),
+        screener=build_screener_data(db, settings),
     )
     mcp = build_mcp(registry)
     capture_mcp = build_mcp(registry, only=CAPTURE_CAPABILITIES, name="trader-capture")
@@ -283,6 +284,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except ValueError as exc:  # unknown endpoint / tool / credential
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    @app.get("/screener")
+    async def screener(
+        universe: str = Query(default="sp100"),
+        limit: int = Query(default=10, ge=1, le=50),
+    ) -> dict:
+        from trader.data.base import MarketDataError
+
+        try:
+            return await registry.get("screener").handler(universe=universe, limit=limit)
+        except KeyError as exc:  # unknown universe
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except MarketDataError as exc:  # the venue could not answer
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
     app.mount("/mcp", mcp_app)
     app.mount("/mcp-capture", capture_mcp_app)
     return app
@@ -327,6 +342,18 @@ def build_evaluator(db: Database, settings: Settings, desk=None):
     return ReplayHarness(
         db, build_llm_registry(settings, UsageMeter(UsageRepo(db))), provider, desk=desk
     )
+
+
+def build_screener_data(db: Database, settings: Settings):
+    """The screener's multi-symbol daily-bars provider (Alpaca free tier, sip + delayed
+    end). None without Alpaca keys — the query then answers honestly with an empty
+    shortlist instead of failing at import time. ``db`` is unused: the screener stores
+    nothing (docs/lessons.md#no-market-data-storage)."""
+    from trader.data.alpaca import AlpacaData
+
+    if not (settings.alpaca_api_key_id and settings.alpaca_api_secret):
+        return None
+    return AlpacaData(settings.alpaca_api_key_id, settings.alpaca_api_secret)
 
 
 def build_desk(db: Database, settings: Settings):

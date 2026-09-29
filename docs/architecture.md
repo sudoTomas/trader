@@ -146,6 +146,24 @@ the unversioned out-of-repo maintenance).
   exposure") graduates from advisory prose into a deterministic, backtestable RiskGuard/config
   parameter and leaves the Desk's advisory role.
 
+## Screener (M5)
+
+`research/screener.py` reduces a **static universe shipped in the repo**
+(`data/universe.py`: the S&P 100, source and date cited in the file) to a bounded
+shortlist. Data path: one or two Alpaca free-tier multi-symbol daily-bars requests
+(`AlpacaData.get_daily_bars_multi`, `feed=sip` with a delayed `end`, `next_page_token`
+followed), fetched on each query and never stored — the `bars` cache is not involved
+([no-market-data-storage](lessons.md#no-market-data-storage)). The ranker is pure and
+deterministic, no LLM: 20d and 60d momentum, 20d annualized realized vol (from
+`data/indicators.py`), 20d average dollar volume; the score is risk-adjusted momentum
+(mean of the two returns over the vol), dollar volume is a liquidity floor
+(`TRADER_SCREENER_MIN_DOLLAR_VOLUME_USD`), the loop's own `TRADER_LOOP_SYMBOLS` are
+excluded, ties break on the ticker, and every candidate carries its metrics and a
+plain-language reason. It is one query on three doors — `GET /screener`, the
+`get_screener` MCP tool, `trader screener run` — and is **not wired into the decide
+loop**: a name earns its place in `TRADER_LOOP_SYMBOLS` (shadow first) by the operator's
+hand, never by the screener.
+
 ## LLM layer
 
 - **Provider registry**: `{role → (provider, model, credential_source)}`. Roles: `decide`
