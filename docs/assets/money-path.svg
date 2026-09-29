@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 300" width="980" height="300" role="img" aria-labelledby="t d">
+  <title id="t">The trader money path</title>
+  <desc id="d">SignalScheduler, ContextBuilder, Decider, RiskGuard, Executor, Journal in a row. RiskGuard is the only door to an order. Below, REST, MCP and CLI sit over one service registry.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#768390"/>
+    </marker>
+  </defs>
+  <style>
+    .box { fill: rgba(128,128,128,0.10); stroke: #768390; stroke-width: 1.5; rx: 6; }
+    .guard { fill: rgba(9,105,218,0.12); stroke: #0969da; stroke-width: 2; rx: 6; }
+    .name { font: 600 14px ui-sans-serif, system-ui, sans-serif; fill: #768390; text-anchor: middle; }
+    .name.g { fill: #0969da; }
+    .note { font: 11px ui-sans-serif, system-ui, sans-serif; fill: #768390; text-anchor: middle; }
+    .edge { stroke: #768390; stroke-width: 1.5; fill: none; marker-end: url(#arrow); }
+    .band { fill: none; stroke: #768390; stroke-width: 1; stroke-dasharray: 4 3; rx: 6; }
+    .mono { font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #768390; text-anchor: middle; }
+  </style>
+
+  <!-- stage boxes -->
+  <rect class="box" x="10" y="40" width="140" height="56"/>
+  <text class="name" x="80" y="63">SignalScheduler</text>
+  <text class="note" x="80" y="82">wakeups, cooldowns</text>
+
+  <rect class="box" x="175" y="40" width="140" height="56"/>
+  <text class="name" x="245" y="63">ContextBuilder</text>
+  <text class="note" x="245" y="82">bars + indicators + notes</text>
+
+  <rect class="box" x="340" y="40" width="140" height="56"/>
+  <text class="name" x="410" y="63">Decider</text>
+  <text class="note" x="410" y="82">one JSON-schema completion</text>
+
+  <rect class="guard" x="505" y="40" width="140" height="56"/>
+  <text class="name g" x="575" y="63">RiskGuard</text>
+  <text class="note" x="575" y="82">allow / clamp / deny / park</text>
+
+  <rect class="box" x="670" y="40" width="140" height="56"/>
+  <text class="name" x="740" y="63">Executor</text>
+  <text class="note" x="740" y="82">Alpaca paper only</text>
+
+  <rect class="box" x="835" y="40" width="135" height="56"/>
+  <text class="name" x="902" y="63">Journal</text>
+  <text class="note" x="902" y="82">every wakeup, replayable</text>
+
+  <!-- edges -->
+  <line class="edge" x1="150" y1="68" x2="173" y2="68"/>
+  <line class="edge" x1="315" y1="68" x2="338" y2="68"/>
+  <line class="edge" x1="480" y1="68" x2="503" y2="68"/>
+  <line class="edge" x1="645" y1="68" x2="668" y2="68"/>
+  <line class="edge" x1="810" y1="68" x2="833" y2="68"/>
+
+  <!-- what feeds each stage -->
+  <text class="mono" x="80" y="120">heartbeat · price_move</text>
+  <text class="mono" x="80" y="134">vol_spike · sentiment</text>
+  <text class="mono" x="245" y="120">Macro View slice</text>
+  <text class="mono" x="245" y="134">(advisory lane)</text>
+  <text class="mono" x="410" y="120">hold | open | close</text>
+  <text class="mono" x="410" y="134">notional is a request</text>
+  <text class="mono" x="575" y="120">paper gate · kill switches</text>
+  <text class="mono" x="575" y="134">sizing · breakers · approval</text>
+  <text class="mono" x="740" y="120">idempotent client_order_id</text>
+  <text class="mono" x="740" y="134">shadow: nothing submitted</text>
+  <text class="mono" x="902" y="120">prompt · raw output</text>
+  <text class="mono" x="902" y="134">verdicts · versions</text>
+
+  <!-- the only door -->
+  <text class="note" x="575" y="24" style="font-weight:600; fill:#0969da">the only door to an order</text>
+
+  <!-- surfaces band -->
+  <rect class="band" x="10" y="170" width="960" height="112"/>
+  <text class="name" x="490" y="195">one service registry — surfaces/services.py</text>
+  <rect class="box" x="120" y="215" width="200" height="44"/>
+  <text class="name" x="220" y="236">REST API</text>
+  <text class="note" x="220" y="251">FastAPI · X-API-Key</text>
+  <rect class="box" x="390" y="215" width="200" height="44"/>
+  <text class="name" x="490" y="236">MCP server</text>
+  <text class="note" x="490" y="251">streamable HTTP at /mcp</text>
+  <rect class="box" x="660" y="215" width="200" height="44"/>
+  <text class="name" x="760" y="236">CLI</text>
+  <text class="note" x="760" y="251">trader … (talks to the API)</text>
+  <text class="note" x="490" y="275">no surface has a place-order tool; orders exist only through the loop above</text>
+</svg>
