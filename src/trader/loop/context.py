@@ -10,12 +10,15 @@ The Macro View slice occupies its own budgeted lane in the prompt (EAI-178): adv
 by construction — it feeds the decider only, never RiskGuard. The live call reads
 ``current()``. Replay passes ``research_as_of`` so the lane is the row that existed
 at that instant, not whichever row is current today.
+
+FRED prints (VIX by default) are fetched on use — the latest observation on or
+before ``now``, not a stored window. RiskGuard does not read them either.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 import structlog
@@ -32,6 +35,10 @@ BAR_LOOKBACK = 100
 DEFAULT_INTERVALS = ("1h",)
 MACRO_BUDGET_CHARS = 2000
 BRIEF_BUDGET_CHARS = 1200
+# One daily print is enough for the decide prompt. VIX is the series the data
+# layer was built for; more ids can be passed in, but the live builder uses this.
+DEFAULT_FRED_SERIES = ("VIXCLS",)
+FRED_LOOKBACK = 10
 
 
 @dataclass(frozen=True)
@@ -167,6 +174,15 @@ def compute_indicators(bars: list[Bar]) -> Indicators:
 
 
 @dataclass(frozen=True)
+class FredPrint:
+    """Latest FRED observation on or before the context clock. Advisory facts only."""
+
+    series_id: str
+    obs_date: date
+    value: float
+
+
+@dataclass(frozen=True)
 class DecisionContext:
     symbol: Symbol
     now: datetime
@@ -179,6 +195,7 @@ class DecisionContext:
     recent_decisions: list[dict[str, Any]] = field(default_factory=list)
     macro_view: MacroSlice | None = None  # advisory lane; RiskGuard never sees it
     brief: BriefSlice | None = None  # advisory lane; RiskGuard never sees it
+    fred_series: tuple[FredPrint, ...] = ()  # advisory facts; RiskGuard never sees them
     analysts: list[str] = field(default_factory=list)  # desk lanes (EAI-190); advisory
 
     @property
@@ -207,6 +224,17 @@ class DecisionContext:
             if bars:
                 closes = ", ".join(f"{b.close:,.6g}" for b in bars[-10:])
                 lines.append(f"  last 10 closes: {closes}")
+
+        if self.fred_series:
+            lines += [
+                "",
+                "FRED macro series (latest print on or before this time; facts only,"
+                " not a forecast — a deterministic risk layer owns sizing):",
+            ]
+            lines += [
+                f"  {point.series_id}: {point.value:,.6g} ({point.obs_date.isoformat()})"
+                for point in self.fred_series
+            ]
 
         if self.macro_view:
             lines += [
@@ -257,6 +285,8 @@ class ContextBuilder:
         macro_budget_chars: int = MACRO_BUDGET_CHARS,
         briefs: Any | None = None,  # store.repos.BriefsRepo; absent = no lane (dark)
         brief_budget_chars: int = BRIEF_BUDGET_CHARS,
+        fred: Any | None = None,  # data.fred.Fred; absent → provider.fred, else no lane
+        fred_series: tuple[str, ...] = DEFAULT_FRED_SERIES,
     ) -> None:
         self._data = market_data
         self._intervals = intervals
@@ -265,6 +295,8 @@ class ContextBuilder:
         self._macro_budget = macro_budget_chars
         self._briefs = briefs
         self._brief_budget = brief_budget_chars
+        self._fred = fred
+        self._fred_series = fred_series
         # (latest version, rows). Invalidated when a newer version appears, so a
         # long-lived replay harness does not freeze the first run's history.
         self._macro_cache: tuple[int, list[dict[str, Any]]] | None = None
@@ -295,6 +327,34 @@ class ContextBuilder:
         rows = await _history_from(repo, latest, symbol=symbol)
         self._brief_cache[symbol] = (version, rows)
         return rows
+
+    def _fred_client(self) -> Any | None:
+        # Explicit client wins. Otherwise the composite the live runner already
+        # holds (market_data.fred) — the runner itself does not take a fred argument.
+        if self._fred is not None:
+            return self._fred
+        return getattr(self._data, "fred", None)
+
+    async def _load_fred(self, as_of: datetime) -> tuple[FredPrint, ...]:
+        fred = self._fred_client()
+        if fred is None or not self._fred_series:
+            return ()
+        end = as_of.date()
+        prints: list[FredPrint] = []
+        for series_id in self._fred_series:
+            try:
+                rows = await fred.get_series(series_id, FRED_LOOKBACK, observation_end=end)
+            except Exception as exc:  # noqa: BLE001 - advisory must never block a decide
+                log.warning("fred_series_unavailable", series_id=series_id, error=str(exc))
+                continue
+            # Defense in depth: a client that ignores observation_end must not leak
+            # a later print into a replay step. Keep only the latest point, not the window.
+            eligible = [(obs_date, value) for obs_date, value in rows if obs_date <= end]
+            if not eligible:
+                continue
+            obs_date, value = eligible[-1]
+            prints.append(FredPrint(series_id=series_id, obs_date=obs_date, value=value))
+        return tuple(prints)
 
     async def build(
         self,
@@ -366,6 +426,12 @@ class ContextBuilder:
             except Exception as exc:  # noqa: BLE001 - advisory must never block a decide
                 log.warning("brief_unavailable", error=str(exc))
 
+        try:
+            fred_series = await self._load_fred(now)
+        except Exception as exc:  # noqa: BLE001 - advisory must never block a decide
+            log.warning("fred_unavailable", error=str(exc))
+            fred_series = ()
+
         return DecisionContext(
             symbol=symbol,
             now=now,
@@ -378,4 +444,5 @@ class ContextBuilder:
             recent_decisions=recent_decisions or [],
             macro_view=macro_view,
             brief=brief,
+            fred_series=fred_series,
         )

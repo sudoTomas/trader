@@ -101,6 +101,9 @@ class ReplayHarness:
             self._market,
             macro_views=MacroViewsRepo(db),
             briefs=BriefsRepo(db),
+            # ReplayMarketData is the bars view. Macro series stay on the real provider
+            # and are capped at the step's date inside ContextBuilder (no later print).
+            fred=getattr(provider, "fred", None),
         )
         self._step = timedelta(seconds=step_seconds)
         self._max_steps = max_steps

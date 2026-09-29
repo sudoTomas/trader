@@ -35,17 +35,26 @@ class Fred:
         self._api_key = api_key
         self._ttl = ttl_seconds
         self._client = client or httpx.AsyncClient(base_url=_BASE_URL, timeout=10.0)
-        self._cache: dict[tuple[str, int], tuple[float, list[tuple[date, float]]]] = {}
+        self._cache: dict[tuple[str, int, date | None], tuple[float, list[tuple[date, float]]]] = {}
 
     async def close(self) -> None:
         await self._client.aclose()
 
-    async def get_series(self, series_id: str, limit: int = 30) -> list[tuple[date, float]]:
+    async def get_series(
+        self,
+        series_id: str,
+        limit: int = 30,
+        *,
+        observation_end: date | None = None,
+    ) -> list[tuple[date, float]]:
         """The most recent ``limit`` observations, ascending ``(date, value)``.
 
         Missing observations (FRED encodes them as ``"."``) are dropped.
+        ``observation_end`` caps the window (inclusive) so a replay step can ask for
+        the prints that existed that day instead of whatever is newest at call time.
+        The TTL cache keeps the fetched window in memory only — nothing is stored.
         """
-        key = (series_id, limit)
+        key = (series_id, limit, observation_end)
         cached = self._cache.get(key)
         now = time.monotonic()
         if cached and now - cached[0] < self._ttl:
@@ -58,6 +67,8 @@ class Fred:
             "sort_order": "desc",
             "limit": limit,
         }
+        if observation_end is not None:
+            params["observation_end"] = observation_end.isoformat()
         try:
             resp = await self._client.get("/fred/series/observations", params=params)
             resp.raise_for_status()
