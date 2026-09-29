@@ -102,7 +102,7 @@ class SymbolRegistry:
 
 
 def default_registry() -> SymbolRegistry:
-    """The seed universe: the crypto slice (M1) + the equities slice (EAI-186)."""
+    """The seed universe: the crypto slice (M1) + the equities slice (SPY)."""
     return SymbolRegistry(
         [
             make_symbol(
@@ -116,7 +116,8 @@ def default_registry() -> SymbolRegistry:
                 provider_symbols={"alpaca_data": "ETH/USD", "alpaca_trading": "ETHUSD"},
             ),
             # Long-only FIRST despite the venue allowing shorts — shortability is its
-            # own later gate (EAI-186), not a day-one equities feature.
+            # own later gate, not a day-one equities feature
+            # (see docs/lessons.md#per-symbol-shadow).
             make_symbol("SPY", AssetClass.US_EQUITY, shortable=False),
         ]
     )

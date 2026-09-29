@@ -135,7 +135,8 @@ CREATE TABLE macro_views (
 
 -- ---------------------------------------------------------------------------
 -- Bars cache (M1). Immutable read-through replay cache — one candle per row,
--- NEVER a live-path dependency, MB-scale with bounded retention (v1:EAI-159).
+-- NEVER a live-path dependency, MB-scale with bounded retention
+-- (see docs/lessons.md#no-market-data-storage).
 -- ---------------------------------------------------------------------------
 CREATE TABLE bars (
     symbol   text        NOT NULL,

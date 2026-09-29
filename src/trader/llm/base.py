@@ -54,7 +54,8 @@ class LLMClient(Protocol):
 def require_all_keys(schema: dict[str, Any]) -> dict[str, Any]:
     """Wire-schema hardening: force guided decoding to EMIT every key (nullable values
     stay nullable — holds write nulls). Under long prompts models omit optional keys
-    they should have filled (EAI-190 gate: 5 opens without side/notional, invalid
-    twice each); making omission ungrammatical fixes generation, while pydantic
-    validation stays lenient for stubs and non-guided providers."""
+    they should have filled (the desk gate replay: 5 opens without side/notional,
+    invalid twice each); making omission ungrammatical fixes generation, while
+    pydantic validation stays lenient for stubs and non-guided providers
+    (see docs/lessons.md#guided-decoding-omitted-keys)."""
     return {**schema, "required": sorted(schema["properties"])}

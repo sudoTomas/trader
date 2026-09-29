@@ -287,7 +287,7 @@ async def test_no_credential_at_all_fails_as_llm_error():
 
 
 async def test_short_lived_tokens_use_an_adaptive_refresh_margin(tmp_path: Path):
-    """Device-code grants return ~15-min access tokens (embry0 audit, RAV-1284). A fixed
+    """Device-code grants return ~15-min access tokens (embry0 audit). A fixed
     30-min margin would then refresh — and burn a single-use rotating refresh token —
     on EVERY call. The margin must scale down with the observed TTL."""
     store = store_at(tmp_path)

@@ -3,10 +3,11 @@
 Event-driven rather than fixed-interval: the trader wakes when something happened
 (price moved, vol spiked, a position is bleeding) plus a heartbeat floor.
 
-THE cooldown discipline (v1:engine/signal_monitor.py): ``evaluate()`` updates baselines
-but never starts cooldowns; ``mark_dispatched()`` does, and only when a wakeup actually
-launches. A trigger suppressed because a run was already in flight therefore re-fires on
-the next tick instead of being silently swallowed by a cooldown it never used.
+THE cooldown discipline (see docs/lessons.md#cooldowns-start-on-dispatch): ``evaluate()``
+updates baselines but never starts cooldowns; ``mark_dispatched()`` does, and only when a
+wakeup actually launches. A trigger suppressed because a run was already in flight
+therefore re-fires on the next tick instead of being silently swallowed by a cooldown it
+never used.
 
 Cooldowns are keyed per symbol for symbol-scoped triggers, so one symbol's dispatch can
 never suppress another symbol's independent signal.
@@ -50,7 +51,9 @@ class Mark:
     realized_vol: float | None = None
     unrealized_pnl_frac: float | None = None  # signed, vs entry
     # Latest live X sentiment in [-1, 1]. None when unavailable/degraded — a degraded
-    # read must never trigger (EAI-180). The runner populates this for held symbols only.
+    # read must never trigger (a citation-free score is model prior, not live X — see
+    # docs/lessons.md#sentiment-no-citations-is-unavailable). The runner populates this for held
+    # symbols only.
     sentiment_score: float | None = None
 
 
@@ -71,8 +74,9 @@ class TriggerConfig:
     cooldown_price_move: int = 900
     cooldown_vol_spike: int = 1800
     cooldown_position_risk: int = 600
-    # Shadow-first (EAI-180): the sentiment trigger stays off until ≥1 week of journaled
-    # scores earns the operator's flip of TRADER_SENTIMENT_TRIGGER_ENABLED.
+    # Shadow-first: the sentiment trigger stays off until ≥1 week of journaled scores
+    # earns the operator's flip of TRADER_SENTIMENT_TRIGGER_ENABLED
+    # (see docs/lessons.md#sentiment-held-symbols-only).
     sentiment_enabled: bool = False
     sentiment_swing: float = 0.5  # |delta| in score units ([-1, 1]) that wakes the trader
     cooldown_sentiment: int = 3600

@@ -2,7 +2,7 @@
 
     RiskOutcome.executable() → persist order row → submit → stream fills → ledger
 
-Discipline, each earned in v1:
+Discipline, each earned the hard way in v1 —
 
 - **The chokepoint link.** ``execute()`` starts by calling ``outcome.executable()``, which
   raises ``RiskDenied`` unless the chain approved. There is no other entry point and no
@@ -13,9 +13,9 @@ Discipline, each earned in v1:
 - **Idempotent by construction.** A fresh UUID ``client_order_id`` per intent; a duplicate
   rejection (HTTP 422) means a previous submit landed, so we adopt that order instead of
   placing a second one.
-- **Opens are best-effort, closes must land** (v1:EAI-46). A failed open is journaled and
-  dropped; a failed close is journaled loudly because an unmanaged position is the worse
-  risk.
+- **Opens are best-effort, closes must land.** A failed open is journaled and dropped; a
+  failed close is journaled loudly because an unmanaged position is the worse risk
+  (see docs/lessons.md#closes-must-land).
 - **Crypto cannot take notional orders** at Alpaca (notional needs TIF ``day``; crypto
   only supports ``gtc``/``ioc``), so notional is converted to quantity here using the same
   price the risk chain sized against. A crypto **sell** is then clamped to held qty —

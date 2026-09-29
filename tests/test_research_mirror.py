@@ -1,4 +1,5 @@
-"""EAI-179: Research Desk part 3 — read-only markdown mirror export.
+"""Research Desk part 3 — read-only markdown mirror export
+(see docs/lessons.md#research-desk-capture-once).
 
 One-way: DB → files. The mirror must be regenerable, overwrite local edits, and never
 be a write path back into the store.

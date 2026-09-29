@@ -102,7 +102,8 @@ class AlpacaData:
         spelled = symbol.for_provider(PROVIDER)
         # Explicit `start`: without it Alpaca defaults to the beginning of the CURRENT
         # day, silently capping any lookback to today's bars (a 100-bar hourly request
-        # came back as 15 bars in production — caught by EAI-188's first live replay).
+        # came back as 15 bars in production — caught by the replay harness's first
+        # live run; see docs/lessons.md#alpaca-start-default-caps-to-today).
         # 5x slack covers closed sessions; limit + sort=desc still bounds the response
         # to exactly the most recent `lookback` bars.
         window = timedelta(seconds=_INTERVAL_SECONDS[interval] * lookback * 5)
@@ -124,8 +125,9 @@ class AlpacaData:
         rows = (payload.get("bars") or {}).get(spelled, [])
         # Alpaca caps one response (~210 rows observed) no matter what `limit` says and
         # paginates via next_page_token; ignoring it silently truncates deep lookbacks
-        # to the most recent page (found by EAI-190's gate replay — 6 days of a 2-week
-        # backfill came back missing). Pages continue oldest-ward under sort=desc.
+        # to the most recent page (found by the desk gate replay — 6 days of a 2-week
+        # backfill came back missing; see docs/lessons.md#alpaca-pagination-cap). Pages continue
+        # oldest-ward under sort=desc.
         pages = 1
         while len(rows) < lookback and payload.get("next_page_token") and pages < 50:
             payload = await self._get(path, {**params, "page_token": payload["next_page_token"]})

@@ -1,11 +1,11 @@
 """SuperGrok device-code OAuth: login, rotating-refresh discipline, quarantine.
 
-Hermes-style RFC 8628 flow against ``auth.x.ai`` (operator decision from v1:EAI-142 —
-no Grok CLI dependency, no ``~/.grok/auth.json`` seeding: that store's rotating tokens
-are single-use, and stealing one breaks the CLI's own login). Refresher shape cribbed
-from embry0's ``xai_credential.py``.
+Hermes-style RFC 8628 flow against ``auth.x.ai`` (an operator decision carried over from
+v1 — no Grok CLI dependency, no ``~/.grok/auth.json`` seeding: that store's rotating
+tokens are single-use, and stealing one breaks the CLI's own login). Refresher shape
+cribbed from embry0's ``xai_credential.py``.
 
-Invariants (v1:EAI-142/143):
+Invariants (see docs/lessons.md#oauth-refresh-margin):
 - Exactly one process owns the refresh lineage; refreshes serialize under an
   ``asyncio.Lock`` so a rotating single-use refresh token is never double-spent.
 - **The rotated refresh token is persisted BEFORE the access token is served** — a
@@ -47,7 +47,7 @@ SCOPE = "openid profile email offline_access grok-cli:access api:access"
 
 #: Refresh when the cached access token has less than this many seconds left. The
 #: effective margin adapts to the observed TTL (``min(this, ttl // 3)``): xAI's
-#: device-code grants return ~15-minute access tokens (embry0 audit, RAV-1284), and a
+#: device-code grants return ~15-minute access tokens (embry0 audit), and a
 #: fixed 30-minute margin would then refresh — burning a single-use rotating refresh
 #: token — on every call.
 REFRESH_MARGIN_SECONDS = 30 * 60

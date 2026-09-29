@@ -1,4 +1,5 @@
-"""EAI-180: X sentiment via xAI server-side x_search + sentiment wake trigger.
+"""X sentiment via xAI server-side x_search + sentiment wake trigger
+(see docs/lessons.md#sentiment-no-citations-is-unavailable).
 
 The xAI /v1/responses endpoint is stubbed with httpx.MockTransport; the store is real.
 The load-bearing rule: zero citations = model-prior, not live X → `unavailable`, never

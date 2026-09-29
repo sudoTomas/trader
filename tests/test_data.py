@@ -63,8 +63,9 @@ async def test_alpaca_crypto_bars_ascending():
 async def test_alpaca_bars_follow_pagination_until_lookback_is_met():
     """Alpaca caps a bars response (~210 rows) regardless of `limit` and hands back a
     next_page_token — a client that ignores it silently truncates any deep lookback to
-    the most recent page (found by EAI-190's gate replay: 2-week backfills came back
-    as 210 bars and the replay skipped 6 days as no-data)."""
+    the most recent page (found by the desk gate replay: 2-week backfills came back
+    as 210 bars and the replay skipped 6 days as no-data;
+    see docs/lessons.md#alpaca-pagination-cap)."""
     calls: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -311,8 +312,9 @@ async def test_composite_unrouted_asset_class_fails_safe():
 async def test_alpaca_bars_request_reaches_back_past_todays_midnight():
     """Without an explicit `start`, Alpaca defaults to the beginning of the current day
     and `limit` silently caps to today's bars — a 100-bar hourly lookback came back as
-    15 bars in production (EAI-188 first live replay). `start` must cover the lookback
-    with slack for closed sessions."""
+    15 bars in production (the replay harness's first live run). `start` must cover the
+    lookback with slack for closed sessions
+    (see docs/lessons.md#alpaca-start-default-caps-to-today)."""
     from datetime import UTC, datetime, timedelta
 
     seen: dict = {}

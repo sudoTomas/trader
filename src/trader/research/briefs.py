@@ -1,13 +1,15 @@
-"""Per-candidate research briefs (EAI-192) — symbol-scoped inputs in, one versioned
+"""Per-candidate research briefs — symbol-scoped inputs in, one versioned
 per-symbol digest out.
 
 The Macro View (compiler.py) digests notes per asset class; the brief digests per
 symbol. Inputs are store-resident only — notes scoped to the symbol plus the latest ok
 sentiment row — synthesized by the ``brief`` LLM role (Grok, Nemotron backstop). No live
 search, no outside knowledge: a brief the store can't back is the model-prior dishonesty
-EAI-180 exists to prevent, so no inputs means no brief and no LLM call.
+the sentiment poller guards against, so no inputs means no brief and no LLM call
+(see docs/lessons.md#no-inputs-no-brief).
 
-The EAI-178 anti-slop rules apply per part: an uncited/ghost-cited thesis drops the
+The Macro View anti-slop rules (see docs/lessons.md#macro-view-advisory-firewall) apply per
+part: an uncited/ghost-cited thesis drops the
 whole brief (a brief with no backed thesis isn't a brief); uncited points drop
 individually; every ``$``-amount is stamped example-not-current.
 

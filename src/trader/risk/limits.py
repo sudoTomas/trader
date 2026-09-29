@@ -34,7 +34,7 @@ class RiskLimits:
     # opens park for a human. None disables parking.
     approval_notional_usd: float = 1000.0
     park_above_usd: float | None = None
-    approval_price_tolerance_frac: float = 0.01  # stale-approval guard (v1:EAI-46)
+    approval_price_tolerance_frac: float = 0.01  # see docs/lessons.md#approval-price-tolerance
     approval_ttl_seconds: int = 3600
 
     def __post_init__(self) -> None:

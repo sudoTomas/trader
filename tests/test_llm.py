@@ -349,7 +349,8 @@ def test_build_registry_routes_roles_from_config():
     bare = build_llm_registry(Settings(auth_disabled=True))
     assert [c.name for c in bare.chain_for("decide")] == ["nemotron"]
     # No xAI credential: research roles still run, on the Nemotron backstop alone
-    # (EAI-178 — the Research Desk must work before any Grok credential exists).
+    # (the Research Desk must work before any Grok credential exists — see
+    # docs/lessons.md#macro-view-advisory-firewall).
     assert [c.name for c in bare.chain_for("brief")] == ["nemotron"]
     assert [c.name for c in bare.chain_for("compiler")] == ["nemotron"]
 

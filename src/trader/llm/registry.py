@@ -176,8 +176,9 @@ def build_llm_registry(settings: Settings, meter: UsageMeter | None = None) -> L
         return LLMRegistry(routes, meter)
     grok = xai_client(settings)
     # Research prefers Grok; the decide client backstops whether xAI is absent
-    # or the decide role itself moved off the Spark (EAI-178 — the Desk must
-    # work before any Grok credential exists). The critic rides the same
+    # or the decide role itself moved off the self-hosted vLLM (the Desk must
+    # work before any Grok credential exists — see
+    # docs/lessons.md#macro-view-advisory-firewall). The critic rides the same
     # ordering: Grok reviews the decide draft when both exist; otherwise the
     # critique is same-model, not skipped.
     for role in RESEARCH_ROLES:

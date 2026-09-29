@@ -52,7 +52,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     evaluator = build_evaluator(db, settings, desk)
     registry = build_registry(db, runner, compiler, mirror, sentiment, evaluator, briefs)
     mcp = build_mcp(registry)
-    # Our ApiKeyMiddleware gates /mcp, and the Spark is reached over the LAN — the MCP
+    # Our ApiKeyMiddleware gates /mcp, and the host is reached over the LAN — the MCP
     # localhost-only Host allowlist (DNS-rebinding protection) would reject those clients.
     mcp_app = mcp.streamable_http_app(
         streamable_http_path="/",

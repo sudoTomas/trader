@@ -1,13 +1,14 @@
 """ContextBuilder — everything the decider sees, assembled before the LLM is called.
 
 **No LLM tool calls in this hot path.** v1 bound 28 MCP tools into the decide call and
-got 120 s timeouts (v1:TRA-42); here the context is pre-fetched, indicators are computed
-locally (v1 fetched them over MCP and got null for 987/987 decisions), and the prompt is
-a finished string by the time the model runs.
+got 120 s timeouts; here the context is pre-fetched, indicators are computed locally
+(v1 fetched them over MCP and got null for 987/987 decisions), and the prompt is a
+finished string by the time the model runs (see docs/lessons.md#indicators-over-mcp-returned-null).
 
 Fetch-on-tick: bars come from the provider and are used in memory. Nothing is stored.
-The Macro View slice occupies its own budgeted lane in the prompt (EAI-178): advisory
-by construction — it feeds the decider only, never RiskGuard. The live call reads
+The Macro View slice occupies its own budgeted lane in the prompt: advisory by
+construction — it feeds the decider only, never RiskGuard (see
+docs/lessons.md#macro-view-advisory-firewall). The live call reads
 ``current()``. Replay passes ``research_as_of`` so the lane is the row that existed
 at that instant, not whichever row is current today.
 
@@ -88,7 +89,7 @@ class BriefSlice:
 def build_brief_slice(
     row: dict[str, Any], *, budget_chars: int = BRIEF_BUDGET_CHARS
 ) -> BriefSlice | None:
-    """Render a brief into whole entries under its own character budget (EAI-192).
+    """Render a brief into whole entries under its own character budget.
 
     Same discipline as the Macro lane: entries drop WHOLE (a truncated thesis reads as a
     different thesis), and an empty render means no lane at all.
@@ -196,7 +197,7 @@ class DecisionContext:
     macro_view: MacroSlice | None = None  # advisory lane; RiskGuard never sees it
     brief: BriefSlice | None = None  # advisory lane; RiskGuard never sees it
     fred_series: tuple[FredPrint, ...] = ()  # advisory facts; RiskGuard never sees them
-    analysts: list[str] = field(default_factory=list)  # desk lanes (EAI-190); advisory
+    analysts: list[str] = field(default_factory=list)  # desk lanes; advisory
 
     @property
     def primary_vol(self) -> float | None:

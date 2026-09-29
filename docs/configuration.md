@@ -59,7 +59,7 @@ The background scheduler: what it watches, how often, and whether it submits.
 | `TRADER_LOOP_ENABLED` | `bool` | `false` | gate | Runs the background decide loop inside the API process. An explicit operator opt-in; off, the surfaces still serve but nothing ticks. |
 | `TRADER_LOOP_TICK_SECONDS` | `float` | `60.0` | tuning | Seconds between scheduler ticks (quote fetch, mark, trigger evaluation). |
 | `TRADER_LOOP_SYMBOLS` | `str` | `BTC/USD,ETH/USD` | tuning | Comma-separated symbols the loop watches and may trade. |
-| `TRADER_SHADOW_SYMBOLS` | `str` | *(empty)* | gate | Per-symbol shadow (EAI-186 gate): comma-separated tickers that decide and risk-check but never submit, while the rest of the build trades live-paper. A new symbol earns its flip here first. |
+| `TRADER_SHADOW_SYMBOLS` | `str` | *(empty)* | gate | Per-symbol shadow: comma-separated tickers that decide and risk-check but never submit, while the rest of the build trades live-paper. A new symbol earns its flip here first. |
 | `TRADER_SHADOW_EQUITY` | `float` | `100000.0` | tuning | Equity the risk chain assumes in shadow builds (no broker). Live-paper builds read equity from the broker and keep the last good value when it is down. |
 
 ## Risk limits (RiskGuard)
@@ -86,10 +86,10 @@ Notes, Macro View compilation, briefs, the decision desk and X sentiment. Every 
 | `TRADER_RESEARCH_STALE_DAYS` | `int` | `30` | tuning | Days before an unpinned note auto-stales out of compilation (retire stays explicit). |
 | `TRADER_RESEARCH_COMPILE_DEBOUNCE_SECONDS` | `float` | `30.0` | tuning | Quiet window after the last note change before the Macro View recompiles. |
 | `TRADER_RESEARCH_MIRROR_DIR` | `str` | `research` | tuning | One-way markdown mirror folder (gitignored, regenerable). Empty disables. |
-| `TRADER_BRIEFS_ENABLED` | `bool` | `false` | gate | Per-candidate briefs (EAI-192): briefs compile and store on note changes regardless; this flag alone lets them into the decide prompt. A decide-behavior change: flip only through `docs/runbooks/decide-change-gate.md`. |
-| `TRADER_DESK_ENABLED` | `bool` | `false` | gate | Decision desk (EAI-190): analyst fan-out + cross-model critic around the decide. Dark by default; earns its flip via replay desk-on vs desk-off, then a shadow window. |
+| `TRADER_BRIEFS_ENABLED` | `bool` | `false` | gate | Per-candidate briefs: briefs compile and store on note changes regardless; this flag alone lets them into the decide prompt. A decide-behavior change: flip only through `docs/runbooks/decide-change-gate.md`. |
+| `TRADER_DESK_ENABLED` | `bool` | `false` | gate | Decision desk: analyst fan-out + cross-model critic around the decide. Dark by default; earns its flip via replay desk-on vs desk-off, then a shadow window. |
 | `TRADER_DESK_CRITIC_DAILY_USD` | `float` | `1.0` | tuning | Critic spend cap per UTC day (the critic prefers Grok, cross-model). At the cap, reviews degrade to journaled pass-throughs. Analysts run on the decide client. |
-| `TRADER_SENTIMENT_POLL_SECONDS` | `float` | `10800.0` | tuning | X sentiment (EAI-180) poll interval for held symbols; needs an xAI credential (x_search runs server-side on xAI). The daily call cap still bounds a shorter interval. |
+| `TRADER_SENTIMENT_POLL_SECONDS` | `float` | `10800.0` | tuning | X sentiment poll interval for held symbols; needs an xAI credential (x_search runs server-side on xAI). The daily call cap still bounds a shorter interval. |
 | `TRADER_SENTIMENT_DAILY_CALL_CAP` | `int` | `24` | tuning | Max sentiment polls per UTC day across symbols. |
 | `TRADER_SENTIMENT_TRIGGER_ENABLED` | `bool` | `false` | gate | Lets a sentiment swing wake the decide loop. Shadow-first: leave OFF until at least a week of journaled scores looks sane. Code default off; a live book arms it in `.env`, never here. |
 | `TRADER_SENTIMENT_SWING_THRESHOLD` | `float` | `0.5` | tuning | Score move between polls that wakes the trader; scores are on [-1, 1]. |
@@ -101,7 +101,7 @@ Two roles, each any OpenAI-compatible `/v1`: **decide** (also the desk analysts)
 
 | Variable | Type | Default | Category | Description |
 |---|---|---|---|---|
-| `TRADER_NEMOTRON_BASE_URL` | `str` | `http://localhost:8009/v1` | endpoint | Nemotron preset: the local vLLM `/v1` (the Spark serves it on :8009, no auth). Used for decide and analysts when `TRADER_DECIDE_BASE_URL` is empty; the preset client sends `chat_template_kwargs: {enable_thinking: false}` on every request (without it the endpoint collapses to ~0.35 tok/s). A generic URL equal to this one gets the same flag forced on. Inside compose, point it at `http://host.docker.internal:8009/v1`. |
+| `TRADER_NEMOTRON_BASE_URL` | `str` | `http://localhost:8009/v1` | endpoint | Nemotron preset: a self-hosted vLLM `/v1` (default :8009, no auth). Used for decide and analysts when `TRADER_DECIDE_BASE_URL` is empty; the preset client sends `chat_template_kwargs: {enable_thinking: false}` on every request (without it the endpoint collapses to ~0.35 tok/s). A generic URL equal to this one gets the same flag forced on. Inside compose, point it at `http://host.docker.internal:8009/v1`. |
 | `TRADER_NEMOTRON_MODEL` | `str` | `nemotron-3-super` | endpoint | Served model id on the Nemotron vLLM. Swapping the decide model on an existing box is a decide-behavior change (`docs/runbooks/decide-change-gate.md`); for a new user it is simply the first run. |
 | `TRADER_DECIDE_BASE_URL` | `str` | *(empty)* | endpoint | Any OpenAI-compatible `/v1` for the decide (and analyst) role: OpenAI, Groq, Together, Ollama, vLLM, xAI. Empty selects the Nemotron preset above, which is the only client that sends `chat_template_kwargs`; a vendor API such as OpenAI rejects that argument, so it is never sent to a generic URL. |
 | `TRADER_DECIDE_MODEL` | `str` | *(empty)* | endpoint | Model id at `TRADER_DECIDE_BASE_URL` (ignored under the Nemotron preset). |

@@ -1,4 +1,4 @@
-"""The Desk (EAI-190) — analyst fan-out before the decide, critic review after it.
+"""The Desk — analyst fan-out before the decide, critic review after it.
 
     ContextBuilder → Desk.enrich (analyst lanes) → Decider → Desk.review (critic)
                    → RiskGuard (unchanged, still the sole chokepoint)

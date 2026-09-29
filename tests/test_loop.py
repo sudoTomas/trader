@@ -236,10 +236,11 @@ def test_decision_schema_is_generated_from_the_model():
 
 
 def test_wire_schema_requires_every_key_but_validation_stays_lenient():
-    """EAI-190 gate finding: under guided decoding the decider omitted side/notional on
+    """Desk gate finding: under guided decoding the decider omitted side/notional on
     opens (schema-invalid twice, 5×/336 steps with the analyst lane). The WIRE schema
     now forces every key to be emitted — omission becomes ungrammatical, holds write
-    nulls — while the pydantic validator stays lenient for stubs and non-guided paths."""
+    nulls — while the pydantic validator stays lenient for stubs and non-guided paths
+    (see docs/lessons.md#guided-decoding-omitted-keys)."""
     assert set(DECISION_SCHEMA["required"]) == set(DECISION_SCHEMA["properties"])
     lenient = DecisionOutput.model_validate_json(
         '{"action":"hold","conviction":0.3,"rationale":"nothing doing"}'

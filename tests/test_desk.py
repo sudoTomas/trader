@@ -1,4 +1,4 @@
-"""EAI-190: the decision desk — analyst fan-out feeding the decider as labeled lanes,
+"""The decision desk — analyst fan-out feeding the decider as labeled lanes,
 and a cross-model critic between decide and RiskGuard that can only approve, shrink, or
 veto. The LLMs are stubbed; the store is the real one. Dark behind TRADER_DESK_ENABLED.
 """
@@ -259,8 +259,9 @@ def test_critic_wire_schema_requires_every_key():
 
 
 def test_technical_analyst_stance_is_earned_not_the_default():
-    """EAI-190 gate finding: the technical analyst read neutral on 330/331 steps — no
-    signal. The prompt now reserves neutral for genuinely conflicting indicators."""
+    """Desk gate finding: the technical analyst read neutral on 330/331 steps — no
+    signal. The prompt now reserves neutral for genuinely conflicting indicators
+    (see docs/lessons.md#analyst-stance-is-earned)."""
     from trader.desk.analysts import TECHNICAL_PROMPT
 
     assert "conflict" in TECHNICAL_PROMPT.lower()
@@ -401,7 +402,7 @@ async def test_a_crashing_desk_never_blocks_the_decide(db):
     assert row["decision"]["action"] == "open"
 
 
-# --- replay variant plumbing (the EAI-188 gate) -------------------------------
+# --- replay variant plumbing (the decide-change gate) -------------------------
 
 
 async def test_replay_desk_on_tallies_verdicts_and_journals_desk_steps(db):

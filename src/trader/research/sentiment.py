@@ -1,9 +1,10 @@
-"""X sentiment via xAI server-side ``x_search`` (EAI-180). Adapts v1:EAI-146/147.
+"""X sentiment via xAI server-side ``x_search``, adapted from v1's poller.
 
 The model searches X *server-side* on ``/v1/responses`` — the trader never calls X
 directly. The load-bearing honesty rule: **zero citations with search filters active
 means the answer came from model priors, not live X** — that read is journaled as
-``unavailable`` and never carries a number. Every wire call is metered under the
+``unavailable`` and never carries a number (see
+docs/lessons.md#sentiment-no-citations-is-unavailable). Every wire call is metered under the
 ``sentiment`` role (M2 discipline), and a per-day call cap bounds spend.
 """
 
@@ -147,7 +148,8 @@ class SentimentService:
         await self._record_usage(usage, citations=citations, now=now)
 
         if not citations:
-            # Zero citations with filters active = model-prior, not live X (v1:EAI-146).
+            # Zero citations with filters active = model-prior, not live X
+            # (see docs/lessons.md#sentiment-no-citations-is-unavailable).
             return await self._unavailable(symbol, "degraded: no live citations")
 
         match = JSON_OBJECT.search(text)

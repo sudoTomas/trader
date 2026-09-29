@@ -1,5 +1,6 @@
--- Replay eval harness (EAI-188). Offline reruns of the decide stage journal HERE,
--- never into decisions — the live journal stays evidence of what actually ran.
+-- Replay eval harness. Offline reruns of the decide stage journal HERE, never into
+-- decisions — the live journal stays evidence of what actually ran (see
+-- docs/lessons.md#replay-before-flip).
 CREATE TABLE eval_runs (
     id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     created_at timestamptz NOT NULL DEFAULT now(),

@@ -1,8 +1,9 @@
-"""Analyst fan-out (EAI-190) — focused parallel reads over the already-built context.
+"""Analyst fan-out — focused parallel reads over the already-built context.
 
 Each analyst is one ``analyst``-role completion with a focused system prompt over the
-SAME ``DecisionContext`` the decider sees — no new I/O in the hot path (the v1:TRA-42
-lesson: binding tools into the decide call cost 120 s timeouts). The roster is dynamic:
+SAME ``DecisionContext`` the decider sees — no new I/O in the hot path (binding tools
+into v1's decide call cost 120 s timeouts; see
+docs/lessons.md#indicators-over-mcp-returned-null). The roster is dynamic:
 ``technical`` always runs (bars are always in context); ``research`` runs only when a
 research lane (Macro View / Candidate Brief) is actually present — an analyst with no
 material would emit confident noise.

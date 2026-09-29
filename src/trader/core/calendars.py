@@ -1,6 +1,6 @@
 """Market session calendars. Pure, no I/O — imported everywhere.
 
-Adapted from the hardened v1 implementation (v1:engine/market_calendar.py), minus the CME
+Adapted from v1's hardened ``engine/market_calendar.py``, minus the CME
 Globex calendar (futures/IBKR are out of scope for v2). Semantics preserved:
 
 - Everything is computed in the exchange's IANA zone via ``zoneinfo`` (never fixed UTC

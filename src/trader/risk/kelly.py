@@ -1,4 +1,4 @@
-"""Fractional Kelly position sizing. Ported from v1 (``v1:risk/kelly.py``) — the maths
+"""Fractional Kelly position sizing. Ported from v1's ``risk/kelly.py`` — the maths
 there was correct and property-tested; only the docstrings changed.
 
 Inputs are CONFIG assumptions plus MEASURED volatility. LLM conviction is deliberately

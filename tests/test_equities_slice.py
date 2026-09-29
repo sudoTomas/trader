@@ -1,5 +1,6 @@
-"""EAI-186: the US equities slice — SPY in the universe (long-only first), venue terms,
-and per-symbol shadow so a new symbol earns its gate while the crypto slice stays live.
+"""The US equities slice — SPY in the universe (long-only first), venue terms, and
+per-symbol shadow so a new symbol earns its gate while the crypto slice stays live
+(see docs/lessons.md#per-symbol-shadow).
 
 PDT stance: the paper account reports PDT like a real one, but with 100k equity the
 25k-minimum rule cannot bind; day-trade *counts* are Alpaca's concern, not RiskGuard's.
@@ -28,7 +29,7 @@ def test_spy_is_registered_long_only_on_the_nyse_calendar():
     assert spy.asset_class is AssetClass.US_EQUITY
     assert spy.calendar == "nyse"
     assert spy.fractionable
-    assert spy.shortable is False  # long-only first (EAI-186); shortability is a later gate
+    assert spy.shortable is False  # long-only first; shortability is a later gate
     assert spy.for_provider("alpaca_trading") == "SPY"
     assert spy.market_calendar.is_open(NOW)
 

@@ -1,5 +1,6 @@
-"""EAI-168: one capability, three doors — auth gating, /mcp mount, and audit parity
-across registry, API, MCP, and CLI. Runs against the real compose Postgres.
+"""One capability, three doors — auth gating, /mcp mount, and audit parity across
+registry, API, MCP, and CLI (see docs/lessons.md#operator-doors-on-all-surfaces).
+Runs against the real compose Postgres.
 """
 
 from __future__ import annotations

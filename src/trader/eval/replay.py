@@ -1,8 +1,9 @@
-"""Replay eval harness (EAI-188) — rerun the decide stage over history, offline.
+"""Replay eval harness — rerun the decide stage over history, offline.
 
 The gate-keeper for every future decide-behavior change (prompt edits, model swaps, the
 desk): replay a window under the candidate configuration, score it against a baseline,
-and only then open a live shadow window (docs/runbooks/decide-change-gate.md).
+and only then open a live shadow window (docs/runbooks/decide-change-gate.md;
+see docs/lessons.md#replay-before-flip).
 
 Structure:
 - ``ReplayMarketData`` — the MarketData protocol served from the bars cache, frozen at an

@@ -316,7 +316,7 @@ class MacroViewsRepo:
 
 
 class BriefsRepo:
-    """Per-candidate research briefs (M4, EAI-192). New compile = new row; version is a
+    """Per-candidate research briefs (M4). New compile = new row; version is a
     single global identity so ``decisions.brief_version`` points at exactly one row."""
 
     def __init__(self, db: Database) -> None:
