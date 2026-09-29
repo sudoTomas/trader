@@ -20,8 +20,10 @@ does not predict live PnL.
 Research lanes are part of the replayed prompt, pinned to the step: the Macro View
 whose ``created_at`` is at or before that timestamp (never today's ``current()``),
 and the symbol's brief whose ``ts`` is likewise. ``config={"briefs": false}`` drops
-the brief lane so a baseline can still match the dark live path. Replay writes
-``eval_runs`` / ``eval_steps`` only — it does not flip briefs into the live loop.
+the brief lane so a baseline can still match the dark live path, and
+``config={"macro_view": false}`` drops the Macro View lane the same way, so either
+lane can be scored alone. Replay writes ``eval_runs`` / ``eval_steps`` only — it
+does not flip briefs into the live loop.
 """
 
 from __future__ import annotations
@@ -96,16 +98,21 @@ class ReplayHarness:
         self._repo = EvalRepo(db)
         self._decider = Decider(llm)
         self._market = ReplayMarketData(BarsCache(db, provider))
-        # Own builder: the live runner keeps briefs dark unless TRADER_BRIEFS_ENABLED.
-        # Attaching the repos here only affects replayed prompts.
-        self._context = ContextBuilder(
-            self._market,
-            macro_views=MacroViewsRepo(db),
-            briefs=BriefsRepo(db),
-            # ReplayMarketData is the bars view. Macro series stay on the real provider
-            # and are capped at the step's date inside ContextBuilder (no later print).
-            fred=getattr(provider, "fred", None),
-        )
+        # Own builders: the live runner keeps briefs dark unless TRADER_BRIEFS_ENABLED.
+        # Attaching the repos here only affects replayed prompts. The builder has a
+        # per-call brief switch but no macro one, so a macro-less run gets a builder
+        # with no Macro View repo at all — the lane is absent, not blanked.
+        self._contexts = {
+            include_macro_view: ContextBuilder(
+                self._market,
+                macro_views=MacroViewsRepo(db) if include_macro_view else None,
+                briefs=BriefsRepo(db),
+                # ReplayMarketData is the bars view. Macro series stay on the real
+                # provider and are capped at the step's date inside ContextBuilder.
+                fred=getattr(provider, "fred", None),
+            )
+            for include_macro_view in (True, False)
+        }
         self._step = timedelta(seconds=step_seconds)
         self._max_steps = max_steps
         self._equity = equity
@@ -145,9 +152,11 @@ class ReplayHarness:
         assert run is not None
         config = run["config"] or {}
         use_desk = bool(config.get("desk"))
-        # Briefs default on so the gate sees that lane. Opt out to match live, where
-        # the lane stays dark until its own flip.
+        # Research lanes default on so the gate sees them. Opt out of briefs to match
+        # live, where that lane stays dark until its own flip; opt out of the Macro
+        # View to score the brief lane on its own.
         include_briefs = bool(config.get("briefs", True))
+        include_macro_view = bool(config.get("macro_view", True))
         try:
             summary = await self._walk(
                 run_id,
@@ -156,6 +165,7 @@ class ReplayHarness:
                 run["end_ts"],
                 use_desk=use_desk,
                 include_briefs=include_briefs,
+                include_macro_view=include_macro_view,
             )
             await self._repo.finish_run(run_id, status="done", summary=summary)
         except Exception as exc:  # noqa: BLE001 - a failed run must say so, not hang
@@ -188,7 +198,9 @@ class ReplayHarness:
         *,
         use_desk: bool,
         include_briefs: bool,
+        include_macro_view: bool = True,
     ) -> dict[str, Any]:
+        context = self._contexts[include_macro_view]
         actions: dict[str, int] = {}
         desk_tally = {"approve": 0, "shrink": 0, "veto": 0, "pass_through": 0, "skipped": 0}
         recent: list[dict[str, Any]] = []
@@ -204,7 +216,7 @@ class ReplayHarness:
                 continue
 
             self._market.as_of = as_of
-            ctx = await self._context.build(
+            ctx = await context.build(
                 symbol,
                 now=as_of,
                 triggers=[Trigger(REPLAY_TRIGGER, symbol.ticker)],

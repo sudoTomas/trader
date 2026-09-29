@@ -295,9 +295,23 @@ def eval_run_cmd(
     end: str = typer.Option(..., help="Window end (ISO-8601, tz-aware)."),
     label: str = typer.Option("replay", help="Name this run for later comparison."),
     desk: bool = typer.Option(False, "--desk", help="Replay with the decision desk on."),
+    briefs: bool = typer.Option(
+        True, "--briefs/--no-briefs", help="Brief lane in the prompt (--no-briefs matches live)."
+    ),
+    macro_view: bool = typer.Option(
+        True, "--macro-view/--no-macro-view", help="Macro View lane in the prompt."
+    ),
 ) -> None:
     """Start a background replay over [start, end); poll with `trader eval show`."""
-    params = {"symbol": symbol, "start": start, "end": end, "label": label, "desk": desk}
+    params = {
+        "symbol": symbol,
+        "start": start,
+        "end": end,
+        "label": label,
+        "desk": desk,
+        "briefs": briefs,
+        "macro_view": macro_view,
+    }
     typer.echo(json.dumps(_post("/eval/replay", params=params), indent=2))
 
 

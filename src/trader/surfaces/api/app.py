@@ -268,10 +268,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         end: str = Query(),
         label: str = Query(default="replay"),
         desk: bool = Query(default=False),
+        briefs: bool = Query(default=True, description="Include the brief lane."),
+        macro_view: bool = Query(default=True, description="Include the Macro View lane."),
     ) -> dict:
         try:
             return await registry.get("run_replay_eval").handler(
-                symbol=symbol, start=start, end=end, label=label, desk=desk
+                symbol=symbol,
+                start=start,
+                end=end,
+                label=label,
+                desk=desk,
+                briefs=briefs,
+                macro_view=macro_view,
             )
         except (ValueError, KeyError) as exc:  # bad window / unknown symbol
             raise HTTPException(status_code=422, detail=str(exc)) from exc

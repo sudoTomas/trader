@@ -715,8 +715,16 @@ def build_registry(
         summary="Replay the decide stage over a historical window (background; offline only).",
     )
     async def run_replay_eval(
-        symbol: str, start: str, end: str, label: str = "replay", desk: bool = False
+        symbol: str,
+        start: str,
+        end: str,
+        label: str = "replay",
+        desk: bool = False,
+        briefs: bool = True,
+        macro_view: bool = True,
     ) -> dict[str, Any]:
+        """``briefs`` / ``macro_view`` drop a research lane from the replayed prompt;
+        a baseline with ``briefs=False`` matches the live path while that lane is dark."""
         import asyncio
         from datetime import datetime
 
@@ -725,16 +733,17 @@ def build_registry(
         if evaluator is None:
             return {"run_id": None, "status": "unavailable", "reason": "no evaluator in build"}
         sym = default_registry().get(symbol)
+        config = {"desk": desk, "briefs": briefs, "macro_view": macro_view}
         run_id = await evaluator.create_run(
             sym,
             datetime.fromisoformat(start),
             datetime.fromisoformat(end),
             label=label,
-            config={"desk": desk},
+            config=config,
         )
         asyncio.create_task(evaluator.execute(run_id, sym), name=f"replay-eval-{run_id}")
         await _audit_command(
-            "run_replay_eval", {"run_id": run_id, "symbol": symbol, "label": label, "desk": desk}
+            "run_replay_eval", {"run_id": run_id, "symbol": symbol, "label": label, **config}
         )
         return {"run_id": run_id, "status": "running"}
 
