@@ -30,6 +30,7 @@ The API, MCP server and CLI share one service registry; auth guards the first tw
 | Variable | Type | Default | Category | Description |
 |---|---|---|---|---|
 | `TRADER_API_KEY` | `str` | *(empty)* | credential | Bearer key the API and MCP surfaces require. Mandatory outside dev: an unset key with `TRADER_AUTH_DISABLED` unset refuses to boot. |
+| `TRADER_CAPTURE_API_KEY` | `str` | *(empty)* | credential | Capture-scoped second key for external research agents (Hermes). It may only submit, list and retire research notes and read the Macro View: on REST those four routes (plus `/health`), on MCP the `/mcp-capture/` mount alone. Every other route and `/mcp/` answer 403. Blank means no capture key exists; it never substitutes for `TRADER_API_KEY`. |
 | `TRADER_AUTH_DISABLED` | `bool` | `false` | gate | Explicit dev opt-out from API auth. Without it, an unset `TRADER_API_KEY` fails boot (fail closed). Never set on a reachable box. |
 | `TRADER_API_BASE_URL` | `str` | `http://localhost:8080` | endpoint | Where the CLI finds the running API. |
 
