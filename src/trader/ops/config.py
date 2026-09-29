@@ -138,7 +138,7 @@ class Settings(BaseSettings):
         category=GATE,
         section="Decide loop",
         description=(
-            "Per-symbol shadow (EAI-186 gate): comma-separated tickers that decide and "
+            "Per-symbol shadow: comma-separated tickers that decide and "
             "risk-check but never submit, while the rest of the build trades live-paper. A "
             "new symbol earns its flip here first."
         ),
@@ -239,7 +239,7 @@ class Settings(BaseSettings):
         category=GATE,
         section="Research Desk",
         description=(
-            "Per-candidate briefs (EAI-192): briefs compile and store on note changes "
+            "Per-candidate briefs: briefs compile and store on note changes "
             "regardless; this flag alone lets them into the decide prompt. A decide-behavior "
             "change: flip only through `docs/runbooks/decide-change-gate.md`."
         ),
@@ -249,7 +249,7 @@ class Settings(BaseSettings):
         category=GATE,
         section="Research Desk",
         description=(
-            "Decision desk (EAI-190): analyst fan-out + cross-model critic around the decide. "
+            "Decision desk: analyst fan-out + cross-model critic around the decide. "
             "Dark by default; earns its flip via replay desk-on vs desk-off, then a shadow "
             "window."
         ),
@@ -268,7 +268,7 @@ class Settings(BaseSettings):
         category=TUNING,
         section="Research Desk",
         description=(
-            "X sentiment (EAI-180) poll interval for held symbols; needs an xAI credential "
+            "X sentiment poll interval for held symbols; needs an xAI credential "
             "(x_search runs server-side on xAI). The daily call cap still bounds a shorter "
             "interval."
         ),
@@ -308,7 +308,7 @@ class Settings(BaseSettings):
         category=ENDPOINT,
         section="LLM endpoints",
         description=(
-            "Nemotron preset: the local vLLM `/v1` (the Spark serves it on :8009, no auth). "
+            "Nemotron preset: a self-hosted vLLM `/v1` (default :8009, no auth). "
             "Used for decide and analysts when `TRADER_DECIDE_BASE_URL` is empty; the preset "
             "client sends `chat_template_kwargs: {enable_thinking: false}` on every request "
             "(without it the endpoint collapses to ~0.35 tok/s). A generic URL equal to this "

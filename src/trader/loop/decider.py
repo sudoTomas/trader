@@ -6,9 +6,10 @@ Contracts:
   through pydantic. A validation failure gets exactly one retry, with the actual
   validation errors fed back so the model can correct itself; a second failure is a
   journaled error, not a crash and not a trade.
-- **Transient vs crash classification** (v1:EAI-40): infra blips (endpoint down, timeout,
-  refusal) are ``transient`` so the runner backs off without arming a crash loop, while a
-  genuine bug propagates. v1 crashed the trader on transient errors.
+- **Transient vs crash classification**: infra blips (endpoint down, timeout, refusal)
+  are ``transient`` so the runner backs off without arming a crash loop, while a genuine
+  bug propagates. v1 crashed the trader on transient errors
+  (see docs/lessons.md#transient-vs-crash-backoff).
 - **The decider never sizes anything that matters.** ``notional_usd`` is a *request*;
   RiskGuard clamps it against config limits and measured volatility.
 """
@@ -77,9 +78,9 @@ class DecisionOutput(BaseModel):
         )
 
 
-# Wire schema: every key must be EMITTED (EAI-190 gate finding — under the longer
-# analyst-enriched prompt the model omitted side/notional on opens, invalid twice each;
-# guided decoding allowed it because optional keys were omittable).
+# Wire schema: every key must be EMITTED. Under the longer analyst-enriched prompt the
+# model omitted side/notional on opens, invalid twice each; guided decoding allowed it
+# because optional keys were omittable (see docs/lessons.md#guided-decoding-omitted-keys).
 DECISION_SCHEMA: dict[str, Any] = require_all_keys(DecisionOutput.model_json_schema())
 
 

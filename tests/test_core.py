@@ -127,7 +127,7 @@ def test_class_defaults_and_overrides():
 
 
 def test_registry_extension_is_immutable():
-    # QQQ: an equity NOT in the seed universe (SPY joined it in EAI-186).
+    # QQQ: an equity NOT in the seed universe (SPY is the only seeded equity).
     reg = default_registry()
     extended = reg.with_symbol(make_symbol("QQQ", AssetClass.US_EQUITY))
     assert extended.get("QQQ").ticker == "QQQ"

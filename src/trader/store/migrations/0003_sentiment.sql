@@ -1,5 +1,6 @@
--- X sentiment scores (EAI-180). One row per poll, including unavailable outcomes —
--- a degraded read (no live citations) is journaled but never carries a number.
+-- X sentiment scores. One row per poll, including unavailable outcomes — a degraded
+-- read (no live citations) is journaled but never carries a number
+-- (see docs/lessons.md#sentiment-no-citations-is-unavailable).
 CREATE TABLE sentiment_scores (
     id        bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     ts        timestamptz NOT NULL DEFAULT now(),

@@ -1,4 +1,4 @@
-"""Research Desk part 1 — the operator's capture layer (EAI-177).
+"""Research Desk part 1 — the operator's capture layer.
 
 Hand-picked macro research enters here from any surface. Notes are immutable markdown:
 content never changes after submit, only lifecycle status does. **Capture once, compile
@@ -9,7 +9,7 @@ Auto-stale: every note gets an ``expires_at`` window at submit (default
 ``TRADER_RESEARCH_STALE_DAYS``) unless pinned/evergreen. An expired note silently drops
 out of compilation but keeps its status — retiring is an explicit operator act. The
 ai-quoting gap was having *no* staleness; the v1 macro-lab gap was analytics nobody
-audited. Both inform the shape here.
+audited. Both inform the shape here (see docs/lessons.md#research-desk-capture-once).
 """
 
 from __future__ import annotations

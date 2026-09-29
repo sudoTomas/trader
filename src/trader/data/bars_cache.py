@@ -3,7 +3,8 @@
 The live loop calls the provider directly and computes indicators in-process; this module
 exists so replay-shaped consumers can ask for a historical window without hammering the
 provider. One candle per row, immutable ``(symbol, interval, ts)`` PK, bounded retention —
-NOT v1's embedded-window blob that grew to 3.6 GB (v1:EAI-159). A test asserts no
+NOT v1's embedded-window blob that grew to 3.6 GB (see docs/lessons.md#no-market-data-storage).
+A test asserts no
 live-path data module imports the store.
 """
 

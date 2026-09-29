@@ -1,6 +1,7 @@
-"""EAI-195: the operator doors the first live fill proved missing — approvals
-resolution and drift adoption, registry-first across the three surfaces. Both were
-performed via direct service calls on 2026-09-11; that must never be necessary again.
+"""The operator doors the first live fill proved missing — approvals resolution and
+drift adoption, registry-first across the three surfaces. Both were performed via
+direct service calls on 2026-09-11; that must never be necessary again
+(see docs/lessons.md#operator-doors-on-all-surfaces).
 """
 
 from __future__ import annotations

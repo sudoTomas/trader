@@ -1,4 +1,4 @@
--- Per-candidate research briefs (EAI-192). One versioned row per compile, per symbol —
+-- Per-candidate research briefs. One versioned row per compile, per symbol —
 -- version is a single global identity (like macro_views) so a decision can point at
 -- exactly the brief it saw. Advisory by construction: nothing in risk reads this table.
 CREATE TABLE briefs (

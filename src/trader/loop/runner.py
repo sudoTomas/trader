@@ -4,19 +4,20 @@
 
 **Shadow mode defaults ON**: the full pipeline runs, every decision and risk verdict is
 journaled, and nothing is submitted. Turning it off is a deliberate operator act
-(``TRADER_SHADOW_MODE=false``) and still cannot bypass RiskGuard — the executor (EAI-176)
+(``TRADER_SHADOW_MODE=false``) and still cannot bypass RiskGuard — the executor
 only ever receives ``RiskOutcome.executable()``.
 
 Operational discipline:
 
 - **Single-flight.** One wakeup at a time. Triggers that arrive while a run is in flight
   are NOT marked dispatched, so they re-fire next tick rather than being swallowed by a
-  cooldown they never used (v1:engine/signal_monitor.py).
-- **Transient vs crash backoff** (v1:EAI-40). An infra blip backs off gently and does not
-  arm the crash counter; an unexpected exception backs off exponentially. The loop never
-  dies — a dead loop is an unmanaged position book.
+  cooldown they never used (see docs/lessons.md#cooldowns-start-on-dispatch).
+- **Transient vs crash backoff.** An infra blip backs off gently and does not arm the
+  crash counter; an unexpected exception backs off exponentially. The loop never dies —
+  a dead loop is an unmanaged position book (see docs/lessons.md#transient-vs-crash-backoff).
 - **Nothing blocking on the event loop.** All I/O here is async so ``/health`` stays
-  responsive under a slow model call (v1:EAI-39).
+  responsive under a slow model call — a sync tick once blocked it and autoheal
+  restart-looped the container (see docs/lessons.md#sync-tick-blocked-health).
 """
 
 from __future__ import annotations
@@ -162,13 +163,15 @@ class LoopRunner:
     executor: Any | None = None  # loop.executor.Executor; absent = shadow-only build
     sentiment: Any | None = None  # research.sentiment.SentimentService; absent = no polling
     sentiment_poll_seconds: float = 10_800.0
-    # Per-symbol throttle (EAI-186 gate): these symbols journal as shadow — full decide
-    # + risk pass, nothing submitted — while the rest of the build trades live-paper.
+    # Per-symbol throttle: these symbols journal as shadow — full decide + risk pass,
+    # nothing submitted — while the rest of the build trades live-paper, so a new
+    # symbol earns its gate without pausing the proven slice
+    # (see docs/lessons.md#per-symbol-shadow).
     shadow_symbols: set[str] = field(default_factory=set)
-    # Briefs lane (EAI-192 gate): dark by default — briefs compile and store regardless,
+    # Briefs lane, dark by default — briefs compile and store regardless,
     # but only this flag lets them into the decide prompt (a decide-behavior change).
     briefs_enabled: bool = False
-    # Decision desk (EAI-190 gate): analyst lanes before the decide, critic after it.
+    # Decision desk: analyst lanes before the decide, critic after it.
     # Absent = no desk. Advisory: a crashing desk degrades to a plain decide, never blocks.
     desk: Any | None = None
     stats: LoopStats = field(default_factory=LoopStats)
@@ -231,7 +234,8 @@ class LoopRunner:
             except asyncio.CancelledError:
                 raise
             except DeciderError as exc:
-                # Infra blip: back off gently, do NOT arm the crash counter (v1:EAI-40).
+                # Infra blip: back off gently, do NOT arm the crash counter — v1 crashed
+                # the trader on these (see docs/lessons.md#transient-vs-crash-backoff).
                 backoff = TRANSIENT_BACKOFF_SECONDS if exc.transient else 0.0
                 self.stats.last_error = str(exc)
                 log.warning("loop_transient_error", error=str(exc), backoff=backoff)
@@ -442,8 +446,9 @@ class LoopRunner:
         for symbol in self.symbols:
             if not symbol.market_calendar.is_open(now):
                 continue
-            # Sentiment reaches the scheduler only for HELD symbols (EAI-180): the swing
-            # trigger exists to re-examine an open position, not to chase the feed.
+            # Sentiment reaches the scheduler only for HELD symbols: the swing trigger
+            # exists to re-examine an open position, not to chase the feed
+            # (see docs/lessons.md#sentiment-held-symbols-only).
             score = None
             qty = positions.get(symbol.ticker, 0.0)
             if qty:

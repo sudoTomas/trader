@@ -2,7 +2,8 @@
 
 Covers the live-URL refusal, the no-bypass link, persist-before-submit recovery, fill
 dedupe, drift detection, and the confirm gate. A FakeAlpaca stands in for the venue;
-the store is real. The live-paper round trip needs operator credentials (see EAI-176).
+the store is real. The live-paper round trip needs operator credentials
+(docs/runbooks/first-live-paper-trade.md).
 """
 
 from __future__ import annotations
@@ -591,7 +592,8 @@ async def test_shadow_loop_never_reaches_the_venue_even_with_an_executor(db: Dat
     assert await db.fetch_all("SELECT * FROM orders") == []
 
 
-# --- the stream must actually run, and must not die (EAI-176 acceptance finding) ------
+# --- the stream must actually run, and must not die (first-fill finding;
+# see docs/lessons.md#fills-stream-must-be-owned) ------------------------------------
 
 
 async def test_run_stream_survives_disconnects_and_applies_later_events(db: Database):

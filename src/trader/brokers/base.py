@@ -2,7 +2,7 @@
 
 Deliberately narrow: the executor is the only caller, and it may only act on an intent
 that RiskGuard approved. Keeping this a protocol (rather than an Alpaca-shaped class)
-preserves the documented IBKR add-back path (v1:adapters/broker/{ibkr,reconcile}.py).
+preserves the documented IBKR add-back path (see docs/lessons.md#ibkr-deferred).
 """
 
 from __future__ import annotations

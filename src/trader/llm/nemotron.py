@@ -1,11 +1,11 @@
-"""Nemotron client — the money-path ``decide`` model, served by vLLM on the Spark.
+"""Nemotron client — the money-path ``decide`` model, served by a self-hosted vLLM.
 
 INVARIANT (CLAUDE.md): every request MUST send
-``chat_template_kwargs: {"enable_thinking": false}`` — omitting it collapses the Spark
-endpoint to ~0.35 tok/s (v1:EAI-128). The flag is baked into the client here so no
-caller can forget it.
+``chat_template_kwargs: {"enable_thinking": false}`` — omitting it collapses the
+self-hosted endpoint to ~0.35 tok/s (see docs/lessons.md#nemotron-thinking-off). The flag is
+baked into the client here so no caller can forget it.
 
-No auth on the endpoint — network trust inside the Spark. Shared 4-sequence vLLM
+No auth on the endpoint — network trust inside the LAN. Shared 4-sequence vLLM
 instance; keep research roles off it when another endpoint is configured (they
 default here only as the backstop). Selected when ``TRADER_DECIDE_BASE_URL`` is
 empty. ``TRADER_NEMOTRON_*`` is the preset, not a second client implementation.
@@ -26,7 +26,8 @@ PROVIDER = "nemotron"
 def apply_thinking_guard(extra_body: dict[str, Any]) -> dict[str, Any]:
     """Force ``enable_thinking: false``. Other extra-body keys are kept.
 
-    The Spark endpoint collapses to ~0.35 tok/s without this flag (v1:EAI-128).
+    The self-hosted endpoint collapses to ~0.35 tok/s without this flag
+    (see docs/lessons.md#nemotron-thinking-off).
     The Nemotron preset always sends it. A generic decide endpoint aimed at
     ``TRADER_NEMOTRON_BASE_URL`` does too, so the flag cannot be omitted or
     flipped off for that host.

@@ -631,7 +631,7 @@ def build_registry(
             return {"status": "unavailable", "reason": "no xAI credential in this build"}
         return await sentiment.get_x_sentiment(default_registry().get(symbol))
 
-    # --- replay eval (M5, EAI-188) -------------------------------------------
+    # --- replay eval (M5) ----------------------------------------------------
 
     def _run_out(row: dict[str, Any]) -> dict[str, Any]:
         return {

@@ -20,7 +20,8 @@ from trader.store.repos import UsageRepo
 log = structlog.get_logger(__name__)
 
 #: (provider, model) -> (USD per 1M prompt tokens, USD per 1M completion tokens).
-#: Nemotron runs on our own Spark: $0 by definition. xAI short-context rates from
+#: Nemotron runs on our own self-hosted vLLM: $0 by definition (a hosting fact, not a
+#: missing number — see docs/lessons.md#usage-metering-real-tokens). xAI short-context rates from
 #: docs.x.ai/developers/pricing (read 2026-09-17). Long-context (≥200k prompt) is
 #: 2×; we do not take that path. ``grok-4`` stays because it is still the live default.
 PRICES: dict[tuple[str, str], tuple[float, float]] = {

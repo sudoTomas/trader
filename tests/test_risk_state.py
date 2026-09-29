@@ -148,7 +148,8 @@ async def test_approval_round_trip(db: Database):
 
 
 async def test_stale_approval_is_refused(db: Database):
-    """v1:EAI-46 — an approval granted against a stale quote must not become a fill."""
+    """An approval granted against a stale quote must not become a fill — that is how
+    v1 produced stale fills (see docs/lessons.md#approval-price-tolerance)."""
     service = ApprovalService(db)
     intent = OrderIntent("BTC/USD", Side.BUY, notional=5_000.0)
     approval_id = await service.park(intent, price=60_000.0, reason="over threshold")

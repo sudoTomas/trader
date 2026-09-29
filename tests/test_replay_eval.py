@@ -1,5 +1,6 @@
-"""EAI-188: replay eval harness — rebuild historical context from the bars cache, rerun
-the decider offline, journal to eval_runs/eval_steps (NEVER decisions), score crudely.
+"""Replay eval harness — rebuild historical context from the bars cache, rerun the
+decider offline, journal to eval_runs/eval_steps (NEVER decisions), score crudely
+(see docs/lessons.md#replay-before-flip).
 
 The LLM is stubbed; the store is real. This harness is the gate-keeper for every future
 decide-behavior change (docs/runbooks/decide-change-gate.md).

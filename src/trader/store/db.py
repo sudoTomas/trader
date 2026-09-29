@@ -1,7 +1,7 @@
 """Database access — one async psycopg3 pool, four query helpers, no ORM.
 
 ``fetch_iter`` streams via a server-side cursor; large result sets must never go through
-``fetch_all`` (v1 loaded 19 GiB in one call that way — v1:EAI-159).
+``fetch_all`` (v1 loaded 19 GiB in one call that way — see docs/lessons.md#no-market-data-storage).
 """
 
 from __future__ import annotations

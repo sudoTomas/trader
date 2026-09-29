@@ -1,4 +1,4 @@
-"""Cross-model critic (EAI-190) — a second opinion between decide and RiskGuard.
+"""Cross-model critic — a second opinion between decide and RiskGuard.
 
 The ``critic`` role routes Grok-first so a different model reviews Nemotron's draft
 (same-model critique via the Nemotron backstop is weaker but keeps the desk functional
@@ -55,8 +55,9 @@ class CriticOutput(BaseModel):
     reason: str = Field(min_length=1, max_length=1000)
 
 
-# Wire schema: a shrink whose notional was omitted would be the decider's EAI-190
-# failure class all over again — every key must be emitted (null allowed).
+# Wire schema: a shrink whose notional was omitted would be the decider's omitted-key
+# failure all over again — every key must be emitted (null allowed;
+# see docs/lessons.md#guided-decoding-omitted-keys).
 CRITIC_SCHEMA: dict[str, Any] = require_all_keys(CriticOutput.model_json_schema())
 
 

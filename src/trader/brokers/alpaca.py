@@ -1,10 +1,10 @@
 """Alpaca broker — PAPER ONLY unless explicitly, deliberately enabled.
 
 Raw httpx + websockets rather than ``alpaca-py``: the SDK pulls pandas/requests/msgpack
-into a memory-budgeted box (the Spark shares 128 GB with vLLM), and the wire protocol is
-small and fully documented. API facts below are from the v1 primary-source spike
-(``v1:docs/research/alpaca-api/findings.md``, researched 2026-08-05); each non-obvious
-one is called out where it bites.
+into a memory-budgeted box (the GPU host shares its memory with vLLM), and the wire
+protocol is small and fully documented. API facts below are from a primary-source
+spike done for v1 (its ``docs/research/alpaca-api/findings.md``, researched
+2026-08-05); each non-obvious one is called out where it bites.
 
 Safety: ``AlpacaBroker`` REFUSES to construct against the live URL unless
 ``TRADER_ALPACA_LIVE_ENABLED=true``. The default build cannot reach live at all.
@@ -190,7 +190,7 @@ class AlpacaBroker:
                 symbol=to_canonical.get(row["symbol"], row["symbol"]),
                 qty=_f(row.get("qty")),
                 # qty_available excludes shares already committed to open orders — using
-                # qty for a close would oversell (v1:EAI-46).
+                # qty for a close would oversell (see docs/lessons.md#closes-must-land).
                 qty_available=_f(row.get("qty_available"), _f(row.get("qty"))),
                 avg_entry_price=_f(row.get("avg_entry_price")) or None,
                 asset_class=row.get("asset_class"),

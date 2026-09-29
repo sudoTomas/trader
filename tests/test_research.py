@@ -1,4 +1,5 @@
-"""EAI-177: Research Desk part 1 — notes store, capture surfaces, auto-stale.
+"""Research Desk part 1 — notes store, capture surfaces, auto-stale
+(see docs/lessons.md#research-desk-capture-once).
 
 Lifecycle (submit → list → retire), auto-stale windowing, markdown preserved verbatim,
 and the three capture doors (API / MCP / CLI). Runs against the real compose Postgres.

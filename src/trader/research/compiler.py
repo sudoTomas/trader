@@ -1,4 +1,4 @@
-"""Macro View compiler (EAI-178) — notes in, one versioned advisory digest out.
+"""Macro View compiler — notes in, one versioned advisory digest out.
 
 A Grok ``compiler`` role (Nemotron backstop via the LLM registry chain) recompiles the
 Macro View whenever notes change, debounced. The anti-slop rules from the ai-quoting
@@ -14,7 +14,8 @@ audit are enforced here, not just prompted:
   notes, so the compiler cannot see them.
 
 The view is advisory by construction: RiskGuard has no parameter that could carry it
-(asserted by test), and the decide prompt receives only a budgeted slice in its own lane.
+(asserted by test), and the decide prompt receives only a budgeted slice in its own lane
+(see docs/lessons.md#macro-view-advisory-firewall).
 """
 
 from __future__ import annotations

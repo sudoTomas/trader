@@ -1,5 +1,5 @@
-"""EAI-178: Research Desk part 2 — Grok macro-view compiler, advisory-firewalled
-injection, journal versioning.
+"""Research Desk part 2 — Grok macro-view compiler, advisory-firewalled injection,
+journal versioning (see docs/lessons.md#macro-view-advisory-firewall).
 
 The LLM is stubbed; the store is the real one. Anti-slop rules (from the ai-quoting
 audit) are asserted deterministically: citation enforcement, price-level freezing,
@@ -101,8 +101,9 @@ async def test_compile_prompt_carries_live_notes_only_and_preserves_dispute(db: 
 
 
 async def test_single_asset_notes_yield_an_empty_global_thesis_and_no_foreign_lane(db: Database):
-    """EAI-186 shadow-review finding: with only ETH-scoped notes the compiler wrote an
-    ETH-flavored "global" thesis, which the global lane then rendered into SPY prompts.
+    """SPY shadow-review finding: with only ETH-scoped notes the compiler wrote an
+    ETH-flavored "global" thesis, which the global lane then rendered into SPY prompts
+    (see docs/lessons.md#global-thesis-cross-asset-only).
     The contract now: global_thesis carries only cross-asset claims (empty when the
     notes are single-asset); asset-class sections already scope correctly."""
     assert "cross-asset" in SYSTEM_PROMPT

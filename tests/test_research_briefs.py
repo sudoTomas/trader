@@ -1,9 +1,10 @@
-"""EAI-192: per-candidate research briefs — Grok `brief` role compiles symbol-scoped
+"""Per-candidate research briefs — Grok `brief` role compiles symbol-scoped
 notes + the latest ok sentiment into a versioned per-symbol digest; the decide prompt
 gets a budgeted lane behind TRADER_BRIEFS_ENABLED (dark by default).
 
-The LLM is stubbed; the store is the real one. The EAI-178 anti-slop rules are asserted
-deterministically: citation enforcement, price-level freezing, no-inputs → no brief.
+The LLM is stubbed; the store is the real one. The Macro View anti-slop rules are
+asserted deterministically: citation enforcement, price-level freezing, no-inputs →
+no brief (see docs/lessons.md#no-inputs-no-brief).
 """
 
 from __future__ import annotations

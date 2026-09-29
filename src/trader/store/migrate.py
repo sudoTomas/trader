@@ -1,6 +1,6 @@
 """Migration runner. A failed migration ABORTS the run — rollback, raise, nothing after it
 is applied. (v1's runner silently continued past failures and left half-applied schemas;
-v1:EAI-10.)
+see docs/lessons.md#migration-runner-aborts.)
 """
 
 from __future__ import annotations

@@ -12,7 +12,7 @@ bleed is still bleed):
 A breach halts **new opens only**; exits stay managed (a halt that trapped positions
 would be a bigger risk than the one it's guarding). Operator resume clears the halt AND
 re-baselines the high-water — without that, a monotonic high-water re-trips the kill on
-the very next tick (v1:engine/sleeve.py::resume).
+the very next tick (see docs/lessons.md#breaker-resume-rebaselines).
 """
 
 from __future__ import annotations

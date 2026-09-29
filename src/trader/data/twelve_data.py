@@ -1,6 +1,6 @@
 """Twelve Data adapter — fallback provider for equities/ETFs.
 
-Async adaptation of the working v1 adapter (v1:adapters/market_data/twelve_data.py),
+Async adaptation of v1's working ``adapters/market_data/twelve_data.py``,
 keeping its hardened contracts:
 
 - Twelve Data reports request errors as HTTP 200 with ``{"status": "error", ...}`` —

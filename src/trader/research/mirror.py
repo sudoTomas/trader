@@ -1,10 +1,10 @@
-"""Read-only markdown mirror (EAI-179) — browse the Research Desk Obsidian-style.
+"""Read-only markdown mirror — browse the Research Desk Obsidian-style.
 
 Strictly one-way: the DB is the single source of truth, every export rewrites the folder
 from scratch (local edits are overwritten, orphaned files removed), and nothing in this
 codebase reads these files back. The CLI/API/MCP are the only write paths — this avoids
 ai-quoting's out-of-band sync fragility. The folder is gitignored: generated content,
-regenerable from the store at any time.
+regenerable from the store at any time (see docs/lessons.md#research-desk-capture-once).
 """
 
 from __future__ import annotations
