@@ -7,7 +7,9 @@ a finished string by the time the model runs.
 
 Fetch-on-tick: bars come from the provider and are used in memory. Nothing is stored.
 The Macro View slice occupies its own budgeted lane in the prompt (EAI-178): advisory
-by construction — it feeds the decider only, never RiskGuard.
+by construction — it feeds the decider only, never RiskGuard. The live call reads
+``current()``. Replay passes ``research_as_of`` so the lane is the row that existed
+at that instant, not whichever row is current today.
 """
 
 from __future__ import annotations
@@ -99,6 +101,35 @@ def build_brief_slice(
         entries.append(entry)
         used += len(entry)
     return BriefSlice(version=row["version"], entries=entries) if entries else None
+
+
+def _latest_at(rows: list[dict[str, Any]], as_of: datetime, ts_key: str) -> dict[str, Any] | None:
+    """Newest row whose timestamp is at or before ``as_of`` (version breaks ties)."""
+    eligible = [row for row in rows if row[ts_key] <= as_of]
+    if not eligible:
+        return None
+    return max(eligible, key=lambda row: (row[ts_key], int(row["version"])))
+
+
+async def _history_from(
+    repo: Any, start: dict[str, Any], *, symbol: str | None
+) -> list[dict[str, Any]]:
+    """Walk ``get(version)`` from ``start`` down to version 1.
+
+    Repos expose ``current()`` / ``get()`` only — no as-of query. Versions are a single
+    identity, so the chain is the history. ``symbol`` keeps other symbols' briefs out.
+    """
+    rows: list[dict[str, Any]] = []
+    row: dict[str, Any] | None = start
+    version = int(start["version"])
+    while version >= 1:
+        if row is not None and (symbol is None or row.get("symbol") == symbol):
+            rows.append(row)
+        version -= 1
+        if version < 1:
+            break
+        row = await repo.get(version)
+    return rows
 
 
 @dataclass(frozen=True)
@@ -234,6 +265,36 @@ class ContextBuilder:
         self._macro_budget = macro_budget_chars
         self._briefs = briefs
         self._brief_budget = brief_budget_chars
+        # (latest version, rows). Invalidated when a newer version appears, so a
+        # long-lived replay harness does not freeze the first run's history.
+        self._macro_cache: tuple[int, list[dict[str, Any]]] | None = None
+        self._brief_cache: dict[str, tuple[int, list[dict[str, Any]]]] = {}
+
+    async def _macro_history(self) -> list[dict[str, Any]]:
+        repo = self._macro_views
+        latest = await repo.current()
+        if latest is None:
+            return []
+        version = int(latest["version"])
+        cached = self._macro_cache
+        if cached is not None and cached[0] == version:
+            return cached[1]
+        rows = await _history_from(repo, latest, symbol=None)
+        self._macro_cache = (version, rows)
+        return rows
+
+    async def _brief_history(self, symbol: str) -> list[dict[str, Any]]:
+        repo = self._briefs
+        latest = await repo.current(symbol)
+        if latest is None:
+            return []
+        version = int(latest["version"])
+        cached = self._brief_cache.get(symbol)
+        if cached is not None and cached[0] == version:
+            return cached[1]
+        rows = await _history_from(repo, latest, symbol=symbol)
+        self._brief_cache[symbol] = (version, rows)
+        return rows
 
     async def build(
         self,
@@ -244,6 +305,8 @@ class ContextBuilder:
         position_qty: float = 0.0,
         equity: float = 0.0,
         recent_decisions: list[dict[str, Any]] | None = None,
+        research_as_of: datetime | None = None,
+        include_briefs: bool = True,
     ) -> DecisionContext:
         bars: dict[str, list[Bar]] = {}
         indicators: dict[str, Indicators] = {}
@@ -276,7 +339,12 @@ class ContextBuilder:
         macro_view: MacroSlice | None = None
         if self._macro_views is not None:
             try:
-                current = await self._macro_views.current()
+                # Live reads current(). Replay passes research_as_of so a step cannot
+                # see a view compiled after it (created_at <= step ts).
+                if research_as_of is None:
+                    current = await self._macro_views.current()
+                else:
+                    current = _latest_at(await self._macro_history(), research_as_of, "created_at")
                 if current is not None:
                     macro_view = build_macro_slice(
                         current, symbol.asset_class, budget_chars=self._macro_budget
@@ -285,9 +353,14 @@ class ContextBuilder:
                 log.warning("macro_view_unavailable", error=str(exc))
 
         brief: BriefSlice | None = None
-        if self._briefs is not None:
+        if include_briefs and self._briefs is not None:
             try:
-                current_brief = await self._briefs.current(symbol.ticker)
+                if research_as_of is None:
+                    current_brief = await self._briefs.current(symbol.ticker)
+                else:
+                    current_brief = _latest_at(
+                        await self._brief_history(symbol.ticker), research_as_of, "ts"
+                    )
                 if current_brief is not None:
                     brief = build_brief_slice(current_brief, budget_chars=self._brief_budget)
             except Exception as exc:  # noqa: BLE001 - advisory must never block a decide
