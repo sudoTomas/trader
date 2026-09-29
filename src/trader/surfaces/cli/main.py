@@ -497,5 +497,23 @@ def xai_probe_cmd(
     typer.echo(f"summary: {json.dumps(out['summary'])}")
 
 
+screener_app = typer.Typer(
+    help="Screener — rank a static universe into a bounded shortlist (query only)."
+)
+app.add_typer(screener_app, name="screener")
+
+
+@screener_app.command("run")
+def screener_run(
+    universe: str = typer.Option("sp100", help="Universe name (sp100)."),
+    limit: int = typer.Option(10, min=1, max=50, help="Shortlist size."),
+) -> None:
+    """Rank the universe by risk-adjusted momentum (20d/60d return over 20d vol), after
+    a dollar-volume floor and with the loop's own symbols excluded. Reads Alpaca daily
+    bars on the spot; stores nothing; does not touch the decide loop."""
+    params = {"universe": universe, "limit": limit}
+    typer.echo(json.dumps(_get("/screener", params=params), indent=2))
+
+
 if __name__ == "__main__":
     app()

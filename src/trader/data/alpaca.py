@@ -14,6 +14,7 @@ window, then reversed to the ascending order consumers expect.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -37,6 +38,31 @@ _INTERVAL_SECONDS = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "1d": 86400}
 
 PROVIDER = "alpaca_data"
 _BODY_LIMIT = 200
+
+#: Multi-symbol stock bars: the endpoint's cap is 10,000 data points per response
+#: counted across symbols; the comma-joined ``symbols`` value is kept short enough that
+#: the whole URL (base + ~250 chars of other params) stays under ~2k chars.
+_MULTI_LIMIT = 10_000
+_MULTI_SYMBOLS_MAX_CHARS = 1_500
+
+
+def _batches(tickers: Sequence[str], max_chars: int) -> list[list[str]]:
+    """Greedy comma-joined batches of at most ``max_chars`` characters (one per batch
+    minimum, so an oversized single ticker still goes out on its own)."""
+    batches: list[list[str]] = []
+    current: list[str] = []
+    length = 0
+    for ticker in tickers:
+        added = len(ticker) + (1 if current else 0)
+        if current and length + added > max_chars:
+            batches.append(current)
+            current, length = [], 0
+            added = len(ticker)
+        current.append(ticker)
+        length += added
+    if current:
+        batches.append(current)
+    return batches
 
 
 def _failure_detail(exc: BaseException) -> str:
@@ -147,6 +173,68 @@ class AlpacaData:
             )
             for row in reversed(rows)  # desc from the API -> ascending for consumers
         ]
+
+    async def get_daily_bars_multi(
+        self, symbols: Sequence[str], lookback_days: int
+    ) -> dict[str, list[Bar]]:
+        """The last ``lookback_days`` daily bars for many US-equity tickers at once
+        (screener path, #5). Ascending per symbol; every requested ticker is a key,
+        empty when the venue has nothing for it. Nothing is stored.
+
+        One request per batch of tickers (the URL stays under ~2k chars), each
+        followed through ``next_page_token`` (docs/lessons.md#alpaca-pagination-cap).
+        Consolidated ``sip`` bars with a delayed ``end`` like ``get_bars``; an explicit
+        ``start`` because the default caps the window to today
+        (docs/lessons.md#alpaca-start-default-caps-to-today). ``limit`` counts across
+        symbols on this endpoint, so the window (2x + 10 calendar days of slack for
+        weekends and holidays) bounds the response and the tail is trimmed here.
+        """
+        if lookback_days < 1:
+            raise MarketDataError("alpaca_data: lookback_days must be >= 1")
+        tickers = [s for s in dict.fromkeys(symbols) if s]
+        out: dict[str, list[Bar]] = {t: [] for t in tickers}
+        if not tickers:
+            return out
+        now = datetime.now(tz=UTC)
+        base: dict[str, Any] = {
+            "timeframe": _TIMEFRAMES["1d"],
+            "start": (now - timedelta(days=lookback_days * 2 + 10)).isoformat(),
+            "end": (now - _SIP_HISTORICAL_DELAY).isoformat(),
+            "feed": "sip",
+            "adjustment": "split",
+            "limit": _MULTI_LIMIT,
+            "sort": "asc",
+        }
+        rows: dict[str, list[dict[str, Any]]] = {t: [] for t in tickers}
+        for batch in _batches(tickers, _MULTI_SYMBOLS_MAX_CHARS):
+            params = {**base, "symbols": ",".join(batch)}
+            payload = await self._get("/v2/stocks/bars", params)
+            pages = 1
+            while True:
+                for ticker, page_rows in (payload.get("bars") or {}).items():
+                    if ticker in rows:
+                        rows[ticker] += page_rows
+                token = payload.get("next_page_token")
+                if not token or pages >= 50:
+                    break
+                payload = await self._get("/v2/stocks/bars", {**params, "page_token": token})
+                pages += 1
+        for ticker, ticker_rows in rows.items():
+            ticker_rows.sort(key=lambda r: r["t"])  # asc across pages, defensively
+            out[ticker] = [
+                Bar(
+                    symbol=ticker,
+                    interval="1d",
+                    ts=_parse_ts(row["t"]),
+                    open=float(row["o"]),
+                    high=float(row["h"]),
+                    low=float(row["l"]),
+                    close=float(row["c"]),
+                    volume=float(row["v"]),
+                )
+                for row in ticker_rows[-lookback_days:]
+            ]
+        return out
 
     async def get_latest_quote(self, symbol: Symbol) -> Quote:
         spelled = symbol.for_provider(PROVIDER)

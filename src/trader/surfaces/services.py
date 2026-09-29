@@ -64,6 +64,7 @@ def build_registry(
     evaluator: Any | None = None,
     briefs: Any | None = None,
     xai_http: Any | None = None,
+    screener: Any | None = None,
 ) -> ServiceRegistry:
     """Construct the registry with the capabilities available in this build.
 
@@ -73,7 +74,9 @@ def build_registry(
     compiler, ``briefs`` the per-candidate brief compiler, and ``mirror`` the one-way
     markdown exporter (research.*), absent in store-less builds. ``xai_http`` is the
     service's authenticated api.x.ai client (``llm.xai.xai_http_client``), None without
-    an xAI credential path; only the operator diagnostics use it.
+    an xAI credential path; only the operator diagnostics use it. ``screener`` is a
+    multi-symbol daily-bars provider (``get_daily_bars_multi``), absent without
+    market-data credentials.
     """
     reg = ServiceRegistry()
 
@@ -780,6 +783,44 @@ def build_registry(
             "summary": summary,
             "results": [r.as_dict() for r in results],
         }
+
+    # --- screener (M5) -------------------------------------------------------
+
+    @reg.register(
+        "screener",
+        kind="query",
+        summary="Rank a static universe (sp100) into a bounded shortlist by risk-adjusted"
+        " momentum; a query only, not wired into the decide loop.",
+    )
+    async def screener_query(universe: str = "sp100", limit: int = 10) -> dict[str, Any]:
+        from trader.data.universe import universe as load_universe
+        from trader.ops.config import get_settings
+        from trader.research.screener import rank_universe
+
+        settings = get_settings()
+        symbols = load_universe(universe)  # KeyError -> the API answers 422
+        exclude = {t.strip() for t in settings.loop_symbols.split(",") if t.strip()}
+        if screener is None:
+            return {
+                **rank_universe(
+                    universe,
+                    {},
+                    exclude=exclude,
+                    min_dollar_volume=settings.screener_min_dollar_volume_usd,
+                    limit=limit,
+                ).as_dict(),
+                "reason": "no market-data credentials in this build",
+            }
+        # Fetch-on-query: the bars live only for this call (no market-data storage).
+        bars = await screener.get_daily_bars_multi(symbols, settings.screener_lookback_days)
+        result = rank_universe(
+            universe,
+            bars,
+            exclude=exclude,
+            min_dollar_volume=settings.screener_min_dollar_volume_usd,
+            limit=limit,
+        )
+        return {**result.as_dict(), "lookback_days": settings.screener_lookback_days}
 
     async def _audit_command(action: str, payload: dict[str, Any]) -> None:
         """Commands are state-changing: every one leaves an append-only trace."""

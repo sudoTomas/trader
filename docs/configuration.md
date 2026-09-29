@@ -95,6 +95,8 @@ Notes, Macro View compilation, briefs, the decision desk and X sentiment. Every 
 | `TRADER_SENTIMENT_TRIGGER_ENABLED` | `bool` | `false` | gate | Lets a sentiment swing wake the decide loop. Shadow-first: leave OFF until at least a week of journaled scores looks sane. Code default off; a live book arms it in `.env`, never here. |
 | `TRADER_SENTIMENT_SWING_THRESHOLD` | `float` | `0.5` | tuning | Score move between polls that wakes the trader; scores are on [-1, 1]. |
 | `TRADER_SENTIMENT_X_HANDLES` | `str` | *(empty)* | tuning | Comma-separated allowlist of X handles for x_search; empty = open search. |
+| `TRADER_SCREENER_MIN_DOLLAR_VOLUME_USD` | `float` | `50000000.0` | tuning | Screener liquidity floor: symbols whose 20-day average dollar volume (close x volume) is below this are skipped before ranking. The screener is a query (`GET /screener`, `get_screener`, `trader screener run`); it is not wired into the decide loop. |
+| `TRADER_SCREENER_LOOKBACK_DAYS` | `int` | `90` | tuning | Daily bars the screener fetches per symbol (one or two multi-symbol Alpaca requests per query, nothing stored). Must cover the 60-day momentum window: at least 61 trading days; 90 leaves slack for holidays. |
 
 ## LLM endpoints
 
