@@ -6,6 +6,12 @@ checks. Greenfield successor to `trading-agent` (v1, archived).
 
 Full design: [`docs/architecture.md`](docs/architecture.md).
 
+## Disclaimer
+
+This is paper-trading software, not financial advice. It is provided without warranty
+(see [LICENSE](LICENSE)). Live trading is hard-gated (`TRADER_ALPACA_LIVE_ENABLED`) and
+unsupported.
+
 ## Principles
 
 - Deterministic safety chain — limits are code, never prompt text.

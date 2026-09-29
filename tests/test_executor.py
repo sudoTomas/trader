@@ -96,6 +96,39 @@ async def test_revoked_key_flips_health_without_raising():
         await broker.get_account()
 
 
+def _raise(exc: Exception):
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise exc
+
+    return handler
+
+
+async def test_broker_errors_include_class_status_and_body():
+    """2026-09-24 logged `alpaca: ` — httpx timeouts stringify empty, so a 5xx,
+    a timeout, and a DNS failure were indistinguishable."""
+    with pytest.raises(BrokerError, match="ConnectTimeout") as caught:
+        await broker_with(_raise(httpx.ConnectTimeout(""))).get_account()
+    assert str(caught.value).strip() != "alpaca:"
+
+    with pytest.raises(BrokerError, match="ConnectError") as caught:
+        await broker_with(
+            _raise(httpx.ConnectError("[Errno -2] Name or service not known"))
+        ).get_account()
+    assert "Name or service not known" in str(caught.value)
+
+    body = "upstream " + ("x" * 400)
+    broker = broker_with(lambda request: httpx.Response(503, text=body))
+    with pytest.raises(BrokerError, match="HTTPStatusError") as caught:
+        await broker.get_account()
+    text = str(caught.value)
+    assert "HTTP 503" in text
+    assert "upstream" in text
+    assert "x" * 250 not in text
+
+    missing = broker_with(lambda request: httpx.Response(404, text='{"message":"not found"}'))
+    assert await missing.get_order_by_client_id("absent") is None
+
+
 async def test_positions_use_qty_available():
     rows = [
         {

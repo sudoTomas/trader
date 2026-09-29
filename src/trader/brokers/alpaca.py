@@ -56,6 +56,27 @@ LIVE_REST = "https://api.alpaca.markets"
 LIVE_WS = "wss://api.alpaca.markets/stream"
 
 PROVIDER = "alpaca_trading"
+_BODY_LIMIT = 200
+
+
+def _failure_detail(exc: BaseException) -> str:
+    """Class, HTTP status, and a truncated body.
+
+    ``str()`` of an httpx timeout or connect error is often empty (httpcore maps
+    a bare ``TimeoutError``), which logged as ``alpaca: `` on 2026-09-24.
+    """
+    parts = [type(exc).__name__]
+    response = getattr(exc, "response", None)
+    if isinstance(response, httpx.Response):
+        parts.append(f"HTTP {response.status_code}")
+        body = " ".join(response.text.split())
+        if body:
+            parts.append(body[:_BODY_LIMIT])
+    else:
+        message = " ".join(str(exc).split())
+        if message:
+            parts.append(message[:_BODY_LIMIT])
+    return " ".join(parts)
 
 
 def _f(value: Any, default: float = 0.0) -> float:
@@ -121,11 +142,14 @@ class AlpacaBroker:
         try:
             resp = await self._client.request(method, path, **kwargs)
         except httpx.HTTPError as exc:
-            raise BrokerError(f"alpaca: {exc}") from exc
+            raise BrokerError(f"alpaca: {_failure_detail(exc)}") from exc
         if resp.status_code == 422 and "client_order_id" in resp.text:
             raise DuplicateOrder(resp.text[:200])
         if resp.status_code >= 400:
-            raise BrokerError(f"alpaca: HTTP {resp.status_code}: {resp.text[:200]}")
+            err = httpx.HTTPStatusError(
+                f"HTTP {resp.status_code}", request=resp.request, response=resp
+            )
+            raise BrokerError(f"alpaca: {_failure_detail(err)}") from err
         return None if resp.status_code == 204 or not resp.content else resp.json()
 
     async def is_healthy(self) -> bool:

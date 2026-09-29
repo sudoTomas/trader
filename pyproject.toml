@@ -3,7 +3,19 @@ name = "trader"
 version = "0.1.0"
 description = "Agentic-first autonomous trading agent — LLM proposes, RiskGuard disposes, Alpaca executes."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Tomas McMonigal", email = "tmcmonigal@protonmail.com" }]
 requires-python = ">=3.12"
+keywords = ["trading", "paper-trading"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
@@ -20,6 +32,12 @@ dependencies = [
 
 [project.scripts]
 trader = "trader.surfaces.cli.main:app"
+
+[project.urls]
+Homepage = "https://github.com/sudoTomas/trader"
+Repository = "https://github.com/sudoTomas/trader"
+Issues = "https://github.com/sudoTomas/trader/issues"
+Changelog = "https://github.com/sudoTomas/trader/releases"
 
 [dependency-groups]
 dev = [

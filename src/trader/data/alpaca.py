@@ -36,6 +36,27 @@ _TIMEFRAMES = {"1m": "1Min", "5m": "5Min", "15m": "15Min", "1h": "1Hour", "1d": 
 _INTERVAL_SECONDS = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "1d": 86400}
 
 PROVIDER = "alpaca_data"
+_BODY_LIMIT = 200
+
+
+def _failure_detail(exc: BaseException) -> str:
+    """Class, HTTP status, and a truncated body.
+
+    ``str()`` of an httpx timeout or connect error is often empty (httpcore maps
+    a bare ``TimeoutError``), which logged as ``alpaca_data: `` on 2026-09-24.
+    """
+    parts = [type(exc).__name__]
+    response = getattr(exc, "response", None)
+    if isinstance(response, httpx.Response):
+        parts.append(f"HTTP {response.status_code}")
+        body = " ".join(response.text.split())
+        if body:
+            parts.append(body[:_BODY_LIMIT])
+    else:
+        message = " ".join(str(exc).split())
+        if message:
+            parts.append(message[:_BODY_LIMIT])
+    return " ".join(parts)
 
 
 def _parse_ts(raw: str) -> datetime:
@@ -64,10 +85,14 @@ class AlpacaData:
     async def _get(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
         try:
             resp = await self._client.get(path, params=params)
-            resp.raise_for_status()
-            return resp.json()
         except httpx.HTTPError as exc:
-            raise MarketDataError(f"alpaca_data: {exc}") from exc
+            raise MarketDataError(f"alpaca_data: {_failure_detail(exc)}") from exc
+        if resp.status_code >= 400:
+            err = httpx.HTTPStatusError(
+                f"HTTP {resp.status_code}", request=resp.request, response=resp
+            )
+            raise MarketDataError(f"alpaca_data: {_failure_detail(err)}") from err
+        return resp.json()
 
     async def get_bars(self, symbol: Symbol, interval: str, lookback: int) -> list[Bar]:
         try:
