@@ -66,6 +66,10 @@ MAX_CRASH_BACKOFF_SECONDS = 300.0
 # next scheduled tick (default 60s) fetches a fresh snapshot.
 EQUITY_CACHE_SECONDS = 15.0
 EQUITY_FALLBACK = "equity_fallback"
+# Realized vol only changes per bar, so the mark's copy lives for the symbol's heartbeat
+# cadence (the scheduler's per-asset-class floor); this is the fallback when a scheduler
+# does not expose one.
+MARK_VOL_FALLBACK_TTL_SECONDS = 300.0
 
 
 def _unrealized_pnl_frac(price: float, qty: float, avg_entry: float | None) -> float | None:
@@ -188,6 +192,8 @@ class LoopRunner:
         self._positions = PositionsRepo(self.db)
         self._sentiment_repo = SentimentRepo(self.db)
         self._last_sentiment_poll: dict[str, datetime] = {}
+        # ticker -> (fetched at, realized vol). See _mark_vol.
+        self._mark_vols: dict[str, tuple[datetime, float | None]] = {}
         self._equity_as_of: datetime | None = None
         self._last_good_equity: float | None = None
         self._equity_fallback_open = False
@@ -416,18 +422,34 @@ class LoopRunner:
         row = await self._sentiment_repo.latest(ticker)
         return float(row["score"]) if row is not None else None
 
-    async def _mark_vol(self, symbol: Symbol) -> float | None:
+    def _mark_vol_ttl(self, symbol: Symbol) -> float:
+        """How long a mark's realized vol stays fresh: the symbol's heartbeat cadence."""
+        cadence = getattr(getattr(self.scheduler, "_config", None), "heartbeat_seconds", None)
+        ttl = cadence.get(symbol.asset_class) if isinstance(cadence, dict) else None
+        return float(ttl) if ttl else MARK_VOL_FALLBACK_TTL_SECONDS
+
+    async def _mark_vol(self, symbol: Symbol, now: datetime) -> float | None:
         """Per-bar realized vol on the same interval the decide context uses.
 
-        A bars outage leaves vol unset so the scheduler simply doesn't see a spike;
-        the quote mark still lands.
+        Cached per symbol for the heartbeat cadence: the value moves once a bar, and
+        fetching 100 bars per symbol on every 60 s tick was two Alpaca calls a minute
+        for nothing. A bars outage keeps the last known vol (with a warning) so the
+        scheduler's baseline does not jump; a symbol with no vol yet stays unset and
+        simply cannot see a spike. The quote mark lands either way. The failed
+        fetch is not stamped, so the first tick after the outage refreshes.
         """
+        cached = self._mark_vols.get(symbol.ticker)
+        if cached is not None and (now - cached[0]).total_seconds() < self._mark_vol_ttl(symbol):
+            return cached[1]
         try:
             fetched = await self.market_data.get_bars(symbol, DEFAULT_INTERVALS[0], BAR_LOOKBACK)
         except MarketDataError as exc:
-            log.warning("mark_vol_unavailable", symbol=symbol.ticker, error=str(exc))
-            return None
-        return compute_indicators(fetched).realized_vol_20
+            last = cached[1] if cached is not None else None
+            log.warning("mark_vol_unavailable", symbol=symbol.ticker, error=str(exc), last_vol=last)
+            return last
+        vol = compute_indicators(fetched).realized_vol_20
+        self._mark_vols[symbol.ticker] = (now, vol)
+        return vol
 
     async def _marks(
         self,
@@ -453,7 +475,7 @@ class LoopRunner:
             qty = positions.get(symbol.ticker, 0.0)
             if qty:
                 score = await self._latest_sentiment(symbol.ticker)
-            vol = await self._mark_vol(symbol)
+            vol = await self._mark_vol(symbol, now)
             try:
                 quote = await self.market_data.get_latest_quote(symbol)
                 price = quote.mid
