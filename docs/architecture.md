@@ -106,6 +106,17 @@ SignalScheduler → ContextBuilder → Decider → RiskGuard → Executor → Jo
 - **Journal** — every wakeup (including suppressed/shadow) writes a row: trigger, full
   prompt, raw output, risk verdicts, `macro_view_version`, cost, latency. Replay-ready.
 
+### Universe
+
+The seed registry (`core/symbols.py`) lists BTC/USD and ETH/USD (crypto, always open),
+SPY (US equity, long-only until shortability earns its own gate), and the commodity ETF
+slice GLD / SLV / USO (`COMMODITY_ETF`: long-only by class default, NYSE calendar,
+fractionable, Alpaca spells them like equities so they ride the equities data chain —
+SIP bars behind the delayed end, IEX quotes — and the same notional day orders). A
+symbol is class defaults plus overrides; a new ticker joins `TRADER_LOOP_SYMBOLS` and
+`TRADER_SHADOW_SYMBOLS` together and earns its flip in the journal
+([per-symbol-shadow](lessons.md#per-symbol-shadow)).
+
 ## Operator Research Desk
 
 Lets the operator feed hand-picked macro/market research the trader weighs when deciding.

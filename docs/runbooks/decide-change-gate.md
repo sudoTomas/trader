@@ -44,7 +44,10 @@ critic on Grok costs real money per intent step; the hold-skip keeps it small, b
 ## 2. Shadow window (live inputs, no orders)
 
 Only if the replay comparison favors the candidate: run it against live data without
-execution. For a new symbol/asset class that means shadow mode for that symbol; for a
+execution. For a new symbol/asset class that means shadow mode for that symbol — add it
+to `TRADER_LOOP_SYMBOLS` **and** `TRADER_SHADOW_SYMBOLS` in the same edit, restart, and
+leave it there until the journal earns its flip (never list a new ticker in
+`TRADER_LOOP_SYMBOLS` alone: that is the flip); for a
 prompt/model/desk change it means the change enabled with `TRADER_SHADOW_MODE=true` (or
 the feature's own shadow flag). Hold the window until you have enough journaled decisions
 to read (≥3 sessions for a venue-gated symbol; ~a week for a feature like the sentiment
