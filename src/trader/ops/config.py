@@ -1,11 +1,51 @@
-"""Runtime configuration (pydantic-settings). Env-driven, validated at startup."""
+"""Runtime configuration (pydantic-settings). Env-driven, validated at startup.
+
+Every field carries its documentation here, as `Field(description=...)` plus a
+category and section in `json_schema_extra`; `scripts/gen_config_reference.py`
+renders that into `docs/configuration.md` and `.env.example` (#27). CI fails when
+those files drift, so a new setting is documented by describing it in this file.
+"""
 
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Categories: what flipping a field can do.
+GATE = "gate"  # fail-closed safety switch; the default is the closed position
+TUNING = "tuning"  # numeric or behavioral parameter; never opens a door by itself
+ENDPOINT = "endpoint"  # where a dependency lives: URL, served model id, path
+CREDENTIAL = "credential"  # secret; blank means that integration stays off
+CATEGORIES = (GATE, TUNING, ENDPOINT, CREDENTIAL)
+
+# Sections, in the order the reference and .env.example present them.
+SECTIONS = (
+    "Surfaces / auth",
+    "Store",
+    "Safety gates",
+    "Decide loop",
+    "Risk limits (RiskGuard)",
+    "Research Desk",
+    "LLM endpoints",
+    "Broker / market data credentials",
+)
+
+
+def setting(default: Any, *, category: str, section: str, description: str, **kwargs: Any) -> Any:
+    """A documented field: description + category + section travel with the default."""
+    if category not in CATEGORIES:
+        raise ValueError(f"unknown category {category!r}")
+    if section not in SECTIONS:
+        raise ValueError(f"unknown section {section!r}")
+    return Field(
+        default,
+        description=description,
+        json_schema_extra={"category": category, "section": section},
+        **kwargs,
+    )
 
 
 class Settings(BaseSettings):
@@ -14,100 +54,404 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="TRADER_", env_file=".env", extra="ignore")
 
     # --- Surfaces / auth ---
-    api_key: str = ""
-    auth_disabled: bool = False  # explicit dev opt-out; without it, an unset api_key fails boot
-    api_base_url: str = "http://localhost:8080"  # where the CLI finds the running API
+    api_key: str = setting(
+        "",
+        category=CREDENTIAL,
+        section="Surfaces / auth",
+        description=(
+            "Bearer key the API and MCP surfaces require. Mandatory outside dev: an unset "
+            "key with `TRADER_AUTH_DISABLED` unset refuses to boot."
+        ),
+    )
+    auth_disabled: bool = setting(
+        False,
+        category=GATE,
+        section="Surfaces / auth",
+        description=(
+            "Explicit dev opt-out from API auth. Without it, an unset `TRADER_API_KEY` fails "
+            "boot (fail closed). Never set on a reachable box."
+        ),
+    )
+    api_base_url: str = setting(
+        "http://localhost:8080",
+        category=ENDPOINT,
+        section="Surfaces / auth",
+        description="Where the CLI finds the running API.",
+    )
 
     # --- Store ---
-    database_url: str = "postgresql://trader:trader@localhost:5544/trader"
+    database_url: str = setting(
+        "postgresql://trader:trader@localhost:5544/trader",
+        category=ENDPOINT,
+        section="Store",
+        description=(
+            "Postgres DSN for the journal, ledger, research store and audit log. The test "
+            "suite appends `_test` to it and truncates that sibling database."
+        ),
+    )
 
     # --- Safety gates (default: paper only, live impossible) ---
-    alpaca_live_enabled: bool = False
+    alpaca_live_enabled: bool = setting(
+        False,
+        category=GATE,
+        section="Safety gates",
+        description=(
+            "Live Alpaca client construction refuses unless this is `true`. Paper only by "
+            "default; there is no other path to a live venue."
+        ),
+    )
 
     # --- Decide loop ---
-    # Shadow mode defaults ON: the pipeline runs and journals, and submits nothing.
-    shadow_mode: bool = True
-    loop_enabled: bool = False  # the background task is an explicit operator opt-in
-    loop_tick_seconds: float = 60.0
-    loop_symbols: str = "BTC/USD,ETH/USD"
-    # Per-symbol shadow (EAI-186 gate): these symbols decide + risk-check but never
-    # submit, while the rest of the build trades live-paper. Comma-separated tickers.
-    shadow_symbols: str = ""
-    # Paper account base until the broker lands (EAI-176).
-    shadow_equity: float = 100_000.0
+    shadow_mode: bool = setting(
+        True,
+        category=GATE,
+        section="Decide loop",
+        description=(
+            "Shadow mode defaults ON: the pipeline runs and journals every decision, and "
+            "submits nothing. Set `false` to let RiskGuard-approved intents reach the paper "
+            "broker."
+        ),
+    )
+    loop_enabled: bool = setting(
+        False,
+        category=GATE,
+        section="Decide loop",
+        description=(
+            "Runs the background decide loop inside the API process. An explicit operator "
+            "opt-in; off, the surfaces still serve but nothing ticks."
+        ),
+    )
+    loop_tick_seconds: float = setting(
+        60.0,
+        category=TUNING,
+        section="Decide loop",
+        description="Seconds between scheduler ticks (quote fetch, mark, trigger evaluation).",
+    )
+    loop_symbols: str = setting(
+        "BTC/USD,ETH/USD",
+        category=TUNING,
+        section="Decide loop",
+        description="Comma-separated symbols the loop watches and may trade.",
+    )
+    shadow_symbols: str = setting(
+        "",
+        category=GATE,
+        section="Decide loop",
+        description=(
+            "Per-symbol shadow (EAI-186 gate): comma-separated tickers that decide and "
+            "risk-check but never submit, while the rest of the build trades live-paper. A "
+            "new symbol earns its flip here first."
+        ),
+    )
+    shadow_equity: float = setting(
+        100_000.0,
+        category=TUNING,
+        section="Decide loop",
+        description=(
+            "Equity the risk chain assumes in shadow builds (no broker). Live-paper builds "
+            "read equity from the broker and keep the last good value when it is down."
+        ),
+    )
 
     # --- Risk limits (RiskGuard) — code/config only, never prompt-driven ---
-    risk_max_position_frac: float = 0.10
-    risk_min_notional_usd: float = 5.0
-    risk_max_concurrent_positions: int = 5
-    risk_max_trades_per_day: int = 20
-    risk_daily_loss_limit_frac: float = 0.03
-    risk_weekly_drawdown_limit_frac: float = 0.10
-    risk_approval_notional_usd: float = 1000.0
-    # 0 disables parking. A value above the approval cap parks larger opens for a human;
-    # everything between the cap and this band clamps to the cap and executes unattended.
-    risk_park_above_usd: float = 0.0
+    risk_max_position_frac: float = setting(
+        0.10,
+        category=TUNING,
+        section="Risk limits (RiskGuard)",
+        description="Max notional of one position as a fraction of equity.",
+    )
+    risk_min_notional_usd: float = setting(
+        5.0,
+        category=TUNING,
+        section="Risk limits (RiskGuard)",
+        description="Opens below this notional are denied (no dust orders), clamps included.",
+    )
+    risk_max_concurrent_positions: int = setting(
+        5,
+        category=TUNING,
+        section="Risk limits (RiskGuard)",
+        description="Max open positions; a new open beyond it is denied, adds and exits pass.",
+    )
+    risk_max_trades_per_day: int = setting(
+        20,
+        category=TUNING,
+        section="Risk limits (RiskGuard)",
+        description="Max submitted trades per UTC day, counted across symbols.",
+    )
+    risk_daily_loss_limit_frac: float = setting(
+        0.03,
+        category=TUNING,
+        section="Risk limits (RiskGuard)",
+        description=(
+            "Daily loss breaker: equity down this fraction from the session start halts "
+            "opens until an operator resumes it."
+        ),
+    )
+    risk_weekly_drawdown_limit_frac: float = setting(
+        0.10,
+        category=TUNING,
+        section="Risk limits (RiskGuard)",
+        description="Weekly drawdown breaker, same mechanics as the daily limit.",
+    )
+    risk_approval_notional_usd: float = setting(
+        1000.0,
+        category=TUNING,
+        section="Risk limits (RiskGuard)",
+        description=(
+            "Unattended opens above this notional clamp down to it and execute; the clamp "
+            "is journaled. Exits are never clamped."
+        ),
+    )
+    risk_park_above_usd: float = setting(
+        0.0,
+        category=TUNING,
+        section="Risk limits (RiskGuard)",
+        description=(
+            "`0` disables parking. A value above the approval cap parks larger opens for a "
+            "human (`trader risk approve`); everything between the cap and this band clamps "
+            "to the cap and executes unattended."
+        ),
+    )
 
     # --- Research Desk ---
-    # Days before an unpinned note auto-stales out of compilation (retire stays explicit).
-    research_stale_days: int = 30
-    # Quiet window after the last note change before the Macro View recompiles.
-    research_compile_debounce_seconds: float = 30.0
-    # One-way markdown mirror folder (gitignored, regenerable). Empty string disables.
-    research_mirror_dir: str = "research"
-    # Briefs lane (EAI-192): briefs compile and store regardless; this flag alone lets
-    # them into the decide prompt (a decide-behavior change — flip only through the gate).
-    briefs_enabled: bool = False
-    # Decision desk (EAI-190): analyst fan-out + cross-model critic around the decide.
-    # Dark by default — earns its flip via replay desk-on vs desk-off, then shadow.
-    desk_enabled: bool = False
-    # The critic prefers Grok (cross-model): cap its spend per UTC day; at the cap,
-    # reviews degrade to journaled pass-throughs. Analysts are Nemotron-only (free).
-    desk_critic_daily_usd: float = 1.0
-    # X sentiment (EAI-180). Poll held symbols every 3h; the daily call cap of 24
-    # still bounds a shorter interval. The wake trigger stays an operator flag
-    # (code default off; the live book arms it at 0.8 — do not change that here).
-    sentiment_poll_seconds: float = 10_800.0
-    sentiment_daily_call_cap: int = 24
-    sentiment_trigger_enabled: bool = False
-    sentiment_swing_threshold: float = 0.5
-    sentiment_x_handles: str = ""  # comma-separated allowlist for x_search; empty = open
+    research_stale_days: int = setting(
+        30,
+        category=TUNING,
+        section="Research Desk",
+        description=(
+            "Days before an unpinned note auto-stales out of compilation (retire stays explicit)."
+        ),
+    )
+    research_compile_debounce_seconds: float = setting(
+        30.0,
+        category=TUNING,
+        section="Research Desk",
+        description="Quiet window after the last note change before the Macro View recompiles.",
+    )
+    research_mirror_dir: str = setting(
+        "research",
+        category=TUNING,
+        section="Research Desk",
+        description="One-way markdown mirror folder (gitignored, regenerable). Empty disables.",
+    )
+    briefs_enabled: bool = setting(
+        False,
+        category=GATE,
+        section="Research Desk",
+        description=(
+            "Per-candidate briefs (EAI-192): briefs compile and store on note changes "
+            "regardless; this flag alone lets them into the decide prompt. A decide-behavior "
+            "change: flip only through `docs/runbooks/decide-change-gate.md`."
+        ),
+    )
+    desk_enabled: bool = setting(
+        False,
+        category=GATE,
+        section="Research Desk",
+        description=(
+            "Decision desk (EAI-190): analyst fan-out + cross-model critic around the decide. "
+            "Dark by default; earns its flip via replay desk-on vs desk-off, then a shadow "
+            "window."
+        ),
+    )
+    desk_critic_daily_usd: float = setting(
+        1.0,
+        category=TUNING,
+        section="Research Desk",
+        description=(
+            "Critic spend cap per UTC day (the critic prefers Grok, cross-model). At the cap, "
+            "reviews degrade to journaled pass-throughs. Analysts run on the decide client."
+        ),
+    )
+    sentiment_poll_seconds: float = setting(
+        10_800.0,
+        category=TUNING,
+        section="Research Desk",
+        description=(
+            "X sentiment (EAI-180) poll interval for held symbols; needs an xAI credential "
+            "(x_search runs server-side on xAI). The daily call cap still bounds a shorter "
+            "interval."
+        ),
+    )
+    sentiment_daily_call_cap: int = setting(
+        24,
+        category=TUNING,
+        section="Research Desk",
+        description="Max sentiment polls per UTC day across symbols.",
+    )
+    sentiment_trigger_enabled: bool = setting(
+        False,
+        category=GATE,
+        section="Research Desk",
+        description=(
+            "Lets a sentiment swing wake the decide loop. Shadow-first: leave OFF until at "
+            "least a week of journaled scores looks sane. Code default off; a live book arms "
+            "it in `.env`, never here."
+        ),
+    )
+    sentiment_swing_threshold: float = setting(
+        0.5,
+        category=TUNING,
+        section="Research Desk",
+        description="Score move between polls that wakes the trader; scores are on [-1, 1].",
+    )
+    sentiment_x_handles: str = setting(
+        "",
+        category=TUNING,
+        section="Research Desk",
+        description="Comma-separated allowlist of X handles for x_search; empty = open search.",
+    )
 
     # --- LLM endpoints ---
-    # Nemotron preset (TRADER_NEMOTRON_*). Used for decide/analyst when
-    # TRADER_DECIDE_BASE_URL is empty, and the client bakes enable_thinking:false.
-    # A generic URL equal to this base URL gets the same flag forced on.
-    # Swapping the decide model on an existing box is a decide-behavior change
-    # (docs/runbooks/decide-change-gate.md). For a new user it is the first run.
-    nemotron_base_url: str = "http://localhost:8009/v1"
-    nemotron_model: str = "nemotron-3-super"  # served model id on the Spark vLLM
-    # Any OpenAI-compatible /v1 (OpenAI, Groq, Together, Ollama, vLLM, xAI).
-    # Empty base URL selects the Nemotron preset above — do not send
-    # chat_template_kwargs to a vendor API; OpenAI rejects the argument.
-    decide_base_url: str = ""
-    decide_model: str = ""
-    decide_api_key: str = ""
-    decide_extra_body: str = ""  # JSON object merged into the chat-completions body
-    # USD per 1M tokens. 0 → PRICES table, else $0. Non-zero overrides the table.
-    decide_price_in: float = 0.0
-    decide_price_out: float = 0.0
-    # Same shape for brief/compiler/critic (and the registry sentiment role).
-    # Empty keeps xAI-if-configured, else the decide client. x_search stays xAI-only.
-    research_base_url: str = ""
-    research_model: str = ""
-    research_api_key: str = ""
-    research_extra_body: str = ""
-    research_price_in: float = 0.0
-    research_price_out: float = 0.0
-    xai_base_url: str = "https://api.x.ai/v1"
-    xai_model: str = "grok-4"
-    xai_api_key: str = Field(
-        default="", validation_alias=AliasChoices("XAI_API_KEY", "TRADER_XAI_API_KEY")
+    nemotron_base_url: str = setting(
+        "http://localhost:8009/v1",
+        category=ENDPOINT,
+        section="LLM endpoints",
+        description=(
+            "Nemotron preset: the local vLLM `/v1` (the Spark serves it on :8009, no auth). "
+            "Used for decide and analysts when `TRADER_DECIDE_BASE_URL` is empty; the preset "
+            "client sends `chat_template_kwargs: {enable_thinking: false}` on every request "
+            "(without it the endpoint collapses to ~0.35 tok/s). A generic URL equal to this "
+            "one gets the same flag forced on. Inside compose, point it at "
+            "`http://host.docker.internal:8009/v1`."
+        ),
     )
-    # SuperGrok OAuth: Fernet key + encrypted store path (TRADER_XAI_TOKEN_KEY unset →
-    # OAuth disabled and the provider resolves to XAI_API_KEY alone).
-    xai_token_key: str = ""
-    xai_token_path: str = "~/.config/trader/xai_token.enc"
+    nemotron_model: str = setting(
+        "nemotron-3-super",
+        category=ENDPOINT,
+        section="LLM endpoints",
+        description=(
+            "Served model id on the Nemotron vLLM. Swapping the decide model on an existing "
+            "box is a decide-behavior change (`docs/runbooks/decide-change-gate.md`); for a "
+            "new user it is simply the first run."
+        ),
+    )
+    decide_base_url: str = setting(
+        "",
+        category=ENDPOINT,
+        section="LLM endpoints",
+        description=(
+            "Any OpenAI-compatible `/v1` for the decide (and analyst) role: OpenAI, Groq, "
+            "Together, Ollama, vLLM, xAI. Empty selects the Nemotron preset above, which is "
+            "the only client that sends `chat_template_kwargs`; a vendor API such as OpenAI "
+            "rejects that argument, so it is never sent to a generic URL."
+        ),
+    )
+    decide_model: str = setting(
+        "",
+        category=ENDPOINT,
+        section="LLM endpoints",
+        description="Model id at `TRADER_DECIDE_BASE_URL` (ignored under the Nemotron preset).",
+    )
+    decide_api_key: str = setting(
+        "",
+        category=CREDENTIAL,
+        section="LLM endpoints",
+        description="Bearer key for `TRADER_DECIDE_BASE_URL`; blank for unauthenticated hosts.",
+    )
+    decide_extra_body: str = setting(
+        "",
+        category=TUNING,
+        section="LLM endpoints",
+        description=(
+            "JSON object merged into every chat-completions body for the decide client "
+            '(e.g. `{"reasoning_effort": "low"}`). Must parse as an object.'
+        ),
+    )
+    decide_price_in: float = setting(
+        0.0,
+        category=TUNING,
+        section="LLM endpoints",
+        description=(
+            "USD per 1M input tokens for the decide model. `0` reads the built-in PRICES "
+            "table, else $0 (logged once); non-zero overrides the table."
+        ),
+    )
+    decide_price_out: float = setting(
+        0.0,
+        category=TUNING,
+        section="LLM endpoints",
+        description="USD per 1M output tokens for the decide model; same rules as the input price.",
+    )
+    research_base_url: str = setting(
+        "",
+        category=ENDPOINT,
+        section="LLM endpoints",
+        description=(
+            "Same shape as the decide endpoint, for the brief, compiler, critic and registry "
+            "sentiment roles. Empty keeps xAI if configured, else the decide client. x_search "
+            "stays xAI-only."
+        ),
+    )
+    research_model: str = setting(
+        "",
+        category=ENDPOINT,
+        section="LLM endpoints",
+        description="Model id at `TRADER_RESEARCH_BASE_URL`.",
+    )
+    research_api_key: str = setting(
+        "",
+        category=CREDENTIAL,
+        section="LLM endpoints",
+        description="Bearer key for `TRADER_RESEARCH_BASE_URL`.",
+    )
+    research_extra_body: str = setting(
+        "",
+        category=TUNING,
+        section="LLM endpoints",
+        description="JSON object merged into the research roles' chat-completions bodies.",
+    )
+    research_price_in: float = setting(
+        0.0,
+        category=TUNING,
+        section="LLM endpoints",
+        description="USD per 1M input tokens for the research model (`0` = PRICES table, else $0).",
+    )
+    research_price_out: float = setting(
+        0.0,
+        category=TUNING,
+        section="LLM endpoints",
+        description="USD per 1M output tokens for the research model.",
+    )
+    xai_base_url: str = setting(
+        "https://api.x.ai/v1",
+        category=ENDPOINT,
+        section="LLM endpoints",
+        description="xAI API base for Grok research roles and x_search sentiment.",
+    )
+    xai_model: str = setting(
+        "grok-4",
+        category=ENDPOINT,
+        section="LLM endpoints",
+        description="Grok model id for the xAI research roles.",
+    )
+    xai_api_key: str = setting(
+        "",
+        category=CREDENTIAL,
+        section="LLM endpoints",
+        description=(
+            "xAI API key: first-class fallback when SuperGrok OAuth is absent or quarantined. "
+            "Provider-conventional name; the `TRADER_` form is accepted too."
+        ),
+        validation_alias=AliasChoices("XAI_API_KEY", "TRADER_XAI_API_KEY"),
+    )
+    xai_token_key: str = setting(
+        "",
+        category=CREDENTIAL,
+        section="LLM endpoints",
+        description=(
+            "SuperGrok device-code OAuth: Fernet key that encrypts the token store. Set it, "
+            'then run `trader xai login`. Generate with `python -c "from cryptography.fernet '
+            'import Fernet; print(Fernet.generate_key().decode())"`. Unset, OAuth is '
+            "disabled and the provider resolves to `XAI_API_KEY` alone."
+        ),
+    )
+    xai_token_path: str = setting(
+        "~/.config/trader/xai_token.enc",
+        category=TUNING,
+        section="LLM endpoints",
+        description="Encrypted SuperGrok OAuth token store path.",
+    )
 
     @field_validator("decide_extra_body", "research_extra_body")
     @classmethod
@@ -124,19 +468,47 @@ class Settings(BaseSettings):
         return text
 
     # --- Market data / broker credentials ---
-    # Provider-conventional env names (no TRADER_ prefix), as documented in .env.example.
-    alpaca_api_key_id: str = Field(
-        default="", validation_alias=AliasChoices("ALPACA_API_KEY_ID", "TRADER_ALPACA_API_KEY_ID")
+    # Provider-conventional env names (no TRADER_ prefix); the TRADER_ form is an alias.
+    alpaca_api_key_id: str = setting(
+        "",
+        category=CREDENTIAL,
+        section="Broker / market data credentials",
+        description=(
+            "Alpaca paper key id. The same keys serve broker and market data. Rate-limit "
+            "budget (Basic/free tier): ~200 req/min across data endpoints; crypto data free; "
+            "equities = IEX feed only. Fetch-on-tick load is ~2 req/wakeup/symbol, far below "
+            "budget."
+        ),
+        validation_alias=AliasChoices("ALPACA_API_KEY_ID", "TRADER_ALPACA_API_KEY_ID"),
     )
-    alpaca_api_secret: str = Field(
-        default="", validation_alias=AliasChoices("ALPACA_API_SECRET", "TRADER_ALPACA_API_SECRET")
+    alpaca_api_secret: str = setting(
+        "",
+        category=CREDENTIAL,
+        section="Broker / market data credentials",
+        description="Alpaca paper secret, paired with `ALPACA_API_KEY_ID`.",
+        validation_alias=AliasChoices("ALPACA_API_SECRET", "TRADER_ALPACA_API_SECRET"),
     )
-    twelve_data_api_key: str = Field(
-        default="",
+    twelve_data_api_key: str = setting(
+        "",
+        category=CREDENTIAL,
+        section="Broker / market data credentials",
+        description=(
+            "Twelve Data key, equities-quote fallback only (untouched unless Alpaca equities "
+            "data fails). Free tier: 8 credits/min, 800/day, 1 credit per quote or "
+            "time_series call."
+        ),
         validation_alias=AliasChoices("TWELVE_DATA_API_KEY", "TRADER_TWELVE_DATA_API_KEY"),
     )
-    fred_api_key: str = Field(
-        default="", validation_alias=AliasChoices("FRED_API_KEY", "TRADER_FRED_API_KEY")
+    fred_api_key: str = setting(
+        "",
+        category=CREDENTIAL,
+        section="Broker / market data credentials",
+        description=(
+            "FRED key (https://fred.stlouisfed.org/docs/api/api_key.html) for the macro "
+            "context line; responses are TTL-cached 1h in-process, so live load is a few "
+            "calls/day. Absent, the decide prompt carries no FRED line."
+        ),
+        validation_alias=AliasChoices("FRED_API_KEY", "TRADER_FRED_API_KEY"),
     )
 
     def require_auth(self) -> None:
