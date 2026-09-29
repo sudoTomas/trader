@@ -209,7 +209,7 @@ the decision was made from (prompts are long; the shape is what matters):
 ```
 
 `risk_verdicts` is `null` for a hold (nothing to guard) and an ordered list of
-`{check, verdict, reason}` entries for an open. Confirm nothing reached the venue:
+`{check, action, reason, notional}` entries for an open (`action` is `allow`, `clamp`, or `deny`). Confirm nothing reached the venue:
 
 ```bash
 uv run trader orders        # → []
