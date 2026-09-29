@@ -20,7 +20,7 @@ Historical `EAI-*` strings in tests and comments are provenance, not the tracker
 | [#3](https://github.com/sudoTomas/trader/issues/3) | EAI-186 leftover | SPY equity round trip (still held) |
 | [#4](https://github.com/sudoTomas/trader/issues/4) | EAI-187 | Commodity ETFs |
 | [#5](https://github.com/sudoTomas/trader/issues/5) | EAI-189 | Screener |
-| [#6](https://github.com/sudoTomas/trader/issues/6) | EAI-191 | IBKR decision record (deferred) |
+| [#6](https://github.com/sudoTomas/trader/issues/6) **closed 2026-09-29** | EAI-191 | IBKR decision record (deferred; re-file when wanted) |
 | [#7](https://github.com/sudoTomas/trader/issues/7) | EAI-173 | Probe SuperGrok OAuth vs `/v1/responses` |
 | [#8](https://github.com/sudoTomas/trader/issues/8) | — | Capture-scoped API key |
 | [#9](https://github.com/sudoTomas/trader/issues/9) | — | crypto-flows Grok desk seat |
@@ -36,6 +36,28 @@ Historical `EAI-*` strings in tests and comments are provenance, not the tracker
 | [#19](https://github.com/sudoTomas/trader/issues/19) | EAI-166 | **Epic:** M5 expansion |
 | [#20](https://github.com/sudoTomas/trader/issues/20) | — | **Epic:** box-local Grok macro desk |
 | [#21](https://github.com/sudoTomas/trader/issues/21) | — | **Epic:** money-path honesty |
+
+## Filed 2026-09-29 (review of live performance + open-source readiness)
+
+| GitHub | What |
+|---|---|
+| [#22](https://github.com/sudoTomas/trader/issues/22) | Sentiment: poll every 3h, held symbols only (spend tripled after x_search repricing) |
+| [#23](https://github.com/sudoTomas/trader/issues/23) | Clamp unattended opens to the approval threshold instead of parking them |
+| [#24](https://github.com/sudoTomas/trader/issues/24) | Breakers: roll `day_session` every tick, not only on intents |
+| [#25](https://github.com/sudoTomas/trader/issues/25) | Broker/data errors lose their detail (`alpaca: `) |
+| [#26](https://github.com/sudoTomas/trader/issues/26) | Generic decide LLM provider (any OpenAI-compatible endpoint) |
+| [#27](https://github.com/sudoTomas/trader/issues/27) | Config reference generated from Settings; complete `.env.example` |
+| [#28](https://github.com/sudoTomas/trader/issues/28) | License (MIT), disclaimer, contribution scaffolding |
+| [#29](https://github.com/sudoTomas/trader/issues/29) | Strip machine-specific references; infra reproducible off the Spark |
+| [#30](https://github.com/sudoTomas/trader/issues/30) | `trader doctor` preflight + shadow-only quickstart |
+| [#31](https://github.com/sudoTomas/trader/issues/31) | Publish: Docker image on GHCR + PyPI (`uvx trader`) |
+| [#32](https://github.com/sudoTomas/trader/issues/32) | Translate Linear/v1 provenance into readable rationale |
+| [#33](https://github.com/sudoTomas/trader/issues/33) | README overhaul |
+| [#34](https://github.com/sudoTomas/trader/issues/34) | Exit-review lane (decide-gated; after #1) |
+| [#35](https://github.com/sudoTomas/trader/issues/35) | **Epic:** open-source release (MIT, public after cleanup; Python stays) |
+
+Decisions recorded 2026-09-29: MIT; no TypeScript rewrite; Grok desk (#20) follows #21 and
+precedes the distribution tail; #6 closed as deferred.
 
 Milestone: [M5 Expansion](https://github.com/sudoTomas/trader/milestone/1).
 
