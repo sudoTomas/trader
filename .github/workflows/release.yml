@@ -5,8 +5,9 @@
 # notes are the changelog — there is no CHANGELOG file.
 #
 # One-time operator setup: a PyPI trusted publisher for this workflow file,
-# the pypi environment, and the project name. The name "trader" on PyPI is
-# already taken (placeholder 0.0.0). infra/docker-compose.yml should set
+# the pypi environment, and the project name. The PyPI project is
+# "trader-agent" (plain "trader" is taken); the CLI command stays `trader`.
+# infra/docker-compose.yml should set
 # image: ghcr.io/<owner>/trader:latest and keep its build fallback; that file
 # is not part of this workflow.
 name: Release

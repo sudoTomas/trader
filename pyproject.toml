@@ -1,5 +1,5 @@
 [project]
-name = "trader"
+name = "trader-agent"
 version = "0.1.0"
 description = "Agentic-first autonomous trading agent — LLM proposes, RiskGuard disposes, Alpaca executes."
 readme = "README.md"
