@@ -64,9 +64,10 @@ class Settings(BaseSettings):
     # The critic prefers Grok (cross-model): cap its spend per UTC day; at the cap,
     # reviews degrade to journaled pass-throughs. Analysts are Nemotron-only (free).
     desk_critic_daily_usd: float = 1.0
-    # X sentiment (EAI-180). Polling needs an xAI credential; the wake trigger stays OFF
-    # until ≥1 week of journaled scores earns the operator's flip (shadow-first).
-    sentiment_poll_seconds: float = 3600.0
+    # X sentiment (EAI-180). Poll held symbols every 3h; the daily call cap of 24
+    # still bounds a shorter interval. The wake trigger stays an operator flag
+    # (code default off; the live book arms it at 0.8 — do not change that here).
+    sentiment_poll_seconds: float = 10_800.0
     sentiment_daily_call_cap: int = 24
     sentiment_trigger_enabled: bool = False
     sentiment_swing_threshold: float = 0.5

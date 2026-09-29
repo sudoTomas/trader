@@ -22,22 +22,32 @@ Operational discipline:
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from datetime import time as dt_time
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import structlog
 
+from trader.brokers.base import BrokerError
 from trader.core.symbols import Symbol
 from trader.data.base import MarketData, MarketDataError
 from trader.llm.registry import LLMRegistry
-from trader.loop.context import ContextBuilder
+from trader.loop.context import (
+    BAR_LOOKBACK,
+    DEFAULT_INTERVALS,
+    ContextBuilder,
+    compute_indicators,
+)
 from trader.loop.decider import Decider, DeciderError
 from trader.loop.journal import (
     DENIED,
     ERROR,
     EXECUTED,
+    PENDING,
     SHADOW,
     SUPPRESSED,
     Journal,
@@ -51,6 +61,31 @@ log = structlog.get_logger(__name__)
 
 TRANSIENT_BACKOFF_SECONDS = 30.0
 MAX_CRASH_BACKOFF_SECONDS = 300.0
+# Long enough to collapse a burst of reads inside one tick; short enough that the
+# next scheduled tick (default 60s) fetches a fresh snapshot.
+EQUITY_CACHE_SECONDS = 15.0
+EQUITY_FALLBACK = "equity_fallback"
+
+
+def _unrealized_pnl_frac(price: float, qty: float, avg_entry: float | None) -> float | None:
+    """Signed move vs entry. Longs gain when price rises; shorts gain when it falls."""
+    if price <= 0 or qty == 0 or avg_entry is None or avg_entry <= 0:
+        return None
+    move = (price - avg_entry) / avg_entry
+    return move if qty > 0 else -move
+
+
+def _session_window(symbol: Symbol, now: datetime) -> tuple[datetime, datetime]:
+    """``[start, end)`` covering the venue session day that contains ``now``.
+
+    Crypto sessions are UTC dates; NYSE sessions are America/New_York dates.
+    ``session_day`` never crosses local midnight, so midnight-to-midnight is the
+    whole daily trade window.
+    """
+    day = symbol.market_calendar.session_day(now)
+    tz = ZoneInfo("America/New_York") if symbol.market_calendar.name == "nyse" else UTC
+    start = datetime.combine(day, dt_time.min, tzinfo=tz)
+    return start, start + timedelta(days=1)
 
 
 @dataclass
@@ -104,11 +139,14 @@ class LoopRunner:
     symbols: list[Symbol]
     shadow: bool = True
     tick_seconds: float = 60.0
-    equity: float = 100_000.0  # fallback when no broker is attached
+    equity: float = (
+        100_000.0  # shadow source; also the journaled last resort before any broker read
+    )
+    broker: Any | None = None  # brokers.base.Broker; absent → equity stays the shadow source
     scheduler: SignalScheduler | None = None
     executor: Any | None = None  # loop.executor.Executor; absent = shadow-only build
     sentiment: Any | None = None  # research.sentiment.SentimentService; absent = no polling
-    sentiment_poll_seconds: float = 3600.0
+    sentiment_poll_seconds: float = 10_800.0
     # Per-symbol throttle (EAI-186 gate): these symbols journal as shadow — full decide
     # + risk pass, nothing submitted — while the rest of the build trades live-paper.
     shadow_symbols: set[str] = field(default_factory=set)
@@ -132,6 +170,9 @@ class LoopRunner:
         self._positions = PositionsRepo(self.db)
         self._sentiment_repo = SentimentRepo(self.db)
         self._last_sentiment_poll: dict[str, datetime] = {}
+        self._equity_as_of: datetime | None = None
+        self._last_good_equity: float | None = None
+        self._equity_fallback_open = False
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
         self._stream_task: asyncio.Task | None = None
@@ -217,9 +258,20 @@ class LoopRunner:
             self.stats.ticks += 1
             self.stats.last_tick_at = now.isoformat()
 
-            positions = {row["symbol"]: float(row["qty"]) for row in await self._positions.all()}
-            await self._poll_sentiment(now)
-            marks = await self._marks(now, positions)
+            equity = await self._resolve_equity(now)
+            # Holds never reach RiskGuard.evaluate, so the session would otherwise
+            # stay frozen until the model wants to trade (#24).
+            await self._observe_breakers(now, equity)
+            rows = await self._positions.all()
+            positions = {row["symbol"]: float(row["qty"]) for row in rows}
+            entries = {
+                row["symbol"]: (
+                    float(row["avg_entry_price"]) if row["avg_entry_price"] is not None else None
+                )
+                for row in rows
+            }
+            await self._poll_sentiment(now, positions)
+            marks = await self._marks(now, positions, entries)
             assert self.scheduler is not None
             if force:
                 triggers = [
@@ -237,7 +289,7 @@ class LoopRunner:
                 by_symbol.setdefault(trigger.symbol, []).append(trigger)
 
             results = [
-                await self._wakeup(symbol, fired, now, marks, positions)
+                await self._wakeup(symbol, fired, now, marks, positions, equity)
                 for symbol in self.symbols
                 if (fired := by_symbol.get(symbol.ticker))
             ]
@@ -246,12 +298,100 @@ class LoopRunner:
             self.stats.wakeups += len(results)
             return results
 
-    async def _poll_sentiment(self, now: datetime) -> None:
-        """Collect X sentiment on a cadence (shadow record). Never blocks a tick on failure."""
+    async def _resolve_equity(self, now: datetime) -> float:
+        """Equity for this tick. Shadow builds keep ``self.equity``.
+
+        A broker read is cached for ``EQUITY_CACHE_SECONDS``. When Alpaca is down the
+        last good snapshot is reused; the shadow constant is used only if no read has
+        ever landed, and either fallback is journaled (once per outage, not per tick).
+        """
+        if self.broker is None:
+            return self.equity
+        if (
+            self._last_good_equity is not None
+            and self._equity_as_of is not None
+            and (now - self._equity_as_of).total_seconds() < EQUITY_CACHE_SECONDS
+        ):
+            return self._last_good_equity
+        try:
+            snapshot = await self.broker.get_account()
+        except BrokerError as exc:
+            return await self._equity_fallback(exc)
+        equity = float(snapshot.equity)
+        if not math.isfinite(equity) or equity <= 0:
+            return await self._equity_fallback(BrokerError(f"unusable equity {snapshot.equity!r}"))
+        self._last_good_equity = equity
+        self._equity_as_of = now
+        self.equity = equity
+        self._equity_fallback_open = False
+        return equity
+
+    async def _equity_fallback(self, exc: Exception) -> float:
+        if self._last_good_equity is not None:
+            used = self._last_good_equity
+            source = "last_good"
+        else:
+            used = self.equity
+            source = "shadow_equity_constant"
+        if not self._equity_fallback_open:
+            await self._journal.record(
+                trigger=EQUITY_FALLBACK,
+                status=ERROR,
+                raw_output=f"{source} equity={used:.2f}: {exc}",
+                prompt=f"broker equity unavailable; source={source}; equity={used:.2f}",
+            )
+            self._equity_fallback_open = True
+        log.warning("equity_fallback", source=source, used=used, error=str(exc))
+        return used
+
+    async def _trades_today(self, symbol: Symbol, now: datetime) -> int:
+        """Orders already recorded in this symbol's session day.
+
+        Every order row counts, including rejects: a failed submit still consumed
+        an attempt, and the cap is there to limit churn.
+        """
+        start, end = _session_window(symbol, now)
+        row = await self.db.fetch_one(
+            "SELECT count(*) AS n FROM orders WHERE created_at >= %s AND created_at < %s",
+            (start, end),
+        )
+        return int(row["n"]) if row else 0
+
+    async def _observe_breakers(self, now: datetime, equity: float) -> None:
+        """Roll the session and trip loss breakers off this tick's equity.
+
+        The guard still observes again when an intent arrives, so a trade sees
+        state at least as fresh as this tick. One row per process: use the latest
+        session day among venues that are actually open.
+        """
+        open_days = [
+            symbol.market_calendar.session_day(now)
+            for symbol in self.symbols
+            if symbol.market_calendar.is_open(now)
+        ]
+        if not open_days:
+            return
+        limits = self.guard._limits
+        await self.guard.breakers.observe(
+            equity=equity,
+            session_day=max(open_days),
+            daily_loss_limit_frac=limits.daily_loss_limit_frac,
+            weekly_drawdown_limit_frac=limits.weekly_drawdown_limit_frac,
+        )
+
+    async def _poll_sentiment(self, now: datetime, positions: dict[str, float]) -> None:
+        """Collect X sentiment for held, open symbols. Never blocks a tick on failure.
+
+        Unheld names are skipped: the scheduler only reads sentiment for positions,
+        so polling the rest is pure cost. The daily call cap inside the service
+        still bounds however short ``sentiment_poll_seconds`` is set.
+        """
         if self.sentiment is None:
             return
         for symbol in self.symbols:
             if not symbol.market_calendar.is_open(now):
+                continue
+            if not positions.get(symbol.ticker):
                 continue
             last = self._last_sentiment_poll.get(symbol.ticker)
             if last is not None and (now - last).total_seconds() < self.sentiment_poll_seconds:
@@ -267,7 +407,25 @@ class LoopRunner:
         row = await self._sentiment_repo.latest(ticker)
         return float(row["score"]) if row is not None else None
 
-    async def _marks(self, now: datetime, positions: dict[str, float]) -> dict[str, Mark]:
+    async def _mark_vol(self, symbol: Symbol) -> float | None:
+        """Per-bar realized vol on the same interval the decide context uses.
+
+        A bars outage leaves vol unset so the scheduler simply doesn't see a spike;
+        the quote mark still lands.
+        """
+        try:
+            fetched = await self.market_data.get_bars(symbol, DEFAULT_INTERVALS[0], BAR_LOOKBACK)
+        except MarketDataError as exc:
+            log.warning("mark_vol_unavailable", symbol=symbol.ticker, error=str(exc))
+            return None
+        return compute_indicators(fetched).realized_vol_20
+
+    async def _marks(
+        self,
+        now: datetime,
+        positions: dict[str, float],
+        entries: dict[str, float | None],
+    ) -> dict[str, Mark]:
         """One cheap quote per symbol, for trigger evaluation.
 
         A failed quote still yields a zero-price mark rather than dropping the symbol: the
@@ -282,14 +440,22 @@ class LoopRunner:
             # Sentiment reaches the scheduler only for HELD symbols (EAI-180): the swing
             # trigger exists to re-examine an open position, not to chase the feed.
             score = None
-            if positions.get(symbol.ticker):
+            qty = positions.get(symbol.ticker, 0.0)
+            if qty:
                 score = await self._latest_sentiment(symbol.ticker)
+            vol = await self._mark_vol(symbol)
             try:
                 quote = await self.market_data.get_latest_quote(symbol)
-                marks[symbol.ticker] = Mark(price=quote.mid, sentiment_score=score)
+                price = quote.mid
             except MarketDataError as exc:
                 log.warning("mark_unavailable", symbol=symbol.ticker, error=str(exc))
-                marks[symbol.ticker] = Mark(price=0.0, sentiment_score=score)
+                price = 0.0
+            marks[symbol.ticker] = Mark(
+                price=price,
+                realized_vol=vol,
+                unrealized_pnl_frac=_unrealized_pnl_frac(price, qty, entries.get(symbol.ticker)),
+                sentiment_score=score,
+            )
         return marks
 
     async def _wakeup(
@@ -299,18 +465,23 @@ class LoopRunner:
         now: datetime,
         marks: dict[str, Mark],
         positions: dict[str, float],
+        equity: float,
     ) -> WakeupResult:
         names = [t.type for t in triggers]
         trigger_label = ",".join(names)
         started = time.perf_counter()
 
+        # Equity-fallback rows are an outage audit, not decide context.
+        recent = [
+            row for row in await self._journal.recent(8) if row.get("trigger") != EQUITY_FALLBACK
+        ][:5]
         ctx = await self._context.build(
             symbol,
             now=now,
             triggers=triggers,
             position_qty=positions.get(symbol.ticker, 0.0),
-            equity=self.equity,
-            recent_decisions=await self._journal.recent(5),
+            equity=equity,
+            recent_decisions=recent,
         )
         macro_view_version = ctx.macro_view.version if ctx.macro_view else None
         brief_version = ctx.brief.version if ctx.brief else None
@@ -372,9 +543,9 @@ class LoopRunner:
                 symbol,
                 price=ctx.price,
                 account=AccountState(
-                    equity=self.equity,
+                    equity=equity,
                     positions=positions,
-                    trades_today=0,  # real count arrives with the executor (EAI-176)
+                    trades_today=await self._trades_today(symbol, now),
                 ),
                 now=now,
                 realized_vol=ctx.primary_vol,
@@ -387,13 +558,38 @@ class LoopRunner:
             elif self.shadow or self.executor is None or symbol.ticker in self.shadow_symbols:
                 status = SHADOW
             else:
-                # Live-paper: the executor takes ONLY outcome.executable(), which raises
-                # unless the chain approved. There is no other path to the broker.
+                # Persist the decision BEFORE submit so orders.decision_id can point
+                # at it. The executor still receives only outcome.executable().
+                decision_id = await self._journal.record(
+                    trigger=trigger_label,
+                    status=PENDING,
+                    symbol=symbol.ticker,
+                    asset_class=symbol.asset_class,
+                    prompt=result.prompt,
+                    raw_output=result.raw_output,
+                    decision=decision,
+                    risk_verdicts=verdicts,
+                    desk_verdicts=desk_verdicts,
+                    macro_view_version=macro_view_version,
+                    brief_version=brief_version,
+                    cost_usd=result.completion.cost_usd,
+                    latency_ms=int((time.perf_counter() - started) * 1000),
+                )
                 execution = await self.executor.execute(
-                    outcome, symbol, price=ctx.price, decision_id=None
+                    outcome, symbol, price=ctx.price, decision_id=decision_id
                 )
                 status = EXECUTED if execution.submitted else ERROR
                 reason = execution.reason or reason
+                await self._journal.set_status(decision_id, status)
+                self.stats.decisions += 1
+                return WakeupResult(
+                    symbol.ticker,
+                    names,
+                    status,
+                    decision_id,
+                    action=decision.action,
+                    reason=reason,
+                )
 
         decision_id = await self._journal.record(
             trigger=trigger_label,

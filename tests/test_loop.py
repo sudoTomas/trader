@@ -309,8 +309,8 @@ def build_runner(db: Database, replies: list[str | Exception], **kwargs) -> Loop
         db=db,
         market_data=kwargs.pop("market_data", StubMarketData()),
         llm=StubLLM(replies),
-        guard=RiskGuard(db, LIMITS),
-        symbols=[BTC],
+        guard=kwargs.pop("guard", RiskGuard(db, LIMITS)),
+        symbols=kwargs.pop("symbols", [BTC]),
         shadow=kwargs.pop("shadow", True),
         equity=100_000.0,
         **kwargs,
@@ -405,3 +405,358 @@ async def test_shadow_journal_is_replayable(db: Database):
     replayed = DecisionOutput.model_validate_json(row["raw_output"]).to_decision(row["symbol"])
     assert replayed.action is Action.OPEN
     assert json.loads(json.dumps(row["decision"]))["conviction"] == 0.8
+
+
+# --- account equity (#13) ---------------------------------------------------
+
+
+class StubAccount:
+    """Broker stand-in: only ``get_account`` — the runner's equity source."""
+
+    def __init__(self, equity: float = 100_025.08, *, fail: bool = False) -> None:
+        self.equity = equity
+        self.fail = fail
+        self.calls = 0
+
+    async def get_account(self):
+        from trader.brokers.base import AccountSnapshot, BrokerError
+
+        self.calls += 1
+        if self.fail:
+            raise BrokerError("alpaca down")
+        return AccountSnapshot(
+            equity=self.equity,
+            cash=self.equity,
+            buying_power=self.equity,
+            non_marginable_buying_power=self.equity,
+            status="ACTIVE",
+            tradable=True,
+        )
+
+
+async def test_broker_equity_sizes_the_prompt_not_shadow_equity(db: Database):
+    """A live account snapshot replaces the shadow_equity constant in the prompt."""
+    from trader.risk.breakers import BreakerStore
+
+    broker = StubAccount(equity=100_025.08)
+    runner = build_runner(db, [OPEN])
+    runner.broker = broker
+    results = await runner.tick(NOW)
+
+    assert broker.calls == 1
+    row = await Journal(db).get(results[0].decision_id)
+    assert "Account equity: 100,025.08 USD" in row["prompt"]
+    assert "Account equity: 100,000.00 USD" not in row["prompt"]
+    state = await BreakerStore(db).load()
+    assert state.day_start_equity == pytest.approx(100_025.08)
+    assert state.week_high_equity == pytest.approx(100_025.08)
+
+
+async def test_shadow_build_without_a_broker_keeps_shadow_equity(db: Database):
+    runner = build_runner(db, [HOLD])
+    results = await runner.tick(NOW)
+    row = await Journal(db).get(results[0].decision_id)
+    assert "Account equity: 100,000.00 USD" in row["prompt"]
+    assert await db.fetch_all("SELECT id FROM decisions WHERE trigger = 'equity_fallback'") == []
+
+
+async def test_alpaca_down_keeps_last_good_equity_and_journals_it(db: Database):
+    """A venue blip must not silently resize risk back to the shadow constant."""
+    from trader.loop.runner import EQUITY_CACHE_SECONDS
+
+    broker = StubAccount(equity=100_025.08)
+    runner = build_runner(db, [HOLD, HOLD])
+    runner.broker = broker
+    await runner.tick(NOW)
+    broker.fail = True
+    later = NOW + timedelta(seconds=EQUITY_CACHE_SECONDS + 5)
+    results = await runner.tick(later, force=True)
+
+    row = await Journal(db).get(results[0].decision_id)
+    assert "Account equity: 100,025.08 USD" in row["prompt"]
+    assert "Account equity: 100,000.00 USD" not in row["prompt"]
+    fallbacks = await db.fetch_all(
+        "SELECT raw_output FROM decisions WHERE trigger = 'equity_fallback'"
+    )
+    assert len(fallbacks) == 1
+    assert "last_good" in fallbacks[0]["raw_output"]
+    assert "100025.08" in fallbacks[0]["raw_output"]
+    # The fallback row is an audit of the blip, not an input to the next decide.
+    assert "equity_fallback" not in row["prompt"]
+
+
+async def test_alpaca_down_with_no_last_good_journals_the_constant(db: Database):
+    """No cached equity: the constant may be used only when the journal says so."""
+    broker = StubAccount(fail=True)
+    runner = build_runner(db, [HOLD, HOLD])
+    runner.broker = broker
+    await runner.tick(NOW)
+    await runner.tick(NOW + timedelta(minutes=20), force=True)
+
+    assert broker.calls == 2  # a failure is not cached; the next tick tries again
+    fallbacks = await db.fetch_all(
+        "SELECT raw_output FROM decisions WHERE trigger = 'equity_fallback'"
+    )
+    assert len(fallbacks) == 1  # one row per outage, not one per tick
+    assert "shadow_equity_constant" in fallbacks[0]["raw_output"]
+
+
+async def test_broker_equity_is_cached_for_a_few_seconds(db: Database):
+    from trader.loop.runner import EQUITY_CACHE_SECONDS
+
+    broker = StubAccount(equity=50_000.0)
+    runner = build_runner(db, [HOLD])
+    runner.broker = broker
+    await runner.tick(NOW)
+    await runner.tick(NOW + timedelta(seconds=EQUITY_CACHE_SECONDS - 1))
+    assert broker.calls == 1
+    await runner.tick(NOW + timedelta(seconds=EQUITY_CACHE_SECONDS + 5))
+    assert broker.calls == 2
+
+
+def _utc_midnight_pair() -> tuple[datetime, datetime]:
+    """Two aware timestamps on opposite sides of the current UTC midnight."""
+    now = datetime.now(tz=UTC).replace(minute=0, second=0, microsecond=0)
+    if now.hour >= 12:
+        before = now.replace(hour=22)
+        after = (before + timedelta(days=1)).replace(hour=1)
+    else:
+        after = now.replace(hour=1)
+        before = (after - timedelta(days=1)).replace(hour=22)
+    return before, after
+
+
+async def test_holds_across_a_utc_day_roll_the_breaker_session(db: Database):
+    """A run of holds must still roll day_session and re-baseline daily equity."""
+    from trader.risk.breakers import BreakerStore
+
+    before, after = _utc_midnight_pair()
+    broker = StubAccount(equity=100_000.0)
+    runner = build_runner(db, [HOLD, HOLD])
+    runner.broker = broker
+
+    await runner.tick(before, force=True)
+    state = await BreakerStore(db).load()
+    assert state.day_session == before.date()
+    assert state.day_start_equity == pytest.approx(100_000.0)
+
+    broker.equity = 100_025.0
+    await runner.tick(after, force=True)
+    state = await BreakerStore(db).load()
+    assert state.day_session == after.date()
+    assert state.day_start_equity == pytest.approx(100_025.0)
+    rows = await db.fetch_all(
+        "SELECT decision, risk_verdicts FROM decisions WHERE trigger != 'equity_fallback'"
+    )
+    assert len(rows) == 2
+    assert all(row["decision"]["action"] == "hold" for row in rows)
+    assert all(row["risk_verdicts"] is None for row in rows)
+
+
+async def test_a_hold_tick_trips_daily_loss_when_equity_bleeds(db: Database):
+    from trader.loop.runner import EQUITY_CACHE_SECONDS
+    from trader.risk.breakers import DAILY_LOSS, BreakerStore
+
+    now = datetime.now(tz=UTC)
+    broker = StubAccount(equity=100_000.0)
+    runner = build_runner(db, [HOLD, HOLD])
+    runner.broker = broker
+    await runner.tick(now, force=True)
+    broker.equity = 96_000.0  # -4%, outside the 3% daily-loss limit
+    await runner.tick(now + timedelta(seconds=EQUITY_CACHE_SECONDS + 5), force=True)
+    state = await BreakerStore(db).load()
+    assert state.halted_reason == DAILY_LOSS
+    assert state.day_start_equity == pytest.approx(100_000.0)
+
+
+# --- trades today (#12) -----------------------------------------------------
+
+
+def _capped_guard(db: Database, max_trades_per_day: int) -> RiskGuard:
+    return RiskGuard(
+        db,
+        RiskLimits(
+            max_position_frac=0.5,
+            approval_notional_usd=100_000.0,
+            max_trades_per_day=max_trades_per_day,
+        ),
+    )
+
+
+async def test_daily_trade_cap_counts_orders_placed_today(db: Database):
+    from trader.store.repos import OrdersRepo
+
+    await OrdersRepo(db).insert(
+        client_order_id="cap-today",
+        symbol="BTC/USD",
+        asset_class="crypto",
+        side="buy",
+        notional=25,
+    )
+    now = datetime.now(tz=UTC)
+    runner = build_runner(db, [OPEN], guard=_capped_guard(db, 1))
+    results = await runner.tick(now, force=True)
+
+    assert results[0].status == DENIED
+    row = await Journal(db).get(results[0].decision_id)
+    assert row["risk_verdicts"][-1]["check"] == "max_trades_per_day"
+
+
+async def test_orders_from_the_previous_session_do_not_spend_the_cap(db: Database):
+    now = datetime.now(tz=UTC)
+    await db.execute(
+        """
+        INSERT INTO orders (client_order_id, symbol, asset_class, side, notional, created_at)
+        VALUES ('cap-yesterday', 'BTC/USD', 'crypto', 'buy', 25, %s)
+        """,
+        (now - timedelta(days=1),),
+    )
+    runner = build_runner(db, [OPEN], guard=_capped_guard(db, 1))
+    results = await runner.tick(now, force=True)
+    assert results[0].status == SHADOW
+
+
+# --- decision_id on live orders (#14) ---------------------------------------
+
+
+async def test_live_order_carries_the_decision_id(db: Database):
+    from tests.test_executor import FakeAlpaca
+    from trader.loop.executor import Executor
+    from trader.loop.journal import EXECUTED
+
+    broker = FakeAlpaca()
+    runner = build_runner(db, [OPEN], shadow=False, executor=Executor(db, broker))
+    results = await runner.tick(datetime.now(tz=UTC), force=True)
+
+    assert results[0].status == EXECUTED
+    assert len(broker.submitted) == 1
+    order = await db.fetch_one("SELECT decision_id, status FROM orders")
+    assert order["status"] == "submitted"
+    assert order["decision_id"] == results[0].decision_id
+    row = await Journal(db).get(results[0].decision_id)
+    assert row["status"] == EXECUTED
+    assert row["decision"]["action"] == "open"
+    assert row["risk_verdicts"]
+
+
+async def test_rejected_submit_still_links_the_order_to_its_decision(db: Database):
+    from tests.test_executor import FakeAlpaca
+    from trader.loop.executor import Executor
+    from trader.loop.journal import ERROR
+
+    broker = FakeAlpaca(fail="error")
+    runner = build_runner(db, [OPEN], shadow=False, executor=Executor(db, broker))
+    results = await runner.tick(datetime.now(tz=UTC), force=True)
+
+    assert results[0].status == ERROR
+    order = await db.fetch_one("SELECT decision_id FROM orders")
+    assert order["decision_id"] == results[0].decision_id
+    assert (await Journal(db).get(results[0].decision_id))["status"] == ERROR
+
+
+# --- marks: vol and unrealized pnl (#15) ------------------------------------
+
+
+def _capturing_scheduler():
+    seen: dict[str, Mark] = {}
+    scheduler = SignalScheduler([BTC], TriggerConfig(price_move_pct=9.0))
+
+    def capture(now, marks):
+        seen.update(marks)
+        return SignalScheduler.evaluate(scheduler, now, marks)
+
+    scheduler.evaluate = capture  # type: ignore[method-assign]
+    return scheduler, seen
+
+
+async def test_marks_carry_realized_vol_and_unrealized_pnl(db: Database):
+    from trader.data.indicators import realized_vol
+    from trader.store.repos import PositionsRepo
+
+    series = [100.0 + i for i in range(60)]
+    await PositionsRepo(db).upsert(
+        symbol="BTC/USD", asset_class="crypto", qty=1.0, avg_entry_price=150.0
+    )
+    scheduler, seen = _capturing_scheduler()
+    runner = build_runner(db, [HOLD], market_data=StubMarketData(series), scheduler=scheduler)
+    results = await runner.tick(NOW)
+
+    mark = seen["BTC/USD"]
+    assert mark.realized_vol == pytest.approx(realized_vol(bars(series), 20))
+    assert mark.unrealized_pnl_frac == pytest.approx((159.0 - 150.0) / 150.0)
+    assert POSITION_RISK in results[0].triggers
+
+
+async def test_short_unrealized_pnl_is_signed_against_the_position(db: Database):
+    from trader.store.repos import PositionsRepo
+
+    await PositionsRepo(db).upsert(
+        symbol="BTC/USD", asset_class="crypto", qty=-2.0, avg_entry_price=100.0
+    )
+    scheduler, seen = _capturing_scheduler()
+    runner = build_runner(db, [HOLD], market_data=StubMarketData([110.0] * 30), scheduler=scheduler)
+    results = await runner.tick(NOW)
+
+    # Price above entry: a short is losing, so the fraction is negative.
+    assert seen["BTC/USD"].unrealized_pnl_frac == pytest.approx(-0.10)
+    assert POSITION_RISK in results[0].triggers
+
+
+async def test_mark_vol_stays_empty_when_bars_are_unavailable(db: Database):
+    class BarsDown(StubMarketData):
+        async def get_bars(self, symbol, interval, lookback):
+            from trader.data.base import MarketDataError
+
+            raise MarketDataError("bars down")
+
+    scheduler, seen = _capturing_scheduler()
+    runner = build_runner(db, [HOLD], market_data=BarsDown(), scheduler=scheduler)
+    results = await runner.tick(NOW)
+
+    assert results[0].status == SHADOW  # the quote still decides
+    assert seen["BTC/USD"].price == pytest.approx(159.0)
+    assert seen["BTC/USD"].realized_vol is None
+    assert seen["BTC/USD"].unrealized_pnl_frac is None
+
+
+# --- sentiment cadence (#22) ------------------------------------------------
+
+
+class RecordingSentiment:
+    def __init__(self) -> None:
+        self.polled: list[str] = []
+
+    async def get_x_sentiment(self, symbol, **kwargs):
+        self.polled.append(symbol.ticker)
+        return {"status": "ok", "symbol": symbol.ticker}
+
+
+async def test_sentiment_polls_held_symbols_only_every_three_hours(db: Database):
+    """Unheld names are pure cost: the scheduler only reads sentiment for positions."""
+    from trader.ops.config import Settings
+    from trader.store.repos import PositionsRepo
+
+    eth = default_registry().get("ETH/USD")
+    await PositionsRepo(db).upsert(
+        symbol="BTC/USD", asset_class="crypto", qty=0.5, avg_entry_price=100.0
+    )
+    svc = RecordingSentiment()
+    # force=True wakes every open symbol, held or not — six decides, two polls.
+    runner = build_runner(db, [HOLD] * 6, symbols=[BTC, eth], sentiment=svc)
+
+    # 3h cadence. The daily cap still bounds a shorter interval, and the wake
+    # trigger default is untouched (the live book arms it at 0.8 via env).
+    fields = Settings.model_fields
+    assert runner.sentiment_poll_seconds == 10_800
+    assert fields["sentiment_poll_seconds"].default == 10_800
+    assert fields["sentiment_daily_call_cap"].default == 24
+    assert fields["sentiment_trigger_enabled"].default is False
+    assert fields["sentiment_swing_threshold"].default == 0.5
+
+    now = datetime.now(tz=UTC)
+    await runner.tick(now, force=True)
+    assert svc.polled == ["BTC/USD"]
+    await runner.tick(now + timedelta(hours=2), force=True)
+    assert svc.polled == ["BTC/USD"]  # inside the 3h window
+    await runner.tick(now + timedelta(hours=3), force=True)
+    assert svc.polled == ["BTC/USD", "BTC/USD"]
