@@ -445,5 +445,57 @@ def xai_status() -> None:
     )
 
 
+@xai_app.command("probe")
+def xai_probe_cmd(
+    model: Annotated[
+        list[str] | None,
+        typer.Option(help="Model id (repeatable). Default: grok-4, grok-4.3, grok-4-1-fast."),
+    ] = None,
+    endpoint: Annotated[
+        list[str] | None,
+        typer.Option(help="chat/completions | responses (repeatable). Default: both."),
+    ] = None,
+    tool: Annotated[
+        list[str] | None,
+        typer.Option(help="none | x_search | web_search (repeatable). Default: all three."),
+    ] = None,
+    credential: str = typer.Option(
+        "auto", help="auto (OAuth then XAI_API_KEY) | oauth | api_key — pin one path."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Full results as JSON."),
+) -> None:
+    """Probe xAI endpoints × models × tools from INSIDE the running service, on its own
+    credential (the OAuth lineage the service owns, or XAI_API_KEY). Unlike `xai login`
+    this goes through the API: never run a second OAuth client beside trader-api.
+    Diagnostics only — unmetered, ~16 output tokens per cell; one audit row."""
+    payload: dict[str, object] = {"credential": credential}
+    if model:
+        payload["models"] = model
+    if endpoint:
+        payload["endpoints"] = endpoint
+    if tool:
+        payload["tools"] = tool
+    out = _post("/xai/probe", json_body=payload)
+    if json_output or not isinstance(out, dict) or out.get("status") != "ok":
+        typer.echo(json.dumps(out, indent=2))
+        return
+    header = f"{'endpoint':<17}{'model':<14}{'tool':<11}{'cred':<8}{'http':<6}{'result':<13}"
+    header += f"{'in/out':<10}{'cites':<6}{'ms':>7}"
+    typer.echo(header)
+    for r in out["results"]:
+        usage = r.get("usage") or {}
+        verdict = "ok" if r["ok"] else (r.get("error_class") or "error")
+        in_out = f"{usage.get('input_tokens', 0)}/{usage.get('output_tokens', 0)}"
+        line = (
+            f"{r['endpoint']:<17}{r['model']:<14}{(r.get('tool') or 'none'):<11}"
+            f"{(r.get('credential_used') or '-'):<8}{str(r.get('status_code') or '-'):<6}"
+            f"{verdict:<13}{in_out:<10}{r.get('citations_count', 0):<6}{r.get('latency_ms', 0):>7}"
+        )
+        typer.echo(line)
+        if r.get("detail"):
+            typer.echo(f"{'':<17}{r['detail']}")
+    typer.echo(f"summary: {json.dumps(out['summary'])}")
+
+
 if __name__ == "__main__":
     app()
