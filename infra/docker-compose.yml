@@ -1,9 +1,16 @@
+# Reference deployment: Postgres 16 + the trader API, both containers.
+#   cp .env.example .env            # fill in keys; compose passes it through env_file
+#   docker compose -f infra/docker-compose.yml up -d           # pulls the published image
+#   docker compose -f infra/docker-compose.yml up -d --build   # or build from this checkout
+#   docker compose -f infra/docker-compose.yml up -d db        # db only (dev / systemd shape)
+# The other supported shape — the API as a host systemd user unit over this db — is in
+# infra/systemd/. Runbook: docs/runbooks/deploy.md.
 name: trader
 
 services:
   db:
     image: postgres:16
-    restart: unless-stopped  # the deployed API (systemd user unit) needs it back after reboot
+    restart: unless-stopped  # the API (this app service or a host unit) needs it back after reboot
     environment:
       POSTGRES_USER: trader
       POSTGRES_PASSWORD: trader
@@ -19,22 +26,35 @@ services:
       retries: 10
 
   app:
+    # Published by .github/workflows/release.yml on every vX.Y.Z tag (linux/amd64 +
+    # linux/arm64). `up -d` pulls it; `up -d --build` builds the same tag from source.
+    image: ghcr.io/sudotomas/trader:latest
     build:
       context: ..
       dockerfile: infra/Dockerfile
-    env_file: ../.env
+    restart: unless-stopped
+    env_file:
+      # Secrets and operator flags live only here (never in this file). Missing .env is
+      # tolerated so `compose config` works on a bare checkout; the app then fails closed
+      # at boot (no TRADER_API_KEY and TRADER_AUTH_DISABLED unset refuses to start).
+      - path: ../.env
+        required: false
     environment:
-      # host.docker.internal reaches the Spark's nemotron-vllm on :8009 from inside the container.
-      # Nemotron preset: decide uses this when TRADER_DECIDE_BASE_URL is unset. The preset
-      # client bakes chat_template_kwargs.enable_thinking=false; do not copy that body onto
-      # a vendor URL (OpenAI rejects the argument).
       TRADER_DATABASE_URL: postgresql://trader:trader@db:5432/trader
+      # Nemotron preset: the decide role uses this when TRADER_DECIDE_BASE_URL is unset.
+      # host.docker.internal is the Docker host as seen from inside the container
+      # (extra_hosts below), i.e. an LLM server you run on the same machine — a local
+      # vLLM/Ollama on :8009 here. Point it at any OpenAI-compatible /v1 instead, or
+      # set TRADER_DECIDE_BASE_URL in .env to bypass the preset entirely. The preset
+      # client bakes chat_template_kwargs.enable_thinking=false (Nemotron needs it);
+      # do not copy that body onto a vendor URL (OpenAI rejects the argument).
       TRADER_NEMOTRON_BASE_URL: http://host.docker.internal:8009/v1
-      # #26 — generic endpoints pass through env_file (../.env). Not set here:
-      # `environment` overrides env_file, and an empty default would blank a key
-      # the operator set only in ../.env. Contract: TRADER_DECIDE_BASE_URL,
-      # TRADER_DECIDE_MODEL, TRADER_DECIDE_API_KEY, TRADER_DECIDE_EXTRA_BODY,
-      # TRADER_DECIDE_PRICE_IN, TRADER_DECIDE_PRICE_OUT, and the TRADER_RESEARCH_* twins.
+      # Generic endpoints pass through env_file (../.env) and are deliberately NOT
+      # listed here: `environment` overrides env_file, and an empty value would blank
+      # a key the operator set only in .env. Contract (src/trader/ops/config.py):
+      #   TRADER_DECIDE_BASE_URL, TRADER_DECIDE_MODEL, TRADER_DECIDE_API_KEY,
+      #   TRADER_DECIDE_EXTRA_BODY, TRADER_DECIDE_PRICE_IN, TRADER_DECIDE_PRICE_OUT,
+      #   and the TRADER_RESEARCH_* twins (brief/compiler/critic; xAI when unset).
     ports:
       - "8080:8080"
     depends_on:
@@ -42,7 +62,8 @@ services:
         condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    # Memory cap — the Spark is memory-bound (nemotron-vllm holds most of the unified pool).
+    # Memory cap for the API process. Sized for a host that also serves the LLM
+    # (docs/deploy/dgx-spark.md); raise or drop it on a box with nothing else to protect.
     mem_limit: 4g
     memswap_limit: 4g
 

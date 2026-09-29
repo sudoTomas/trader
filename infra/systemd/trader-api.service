@@ -1,0 +1,30 @@
+# trader API as a systemd *user* unit (the non-container deployment shape).
+#
+# Install:
+#   mkdir -p ~/.config/systemd/user && cp infra/systemd/trader-api.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now trader-api
+#   loginctl enable-linger "$USER"     # start at boot without a login session
+#
+# %h expands to the unit owner's home. Edit WorkingDirectory if the checkout lives
+# elsewhere; the app reads .env from that directory (pydantic-settings), so no
+# EnvironmentFile= is needed. Postgres comes from the compose db service
+# (docker compose -f infra/docker-compose.yml up -d db) or any TRADER_DATABASE_URL.
+[Unit]
+Description=trader API (uvicorn :8080 - decide loop, RiskGuard, research desk)
+# The db must be up; the app fails closed on migrations and Restart=always retries
+# until it is healthy, so no hard dependency is declared.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=%h/repos/trader
+# uv from the official installer lands in ~/.local/bin. If yours is elsewhere
+# (Homebrew, pipx, a distro package), either change the path below or replace it
+# with a plain `uv` and uncomment the PATH line so systemd can find it.
+#Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/uv run uvicorn trader.surfaces.api.app:app --host 0.0.0.0 --port 8080
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

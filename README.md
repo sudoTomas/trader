@@ -35,11 +35,16 @@ trader health                   # CLI surface (talks to the running API)
 
 ## Deploy
 
-Runs on the DGX Spark beside `nemotron-vllm` (`:8009`).
-
 ```bash
-docker compose -f infra/docker-compose.yml up -d --build
+cp .env.example .env                                   # keys, decide endpoint, paper only
+docker compose -f infra/docker-compose.yml up -d       # Postgres + ghcr.io/sudotomas/trader
+docker compose -f infra/docker-compose.yml up -d --build   # or build from this checkout
 ```
+
+The decide model is any OpenAI-compatible endpoint (`TRADER_DECIDE_*`) or a self-hosted
+Nemotron (`TRADER_NEMOTRON_BASE_URL`). Alternative shape (API as a host systemd user
+unit): [`infra/systemd/`](infra/systemd). Runbook:
+[`docs/runbooks/deploy.md`](docs/runbooks/deploy.md).
 
 ## Status
 

@@ -1,0 +1,11 @@
+# Hourly trigger for trader-desk-watch.service. Persistent=true runs a missed tick
+# after a reboot. The :23 offset just keeps it off the top of the hour.
+[Unit]
+Description=Hourly trader desk-watch
+
+[Timer]
+OnCalendar=*-*-* *:23:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

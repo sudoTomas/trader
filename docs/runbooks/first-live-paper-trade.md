@@ -8,7 +8,8 @@ without them, and it should be walked deliberately rather than automated.
 
 - Alpaca **paper** keys (distinct from live keys; generate at the paper dashboard).
 - Postgres up: `docker compose -f infra/docker-compose.yml up -d db`
-- `nemotron-vllm` reachable on `:8009`.
+- A decide model reachable: `TRADER_DECIDE_*` for any OpenAI-compatible endpoint, or a
+  self-hosted Nemotron vLLM at `TRADER_NEMOTRON_BASE_URL` (the preset).
 
 ```bash
 # .env
@@ -65,7 +66,7 @@ mode was never the safety mechanism, only the throttle.
 TRADER_SHADOW_MODE=false
 ```
 
-Restart the API. On boot the executor runs `recover_pending()` and
+Restart the API (`docs/runbooks/deploy.md`). On boot the executor runs `recover_pending()` and
 `reconcile_positions()` before consuming the trade stream.
 
 ```bash

@@ -52,8 +52,9 @@ trigger).
 
 ## 3. The flip (deliberate, exclusive)
 
-Flip the config, restart (`systemctl --user restart trader-api`), and verify
-`trader loop status` + `trader broker reconcile`. **Never flip while another gate is
+Flip the config, restart the API (`systemctl --user restart trader-api` for the systemd
+shape, `docker compose -f infra/docker-compose.yml up -d app` for compose — see
+`docs/runbooks/deploy.md`), and verify `trader loop status` + `trader broker reconcile`. **Never flip while another gate is
 open** — a new asset class, the sentiment trigger, and a desk change must not land in the
 same window; if two are ready, sequence them and watch the journal between flips.
 
@@ -62,8 +63,11 @@ of this — it was never the throttle being gated.
 
 ## Watching a shadow window
 
-`scripts/desk-watch.sh` (hourly `trader-desk-watch` systemd user timer) tails the journal
-for the events worth seeing the day they happen — first drafted intent, critic vetoes,
-decide errors, an `executed` row (which must never appear mid-window), critic spend
-nearing its cap. Findings append to `desk-watch.log` (gitignored) and the systemd journal
-(`journalctl --user -t trader-desk-watch`). Monitoring only — flips stay manual.
+`scripts/desk-watch.sh` (hourly via `infra/systemd/trader-desk-watch.timer` +
+`.service`; install per `docs/runbooks/deploy.md`) tails the journal for the events worth
+seeing the day they happen — first drafted intent, critic vetoes, decide errors, an
+`executed` row (which must never appear mid-window), critic spend nearing its cap. It
+reads `TRADER_DATABASE_URL` from the environment or `.env` and works with host `psql` or
+`docker exec` into the compose db. Findings append to `desk-watch.log` in `TRADER_REPO`
+(gitignored) and the systemd journal (`journalctl --user -t trader-desk-watch`).
+Monitoring only — flips stay manual.

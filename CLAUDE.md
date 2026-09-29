@@ -5,8 +5,8 @@ Guidance for Claude Code working in this repo.
 ## What this is
 
 `trader` — agentic-first autonomous trading agent (v2). Greenfield successor to
-`trading-agent` (v1, at `~/repos/trading-agent`, now a frozen reference archive). The full
-design is in **`docs/architecture.md`** — read it before non-trivial work.
+`trading-agent` (v1, a frozen private archive that is not published with this repo). The
+full design is in **`docs/architecture.md`** — read it before non-trivial work.
 
 ## Prime directive
 
@@ -22,8 +22,9 @@ in doubt, fail closed.
 - **One service layer, three surfaces.** Add a capability to `surfaces/services.py` first,
   then wire API + MCP + CLI. Never add a feature to only one surface.
 - **No LangGraph.** Plain async. Desk fan-out = `asyncio.gather`; HITL = approvals table.
-- **Nemotron requests MUST send** `chat_template_kwargs: {enable_thinking: false}` or the
-  Spark endpoint collapses to ~0.35 tok/s.
+- **Nemotron requests MUST send** `chat_template_kwargs: {enable_thinking: false}` or a
+  vLLM-served Nemotron collapses to ~0.35 tok/s. The preset bakes it in; never copy that
+  body onto a vendor endpoint (`TRADER_DECIDE_*`).
 - **Append-only audit** for every state-changing action; **journal** the context version
   (research/prompt/output) on every decision.
 
@@ -40,16 +41,21 @@ docker compose -f infra/docker-compose.yml up -d --build
 
 ## Environment
 
-Runs on the DGX Spark beside `nemotron-vllm` (systemd, `:8009`, no auth — network trust).
-Memory budget ~16 GB (vLLM holds the rest of the 128 GB unified pool). The GPU clock-cap
-systemd unit on the Spark is load-bearing — never remove it. `gh` CLI is authenticated.
+Deploys as compose (`infra/docker-compose.yml`, the reference) or as a host systemd user
+unit over the compose db (`infra/systemd/`); runbook `docs/runbooks/deploy.md`. The decide
+model is any OpenAI-compatible endpoint (`TRADER_DECIDE_*`) or the Nemotron preset
+(`TRADER_NEMOTRON_BASE_URL`, a self-hosted vLLM; unauthenticated, so LAN only). Nothing
+in the repo assumes a particular host; the box it was developed on — a memory-shared GPU
+machine — is described in `docs/deploy/dgx-spark.md`, and its constraints (memory cap,
+GPU units) are that box's, not invariants. `gh` is the tracker CLI.
 
 ## Referencing v1
 
-v1 is a preserved archive of hardened lessons — cite it as `v1:<path>`, don't port its shape.
-Useful references: `apps/agent/src/trading_agent/engine/sleeve.py` (risk limits),
-`engine/signal_monitor.py` (triggers), `adapters/broker/{ibkr,reconcile}.py` (future IBKR
-add-back), migration 017 (journal replay columns).
+v1 is a preserved archive of hardened lessons (private, outside this repo) — cite it as
+`v1:<path>`, don't port its shape. Useful references:
+`apps/agent/src/trading_agent/engine/sleeve.py` (risk limits), `engine/signal_monitor.py`
+(triggers), `adapters/broker/{ibkr,reconcile}.py` (future IBKR add-back), migration 017
+(journal replay columns).
 
 ## Issue tracker
 
