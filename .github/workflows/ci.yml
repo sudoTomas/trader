@@ -24,6 +24,8 @@ jobs:
           --health-retries 10
     steps:
       - uses: actions/checkout@v4
+      - name: Pre-commit
+        uses: pre-commit/action@v3.0.1
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
