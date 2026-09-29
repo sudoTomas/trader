@@ -1,5 +1,5 @@
 #!/bin/bash
-# Desk shadow-window watcher (EAI-190). Hourly via infra/systemd/trader-desk-watch.timer:
+# Desk shadow-window watcher. Hourly via infra/systemd/trader-desk-watch.timer:
 # surfaces the events the operator wants to see the day they happen, not at the
 # scheduled review — the first drafted intent, critic vetoes, decide errors, critic
 # spend approaching its cap. Monitoring only: this script never flips anything.

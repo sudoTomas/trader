@@ -52,15 +52,16 @@ embry0 stays on GitHub (`sudoTomas/embry0`).
 | [#29](https://github.com/sudoTomas/trader/issues/29) **closed 2026-09-29 (PR #53)** | Strip machine-specific references; infra reproducible off the Spark |
 | [#30](https://github.com/sudoTomas/trader/issues/30) **closed 2026-09-29 (PR #55)** | `trader doctor` preflight + shadow-only quickstart |
 | [#31](https://github.com/sudoTomas/trader/issues/31) **closed 2026-09-29 (PR #36)** | Publish: Docker image on GHCR + PyPI (`uvx trader`) |
-| [#32](https://github.com/sudoTomas/trader/issues/32) | Translate Linear/v1 provenance into readable rationale |
-| [#33](https://github.com/sudoTomas/trader/issues/33) | README overhaul |
+| [#32](https://github.com/sudoTomas/trader/issues/32) **closed 2026-09-29 (PR #57)** | Translate Linear/v1 provenance into readable rationale |
+| [#33](https://github.com/sudoTomas/trader/issues/33) **closed 2026-09-29 (PR #56)** | README overhaul |
 | [#34](https://github.com/sudoTomas/trader/issues/34) | Exit-review lane (decide-gated; after #1) |
 | [#35](https://github.com/sudoTomas/trader/issues/35) | **Epic:** open-source release (MIT, public after cleanup; Python stays) |
 
 Batch one (2026-09-29) merged as PRs #36 (D), #39 (B), #38 (C), #37 (E), #40 (A); report in
 `docs/reports/2026-09-29-batch-one.md`. Deployed only after the operator restarts `trader-api`.
 
-Batch two (2026-09-29): #27, #29, #30 merged as PRs #54, #53, #55; #33 next, #32 alone after.
+Batch two (2026-09-29): #27, #29, #30, #33, #32 merged as PRs #54, #53, #55, #56, #57. Epic #35's remaining
+items are operator-only: PyPI trusted publisher for `trader-agent`, flip visibility, tag `v0.1.0`.
 
 Decisions recorded 2026-09-29: MIT; no TypeScript rewrite; Grok desk (#20) follows #21 and
 precedes the distribution tail; #6 closed as deferred.
