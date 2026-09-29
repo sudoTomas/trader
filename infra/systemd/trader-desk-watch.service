@@ -1,0 +1,16 @@
+# Hourly desk shadow-window watcher (monitoring only; never flips anything).
+# Pair with trader-desk-watch.timer:
+#   cp infra/systemd/trader-desk-watch.{service,timer} ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now trader-desk-watch.timer
+#
+# scripts/desk-watch.sh reads TRADER_DATABASE_URL (falling back to the checkout's .env,
+# then the compose default) and TRADER_REPO (where desk-watch.log is written).
+[Unit]
+Description=trader desk shadow-window watcher (monitoring only)
+
+[Service]
+Type=oneshot
+Environment=TRADER_REPO=%h/repos/trader
+# Uncomment to override what .env says (e.g. a host psql reaching a remote db):
+#Environment=TRADER_DATABASE_URL=postgresql://trader:trader@localhost:5544/trader
+ExecStart=%h/repos/trader/scripts/desk-watch.sh

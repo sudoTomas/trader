@@ -157,7 +157,7 @@ calls ([release notes](https://docs.x.ai/developers/release-notes)).
 Every xAI-hosted option (Grok Bot's cloud computer, grok.com custom MCP connectors,
 the API's remote-`mcp` tool) requires the counterparty to be **reachable over the
 public internet** ([docs.x.ai/grok/connectors](https://docs.x.ai/grok/connectors)).
-The trader's API/MCP lives at `192.168.195.251:8080` behind `X-API-Key`
+The trader's API/MCP lives at `<trader-host>:8080` (a LAN address) behind `X-API-Key`
 (`docs/hermes/README.md`) and the contract is push-only capture. Two consequences:
 
 1. **Never point xAI's remote-`mcp` tool at the trader's MCP server.** Even

@@ -1,7 +1,8 @@
 # Hermes ↔ trader integration guide
 
 How an external agent (Hermes, or any MCP/HTTP client) reads and plugs into the
-autonomous trading system running on the DGX Spark (`spark-4b1a`).
+autonomous trading system running on the trader host (`<host>` below; `<trader-host>`
+is its address as seen from the client).
 
 ## What this system is, in one paragraph
 
@@ -15,20 +16,20 @@ You cannot place orders — no such tool exists on any surface, by design.
 
 | Surface | Where | Notes |
 |---|---|---|
-| REST API | `http://192.168.195.251:8080` | LAN address of the Spark; `http://localhost:8080` when on the box |
-| MCP server | `http://192.168.195.251:8080/mcp` | Streamable HTTP (FastMCP). Add as a remote MCP server in Hermes |
+| REST API | `http://<trader-host>:8080` | LAN address of the host; `http://localhost:8080` when on the box |
+| MCP server | `http://<trader-host>:8080/mcp` | Streamable HTTP (FastMCP). Add as a remote MCP server in Hermes |
 | Health (no auth ever) | `GET /health` | `{"status":"ok","db":"ok"}` when healthy |
 
 **Auth (enabled 2026-09-10)**: every request — REST and `/mcp` alike — must carry an
-`X-API-Key` header matching `TRADER_API_KEY` in `~/repos/trader/.env` on the box
+`X-API-Key` header matching `TRADER_API_KEY` in the trader's `.env` on the host
 (`/health` is the only exemption). Missing/wrong key → 401. When configuring Hermes's
-remote MCP server, set the endpoint to `http://192.168.195.251:8080/mcp/` (note the
+remote MCP server, set the endpoint to `http://<trader-host>:8080/mcp/` (note the
 trailing slash) with the `X-API-Key` custom header; read the key off the box, never
 hard-code it into shared docs.
 
 > History: until 2026-09-10 the service ran auth-disabled AND bound to localhost only —
 > a remote client got connection-refused (reported as "no MCP built out"). Both fixed:
-> the unit now binds `0.0.0.0` and auth is mandatory (EAI-194).
+> the service now binds `0.0.0.0` and auth is mandatory (EAI-194).
 
 ## The capability surface (identical on MCP, REST, and the `trader` CLI)
 
@@ -65,7 +66,7 @@ hard-code it into shared docs.
 Example capture:
 
 ```bash
-curl -s -X POST http://192.168.195.251:8080/research/notes \
+curl -s -X POST http://<trader-host>:8080/research/notes \
   -H "Content-Type: application/json" \
   -d '{"title":"ETF flows negative 2nd week","body":"<distilled markdown>",
        "symbols":["ETH/USD"],"source":"https://example.com/article",
@@ -101,8 +102,10 @@ versions the decider saw — your note's influence is traceable end to end).
 
 ## On-box orientation (if you ssh in)
 
-Repo `~/repos/trader` (work on `main`; **read `HANDOFF.md` first — it is the current
-state of truth**). Deployed as systemd user unit `trader-api`; deploy = `git pull` +
-`systemctl --user restart trader-api`. Box-level rules (shared GPU, Nemotron endpoint,
-memory budget): `~/SPARK_RESOURCES.md`. The frozen v1 archive is `~/repos/trading-agent`
-— read-only reference.
+The checkout is `TRADER_REPO` (`~/repos/trader` in the `infra/systemd/` templates; work
+on `main`, and read `HANDOFF.md` first if one exists — it is the current state of truth).
+Deployed either as the compose `app` service or as the systemd user unit `trader-api`;
+deploy steps for both are in `docs/runbooks/deploy.md`. Host-level rules for the
+original operator box (shared GPU, local Nemotron endpoint, memory budget) live in
+`docs/deploy/dgx-spark.md`. The frozen v1 archive (`trading-agent`) is a private,
+read-only reference cited as `v1:<path>`.

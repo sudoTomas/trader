@@ -21,8 +21,9 @@ LLM output, no MCP tool, and no API caller can place an order any other way.
    once in `surfaces/services.py` and exposed identically via REST API, MCP server, and CLI.
    Agentic-first means the MCP tools and the API are first-class, not afterthoughts.
 4. **Per-role model routing.** A registry maps each LLM role → (provider, model, credential).
-   The money-path decide runs on the local Nemotron (Spark); research/compiler roles run on
-   Grok. No global endpoint assumption. (v1 had one hardcoded URL + `api_key="EMPTY"`.)
+   The money-path decide runs on any OpenAI-compatible endpoint (`TRADER_DECIDE_*`) or the
+   self-hosted Nemotron preset; research/compiler roles run on Grok (or `TRADER_RESEARCH_*`).
+   No global endpoint assumption. (v1 had one hardcoded URL + `api_key="EMPTY"`.)
 5. **Paper-only, hard-gated.** Live trading is impossible unless an explicit env flag is set;
    the default build cannot construct a live client.
 6. **Everything auditable.** Every state-changing action writes an append-only `audit_events`
@@ -126,11 +127,15 @@ the unversioned out-of-repo maintenance).
 ## LLM layer
 
 - **Provider registry**: `{role → (provider, model, credential_source)}`. Roles: `decide`
-  (Nemotron/Spark), `brief` / `compiler` / `sentiment` (Grok), with per-role fallback.
-- **Nemotron client** (Spark, `http://localhost:8009/v1`): every request MUST send
-  `chat_template_kwargs: {enable_thinking: false}` or throughput collapses to ~0.35 tok/s
-  (v1:EAI-128). No auth on that endpoint — network trust. Shared 4-seq instance; keep the
-  decide loop off contention (research roles live on Grok partly for this reason).
+  (`TRADER_DECIDE_*`, else the Nemotron preset), `brief` / `compiler` / `sentiment` (Grok,
+  else `TRADER_RESEARCH_*`), with per-role fallback.
+- **Nemotron preset** (`TRADER_NEMOTRON_BASE_URL`, default `http://localhost:8009/v1` — a
+  vLLM you host): every request MUST send `chat_template_kwargs: {enable_thinking: false}`
+  or throughput collapses to ~0.35 tok/s (v1:EAI-128); the preset bakes it in and a
+  generic URL equal to the preset's gets the same flag, but it is never sent to a vendor
+  API. A self-hosted endpoint typically has no auth — that is network trust, so it stays
+  on a LAN. A shared instance should keep the decide loop off contention (research roles
+  live on Grok partly for this reason).
 - **xAI / Grok** via SuperGrok **device-code OAuth** (RFC 8628, `auth.x.ai`): persist the
   rotating refresh token BEFORE serving the access token (single-use), lock-serialized
   refresh, 403 = entitlement (quarantine, no retry). `XAI_API_KEY` is a first-class fallback.
@@ -177,9 +182,14 @@ capability, defined once, three doors.
 
 ## Deployment
 
-Runs on the DGX Spark beside `nemotron-vllm` (systemd, `:8009`). Two containers (app +
-Postgres 16) with a memory cap. Budget ~16 GB (vLLM holds the rest of the 128 GB unified
-pool). The GPU clock-cap systemd unit on the Spark is load-bearing — do not remove it.
+Two supported shapes, one runbook ([`docs/runbooks/deploy.md`](runbooks/deploy.md)):
+**compose** — Postgres 16 + the published image `ghcr.io/sudotomas/trader` (reference,
+`infra/docker-compose.yml`) — or the API as a **host systemd user unit** over the compose
+db (`infra/systemd/` templates). Configuration is entirely `.env`; the decide model is
+whatever `TRADER_DECIDE_*` names, or a self-hosted Nemotron at `TRADER_NEMOTRON_BASE_URL`.
+The machine the project was developed on (a GPU box sharing memory with vLLM, hence the
+compose memory cap) is an appendix, [`docs/deploy/dgx-spark.md`](deploy/dgx-spark.md),
+not a requirement.
 
 ## Milestones
 
