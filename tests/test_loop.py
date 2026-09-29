@@ -717,3 +717,46 @@ async def test_mark_vol_stays_empty_when_bars_are_unavailable(db: Database):
     assert seen["BTC/USD"].price == pytest.approx(159.0)
     assert seen["BTC/USD"].realized_vol is None
     assert seen["BTC/USD"].unrealized_pnl_frac is None
+
+
+# --- sentiment cadence (#22) ------------------------------------------------
+
+
+class RecordingSentiment:
+    def __init__(self) -> None:
+        self.polled: list[str] = []
+
+    async def get_x_sentiment(self, symbol, **kwargs):
+        self.polled.append(symbol.ticker)
+        return {"status": "ok", "symbol": symbol.ticker}
+
+
+async def test_sentiment_polls_held_symbols_only_every_three_hours(db: Database):
+    """Unheld names are pure cost: the scheduler only reads sentiment for positions."""
+    from trader.ops.config import Settings
+    from trader.store.repos import PositionsRepo
+
+    eth = default_registry().get("ETH/USD")
+    await PositionsRepo(db).upsert(
+        symbol="BTC/USD", asset_class="crypto", qty=0.5, avg_entry_price=100.0
+    )
+    svc = RecordingSentiment()
+    # force=True wakes every open symbol, held or not — six decides, two polls.
+    runner = build_runner(db, [HOLD] * 6, symbols=[BTC, eth], sentiment=svc)
+
+    # 3h cadence. The daily cap still bounds a shorter interval, and the wake
+    # trigger default is untouched (the live book arms it at 0.8 via env).
+    fields = Settings.model_fields
+    assert runner.sentiment_poll_seconds == 10_800
+    assert fields["sentiment_poll_seconds"].default == 10_800
+    assert fields["sentiment_daily_call_cap"].default == 24
+    assert fields["sentiment_trigger_enabled"].default is False
+    assert fields["sentiment_swing_threshold"].default == 0.5
+
+    now = datetime.now(tz=UTC)
+    await runner.tick(now, force=True)
+    assert svc.polled == ["BTC/USD"]
+    await runner.tick(now + timedelta(hours=2), force=True)
+    assert svc.polled == ["BTC/USD"]  # inside the 3h window
+    await runner.tick(now + timedelta(hours=3), force=True)
+    assert svc.polled == ["BTC/USD", "BTC/USD"]

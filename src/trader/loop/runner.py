@@ -146,7 +146,7 @@ class LoopRunner:
     scheduler: SignalScheduler | None = None
     executor: Any | None = None  # loop.executor.Executor; absent = shadow-only build
     sentiment: Any | None = None  # research.sentiment.SentimentService; absent = no polling
-    sentiment_poll_seconds: float = 3600.0
+    sentiment_poll_seconds: float = 10_800.0
     # Per-symbol throttle (EAI-186 gate): these symbols journal as shadow — full decide
     # + risk pass, nothing submitted — while the rest of the build trades live-paper.
     shadow_symbols: set[str] = field(default_factory=set)
@@ -270,7 +270,7 @@ class LoopRunner:
                 )
                 for row in rows
             }
-            await self._poll_sentiment(now)
+            await self._poll_sentiment(now, positions)
             marks = await self._marks(now, positions, entries)
             assert self.scheduler is not None
             if force:
@@ -379,12 +379,19 @@ class LoopRunner:
             weekly_drawdown_limit_frac=limits.weekly_drawdown_limit_frac,
         )
 
-    async def _poll_sentiment(self, now: datetime) -> None:
-        """Collect X sentiment on a cadence (shadow record). Never blocks a tick on failure."""
+    async def _poll_sentiment(self, now: datetime, positions: dict[str, float]) -> None:
+        """Collect X sentiment for held, open symbols. Never blocks a tick on failure.
+
+        Unheld names are skipped: the scheduler only reads sentiment for positions,
+        so polling the rest is pure cost. The daily call cap inside the service
+        still bounds however short ``sentiment_poll_seconds`` is set.
+        """
         if self.sentiment is None:
             return
         for symbol in self.symbols:
             if not symbol.market_calendar.is_open(now):
+                continue
+            if not positions.get(symbol.ticker):
                 continue
             last = self._last_sentiment_poll.get(symbol.ticker)
             if last is not None and (now - last).total_seconds() < self.sentiment_poll_seconds:
