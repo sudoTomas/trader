@@ -7,6 +7,8 @@ missed tick means — this layer never crashes the process.
 
 from __future__ import annotations
 
+from typing import Any
+
 import structlog
 
 from trader.core.symbols import AssetClass, Symbol
@@ -18,15 +20,22 @@ log = structlog.get_logger(__name__)
 
 
 class CompositeMarketData:
-    """Asset-class-routed provider chains."""
+    """Asset-class-routed provider chains.
+
+    ``fred`` is not a bar provider (macro series are daily prints, not candles).
+    The context builder reads it fetch-on-use; this object does not persist either.
+    """
 
     name = "composite"
 
-    def __init__(self, chains: dict[AssetClass, list[MarketData]]) -> None:
+    def __init__(
+        self, chains: dict[AssetClass, list[MarketData]], *, fred: Any | None = None
+    ) -> None:
         for asset_class, chain in chains.items():
             if not chain:
                 raise ValueError(f"empty provider chain for {asset_class}")
         self._chains = chains
+        self.fred = fred
 
     def _chain(self, symbol: Symbol) -> list[MarketData]:
         try:
@@ -72,10 +81,18 @@ def build_market_data(settings: Settings) -> CompositeMarketData:
     equities_chain: list[MarketData] = [alpaca]
     if settings.twelve_data_api_key:
         equities_chain.append(TwelveData(settings.twelve_data_api_key))
+    # Absent key → no client. Fred() refuses an empty key, and a blank build must
+    # still construct (the decide loop simply has no macro-series lane).
+    fred = None
+    if settings.fred_api_key:
+        from trader.data.fred import Fred
+
+        fred = Fred(settings.fred_api_key)
     return CompositeMarketData(
         {
             AssetClass.CRYPTO: [alpaca],
             AssetClass.US_EQUITY: equities_chain,
             AssetClass.COMMODITY_ETF: equities_chain,
-        }
+        },
+        fred=fred,
     )

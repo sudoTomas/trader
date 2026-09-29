@@ -14,8 +14,13 @@ Structure:
 
 Scoring is deliberately crude and labeled as such: mark-to-bars, no costs, no slippage
 (Alpaca paper fills are optimistic already — v1 findings). It ranks configurations; it
-does not predict live PnL. The Macro View lane is currently excluded from replayed
-contexts (historical versions are addressable via ``macro_view_version`` — future work).
+does not predict live PnL.
+
+Research lanes are part of the replayed prompt, pinned to the step: the Macro View
+whose ``created_at`` is at or before that timestamp (never today's ``current()``),
+and the symbol's brief whose ``ts`` is likewise. ``config={"briefs": false}`` drops
+the brief lane so a baseline can still match the dark live path. Replay writes
+``eval_runs`` / ``eval_steps`` only — it does not flip briefs into the live loop.
 """
 
 from __future__ import annotations
@@ -34,7 +39,7 @@ from trader.loop.context import ContextBuilder
 from trader.loop.decider import Decider, DeciderError
 from trader.loop.scheduler import Trigger
 from trader.store.db import Database
-from trader.store.repos import EvalRepo
+from trader.store.repos import BriefsRepo, EvalRepo, MacroViewsRepo
 
 log = structlog.get_logger(__name__)
 
@@ -90,7 +95,16 @@ class ReplayHarness:
         self._repo = EvalRepo(db)
         self._decider = Decider(llm)
         self._market = ReplayMarketData(BarsCache(db, provider))
-        self._context = ContextBuilder(self._market)
+        # Own builder: the live runner keeps briefs dark unless TRADER_BRIEFS_ENABLED.
+        # Attaching the repos here only affects replayed prompts.
+        self._context = ContextBuilder(
+            self._market,
+            macro_views=MacroViewsRepo(db),
+            briefs=BriefsRepo(db),
+            # ReplayMarketData is the bars view. Macro series stay on the real provider
+            # and are capped at the step's date inside ContextBuilder (no later print).
+            fred=getattr(provider, "fred", None),
+        )
         self._step = timedelta(seconds=step_seconds)
         self._max_steps = max_steps
         self._equity = equity
@@ -128,10 +142,19 @@ class ReplayHarness:
         """Walk the run's window. Always finishes the row (done/failed)."""
         run = await self._repo.get_run(run_id)
         assert run is not None
-        use_desk = bool((run["config"] or {}).get("desk"))
+        config = run["config"] or {}
+        use_desk = bool(config.get("desk"))
+        # Briefs default on so the gate sees that lane. Opt out to match live, where
+        # the lane stays dark until its own flip.
+        include_briefs = bool(config.get("briefs", True))
         try:
             summary = await self._walk(
-                run_id, symbol, run["start_ts"], run["end_ts"], use_desk=use_desk
+                run_id,
+                symbol,
+                run["start_ts"],
+                run["end_ts"],
+                use_desk=use_desk,
+                include_briefs=include_briefs,
             )
             await self._repo.finish_run(run_id, status="done", summary=summary)
         except Exception as exc:  # noqa: BLE001 - a failed run must say so, not hang
@@ -156,7 +179,14 @@ class ReplayHarness:
     # -- internals -----------------------------------------------------------
 
     async def _walk(
-        self, run_id: int, symbol: Symbol, start: datetime, end: datetime, *, use_desk: bool
+        self,
+        run_id: int,
+        symbol: Symbol,
+        start: datetime,
+        end: datetime,
+        *,
+        use_desk: bool,
+        include_briefs: bool,
     ) -> dict[str, Any]:
         actions: dict[str, int] = {}
         desk_tally = {"approve": 0, "shrink": 0, "veto": 0, "pass_through": 0, "skipped": 0}
@@ -180,6 +210,8 @@ class ReplayHarness:
                 position_qty=qty,
                 equity=self._equity + realized,
                 recent_decisions=list(recent),
+                research_as_of=as_of,
+                include_briefs=include_briefs,
             )
             if ctx.price <= 0:
                 skipped_no_data += 1
@@ -228,6 +260,21 @@ class ReplayHarness:
                     realized += (ctx.price - entry) * qty
                     qty = 0.0
 
+            # Versions ride the step decision: the eval listing omits the prompt, and
+            # the gate has to see which research row the step actually used.
+            decision_row: dict[str, Any] = {
+                "action": decision.action.value,
+                "conviction": decision.conviction,
+                "rationale": decision.rationale,
+            }
+            if ctx.macro_view is not None:
+                decision_row["macro_view_version"] = ctx.macro_view.version
+                decision_row["macro_view"] = ctx.macro_view.entries
+            if ctx.brief is not None:
+                decision_row["brief_version"] = ctx.brief.version
+                decision_row["brief"] = ctx.brief.entries
+            if desk_info is not None:
+                decision_row["desk"] = desk_info
             await self._repo.add_step(
                 run_id,
                 ts=as_of,
@@ -235,12 +282,7 @@ class ReplayHarness:
                 price=ctx.price,
                 prompt=result.prompt,
                 raw_output=result.raw_output,
-                decision={
-                    "action": decision.action.value,
-                    "conviction": decision.conviction,
-                    "rationale": decision.rationale,
-                    **({"desk": desk_info} if desk_info is not None else {}),
-                },
+                decision=decision_row,
                 latency_ms=int((time.perf_counter() - started) * 1000),
             )
             steps += 1

@@ -18,7 +18,7 @@ from trader.eval.replay import ReplayHarness, ReplayMarketData
 from trader.loop.context import ContextBuilder
 from trader.loop.scheduler import Trigger
 from trader.store.db import Database
-from trader.store.repos import BarsRepo
+from trader.store.repos import BarsRepo, BriefsRepo, MacroViewsRepo
 
 BTC = default_registry().get("BTC/USD")
 SPY = make_symbol("SPY", AssetClass.US_EQUITY)
@@ -146,6 +146,121 @@ async def test_decider_errors_are_recorded_and_do_not_kill_the_run(db: Database)
     assert run["status"] == "done"
     assert run["summary"]["actions"] == {"hold": 1}
     assert run["summary"]["errors"] == 1
+
+
+async def _stamp_research(
+    db: Database, table: str, version: int, column: str, ts: datetime
+) -> None:
+    await db.execute(
+        f"UPDATE {table} SET {column} = %s WHERE version = %s",
+        (ts, version),
+    )
+
+
+async def test_replay_uses_the_research_lane_current_at_each_step(db: Database):
+    """A step sees the Macro View and brief that existed then, never a later compile.
+
+    ``current()`` is today's row. Replay evidence is false if every historical step
+    is scored against that row (or against no research lane at all).
+    """
+    await seed_hourly_bars(db)
+    start = NOW - timedelta(hours=3)
+    views = MacroViewsRepo(db)
+    early_view = await views.add(
+        compiled_by="stub:stub-model",
+        global_thesis="Early thesis [note:1]",
+        sections={"crypto": "Early crypto section [note:1]"},
+        note_ids=[1],
+    )
+    later_view = await views.add(
+        compiled_by="stub:stub-model",
+        global_thesis="Later thesis [note:2]",
+        sections={"crypto": "Later crypto section [note:2]"},
+        note_ids=[2],
+    )
+    briefs = BriefsRepo(db)
+    early_brief = await briefs.add(
+        symbol="BTC/USD",
+        compiled_by="stub:stub-model",
+        thesis="Early brief [note:1]",
+        points=["Early point [note:1]"],
+        note_ids=[1],
+    )
+    later_brief = await briefs.add(
+        symbol="BTC/USD",
+        compiled_by="stub:stub-model",
+        thesis="Later brief [note:2]",
+        points=["Later point [note:2]"],
+        note_ids=[2],
+    )
+    other = await briefs.add(
+        symbol="SPY",
+        compiled_by="stub:stub-model",
+        thesis="Equity brief [note:3]",
+        points=[],
+        note_ids=[3],
+    )
+    # v1/b1 are current at the first step only; v2/b2 compile exactly at the second step.
+    await _stamp_research(
+        db, "macro_views", early_view, "created_at", start - timedelta(minutes=30)
+    )
+    await _stamp_research(db, "macro_views", later_view, "created_at", start + timedelta(hours=1))
+    await _stamp_research(db, "briefs", early_brief, "ts", start - timedelta(minutes=30))
+    await _stamp_research(db, "briefs", later_brief, "ts", start + timedelta(hours=1))
+    await _stamp_research(db, "briefs", other, "ts", start - timedelta(minutes=30))
+
+    harness = ReplayHarness(db, StubLLM([HOLD, HOLD, HOLD]), StubMarketData())
+    run = await harness.run(BTC, start, NOW, label="research-asof")
+    assert run["status"] == "done"
+    steps = await db.fetch_all("SELECT ts, prompt, decision FROM eval_steps ORDER BY ts")
+    assert len(steps) == 3
+
+    first, second, third = steps
+    assert "Early thesis" in first["prompt"] and "Early crypto section" in first["prompt"]
+    assert "Later thesis" not in first["prompt"]
+    assert "Early brief" in first["prompt"] and "Early point" in first["prompt"]
+    assert "Later brief" not in first["prompt"]
+    assert "Equity brief" not in first["prompt"]  # another symbol's brief never leaks
+    assert first["decision"]["macro_view_version"] == early_view
+    assert first["decision"]["brief_version"] == early_brief
+
+    for step in (second, third):
+        assert "Later thesis" in step["prompt"] and "Early thesis" not in step["prompt"]
+        assert "Later brief" in step["prompt"] and "Early brief" not in step["prompt"]
+        assert "Equity brief" not in step["prompt"]
+        assert step["decision"]["macro_view_version"] == later_view
+        assert step["decision"]["brief_version"] == later_brief
+
+
+async def test_replay_can_ablate_briefs_without_dropping_the_macro_view(db: Database):
+    """Briefs are dark on the live path. A baseline replay can omit them; Macro View stays."""
+    await seed_hourly_bars(db)
+    start = NOW - timedelta(hours=1)
+    version = await MacroViewsRepo(db).add(
+        compiled_by="stub:stub-model",
+        global_thesis="Still the macro lane [note:1]",
+        sections={"crypto": "Crypto still here [note:1]"},
+        note_ids=[1],
+    )
+    await _stamp_research(db, "macro_views", version, "created_at", start - timedelta(minutes=5))
+    await BriefsRepo(db).add(
+        symbol="BTC/USD",
+        compiled_by="stub:stub-model",
+        thesis="Should stay out [note:1]",
+        points=[],
+        note_ids=[1],
+    )
+
+    harness = ReplayHarness(db, StubLLM([HOLD]), StubMarketData())
+    run = await harness.run(BTC, start, NOW, label="briefs-off", config={"briefs": False})
+    assert run["status"] == "done"
+    step = await db.fetch_one("SELECT prompt, decision FROM eval_steps")
+    assert step is not None
+    assert "Still the macro lane" in step["prompt"]
+    assert step["decision"]["macro_view_version"] == version
+    assert "Candidate Brief" not in step["prompt"]
+    assert "Should stay out" not in step["prompt"]
+    assert "brief_version" not in step["decision"]
 
 
 # --- surfaces ----------------------------------------------------------------
