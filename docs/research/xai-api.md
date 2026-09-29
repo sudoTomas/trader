@@ -6,7 +6,7 @@ server-side tools (`x_search`, `web_search`) does each credential reach? v1 neve
 this — Hermes used `/responses`, embry0 used `/messages`. `/v1/responses` hosts `x_search`
 regardless, so the sentiment role already lives on `/responses`.
 
-## Status: probe built; live matrix pending the operator's run
+## Status: probed 2026-09-29 (OAuth column complete; API-key column not configured)
 
 OAuth is live on the deployed service, and **the running `trader-api` is the only process
 allowed to hold the rotating refresh lineage** (docs/lessons.md#oauth-refresh-margin: two
@@ -63,33 +63,49 @@ in `llm/xai.py`. Close #7 with the recorded matrix.
 
 ## Findings
 
-Recorded by the operator from `trader xai probe` (date: _pending_). A cell reads
+Recorded from `POST /xai/probe` on the deployed service, 2026-09-29 19:40 UTC (18 cells, 52 s,
+credential resolved to SuperGrok OAuth for every cell). A cell reads
 `<http> <error_class or ok> [cites=n]`.
 
 ### SuperGrok OAuth bearer (`--credential oauth`)
 
 | endpoint | model | none | `x_search` | `web_search` |
 |---|---|---|---|---|
-| `/v1/chat/completions` | `grok-4` | _pending_ | _pending_ | _pending_ |
-| `/v1/chat/completions` | `grok-4.3` | _pending_ | _pending_ | _pending_ |
-| `/v1/chat/completions` | `grok-4-1-fast` | _pending_ | _pending_ | _pending_ |
-| `/v1/responses` | `grok-4` | _pending_ | _pending_ | _pending_ |
-| `/v1/responses` | `grok-4.3` | _pending_ | _pending_ | _pending_ |
-| `/v1/responses` | `grok-4-1-fast` | _pending_ | _pending_ | _pending_ |
+| `/v1/chat/completions` | `grok-4` | 200 ok | 422 bad_request | 422 bad_request |
+| `/v1/chat/completions` | `grok-4.3` | 200 ok | 422 bad_request | 422 bad_request |
+| `/v1/chat/completions` | `grok-4-1-fast` | 200 ok | 422 bad_request | 422 bad_request |
+| `/v1/responses` | `grok-4` | 200 ok | 200 ok cites=0 | 200 ok cites=1 |
+| `/v1/responses` | `grok-4.3` | 200 ok | 200 ok cites=0 | 200 ok cites=1 |
+| `/v1/responses` | `grok-4-1-fast` | 200 ok | 200 ok cites=0 | 200 ok cites=1 |
 
 ### `XAI_API_KEY` (`--credential api_key`)
 
 | endpoint | model | none | `x_search` | `web_search` |
 |---|---|---|---|---|
-| `/v1/chat/completions` | `grok-4` | _pending_ | _pending_ | _pending_ |
-| `/v1/chat/completions` | `grok-4.3` | _pending_ | _pending_ | _pending_ |
-| `/v1/chat/completions` | `grok-4-1-fast` | _pending_ | _pending_ | _pending_ |
-| `/v1/responses` | `grok-4` | _pending_ | _pending_ | _pending_ |
-| `/v1/responses` | `grok-4.3` | _pending_ | _pending_ | _pending_ |
-| `/v1/responses` | `grok-4-1-fast` | _pending_ | _pending_ | _pending_ |
+| `/v1/chat/completions` | `grok-4` | n/a (no `XAI_API_KEY` on the reference box) | n/a (no `XAI_API_KEY` on the reference box) | n/a (no `XAI_API_KEY` on the reference box) |
+| `/v1/chat/completions` | `grok-4.3` | n/a (no `XAI_API_KEY` on the reference box) | n/a (no `XAI_API_KEY` on the reference box) | n/a (no `XAI_API_KEY` on the reference box) |
+| `/v1/chat/completions` | `grok-4-1-fast` | n/a (no `XAI_API_KEY` on the reference box) | n/a (no `XAI_API_KEY` on the reference box) | n/a (no `XAI_API_KEY` on the reference box) |
+| `/v1/responses` | `grok-4` | n/a (no `XAI_API_KEY` on the reference box) | n/a (no `XAI_API_KEY` on the reference box) | n/a (no `XAI_API_KEY` on the reference box) |
+| `/v1/responses` | `grok-4.3` | n/a (no `XAI_API_KEY` on the reference box) | n/a (no `XAI_API_KEY` on the reference box) | n/a (no `XAI_API_KEY` on the reference box) |
+| `/v1/responses` | `grok-4-1-fast` | n/a (no `XAI_API_KEY` on the reference box) | n/a (no `XAI_API_KEY` on the reference box) | n/a (no `XAI_API_KEY` on the reference box) |
 
-Decision after the run: _pending_ (which endpoint `xai_client` targets, and whether the
-research roles can move off `grok-4`).
+Decision after the run (2026-09-29):
+
+- **The OAuth bearer is honored on both endpoints for all three models.** Plain completions
+  work on `/v1/chat/completions`, so `xai_client` stays there for the research roles
+  (`compiler`, `brief`, `critic`); no move to `/v1/responses` is needed for text.
+- **Tools exist only on `/v1/responses`.** Sending `tools` to `/v1/chat/completions` is a 422
+  (`bad_request`) for every model — so sentiment (`x_search`) and any future `web_search`
+  seat must keep targeting `/v1/responses`, as `research/sentiment.py` already does.
+- **`grok-4.3` and `grok-4-1-fast` are entitled** under this OAuth plan on both endpoints and
+  with both tools. `grok-4.3` is the cheapest of the three that answered with search
+  citations, so the crypto-flows seat (#9) can use it as designed; moving the sentiment role
+  off `grok-4` is a separate cost decision (the tool fee dominates, see #22).
+- `x_search` returned zero citations for the trivial one-day "test" prompt; `web_search`
+  returned one. That is the probe's prompt, not an entitlement signal — the sentiment lane's
+  honesty rule (docs/lessons.md#sentiment-no-citations-is-unavailable) stays as is.
+- The `XAI_API_KEY` column is unfilled because the reference box runs OAuth only; the key
+  fallback path is unit-tested but not live-probed.
 
 ## Known facts carried from v1
 
