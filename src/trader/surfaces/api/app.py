@@ -1,8 +1,10 @@
-"""FastAPI surface — thin adapter over the service registry, plus the /mcp mount.
+"""FastAPI surface — thin adapter over the service registry, plus the /mcp mounts.
 
-One process serves both doors: REST routes and the MCP streamable-HTTP app share the same
-registry and DB pool, built once in the lifespan. The mounted MCP sub-app's own lifespan
-never runs under FastAPI, so the parent lifespan drives its session manager explicitly.
+One process serves every door: REST routes and the MCP streamable-HTTP apps share the same
+registry and DB pool, built once in the lifespan. The mounted MCP sub-apps' own lifespans
+never run under FastAPI, so the parent lifespan drives their session managers explicitly.
+Two MCP mounts: ``/mcp`` (everything, operator key) and ``/mcp-capture`` (the four
+research-capture tools; the capture key's only MCP door — #8).
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ from trader.ops.config import Settings, get_settings
 from trader.store.db import Database
 from trader.store.migrate import run_migrations
 from trader.surfaces.api.middleware import ApiKeyMiddleware
-from trader.surfaces.mcp.server import build_mcp
+from trader.surfaces.mcp.server import CAPTURE_CAPABILITIES, build_mcp
 from trader.surfaces.services import VERSION, build_registry
 
 
@@ -52,18 +54,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     evaluator = build_evaluator(db, settings, desk)
     registry = build_registry(db, runner, compiler, mirror, sentiment, evaluator, briefs)
     mcp = build_mcp(registry)
-    # Our ApiKeyMiddleware gates /mcp, and the host is reached over the LAN — the MCP
-    # localhost-only Host allowlist (DNS-rebinding protection) would reject those clients.
+    capture_mcp = build_mcp(registry, only=CAPTURE_CAPABILITIES, name="trader-capture")
+    # Our ApiKeyMiddleware gates both mounts, and the host is reached over the LAN — the
+    # MCP localhost-only Host allowlist (DNS-rebinding protection) would reject those clients.
+    transport_security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
     mcp_app = mcp.streamable_http_app(
-        streamable_http_path="/",
-        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+        streamable_http_path="/", transport_security=transport_security
+    )
+    capture_mcp_app = capture_mcp.streamable_http_app(
+        streamable_http_path="/", transport_security=transport_security
     )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         await db.open()
         await run_migrations(db)  # fails closed: a bad migration refuses boot
-        async with mcp.session_manager.run():
+        async with mcp.session_manager.run(), capture_mcp.session_manager.run():
             if runner is not None:
                 await runner.start()  # background task; never blocks /health
             try:
@@ -78,7 +84,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.registry = registry
     app.state.runner = runner
     app.add_middleware(
-        ApiKeyMiddleware, api_key=settings.api_key, enabled=not settings.auth_disabled
+        ApiKeyMiddleware,
+        api_key=settings.api_key,
+        capture_api_key=settings.capture_api_key,
+        enabled=not settings.auth_disabled,
     )
 
     @app.get("/health")
@@ -249,6 +258,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return await registry.get("eval_run").handler(run_id=run_id)
 
     app.mount("/mcp", mcp_app)
+    app.mount("/mcp-capture", capture_mcp_app)
     return app
 
 

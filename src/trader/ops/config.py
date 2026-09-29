@@ -63,6 +63,18 @@ class Settings(BaseSettings):
             "key with `TRADER_AUTH_DISABLED` unset refuses to boot."
         ),
     )
+    capture_api_key: str = setting(
+        "",
+        category=CREDENTIAL,
+        section="Surfaces / auth",
+        description=(
+            "Capture-scoped second key for external research agents (Hermes). It may only "
+            "submit, list and retire research notes and read the Macro View: on REST those "
+            "four routes (plus `/health`), on MCP the `/mcp-capture/` mount alone. Every other "
+            "route and `/mcp/` answer 403. Blank means no capture key exists; it never "
+            "substitutes for `TRADER_API_KEY`."
+        ),
+    )
     auth_disabled: bool = setting(
         False,
         category=GATE,
