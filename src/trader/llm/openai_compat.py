@@ -6,12 +6,27 @@ the Nemotron and xAI clients are thin factories over this.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import httpx
 
 from trader.llm.base import Completion, LLMError, Usage
 from trader.llm.usage import price_per_million
+
+
+def loads_extra_body(raw: str) -> dict[str, Any]:
+    """Parse a ``TRADER_*_EXTRA_BODY`` value. Empty is ``{}``; else a JSON object."""
+    text = raw.strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError("extra body must be a JSON object") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("extra body must be a JSON object")
+    return parsed
 
 
 class OpenAIChatClient:
@@ -27,10 +42,15 @@ class OpenAIChatClient:
         extra_body: dict[str, Any] | None = None,
         client: httpx.AsyncClient | None = None,
         timeout: float = 120.0,
+        price_in: float = 0.0,
+        price_out: float = 0.0,
     ) -> None:
         self.name = name
         self.model = model
         self._extra_body = extra_body or {}
+        # Zeros mean "use PRICES, else meter $0". Any non-zero side overrides the table.
+        self._price_in = price_in
+        self._price_out = price_out
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self._client = client or httpx.AsyncClient(
             base_url=base_url, headers=headers, timeout=timeout
@@ -76,7 +96,11 @@ class OpenAIChatClient:
         except (KeyError, IndexError, TypeError) as exc:
             raise LLMError(f"{self.name}: malformed completion payload: {exc}") from exc
 
-        in_price, out_price = price_per_million(self.name, self.model)
+        configured = (self._price_in, self._price_out)
+        override = configured if configured != (0.0, 0.0) else None
+        in_price, out_price = price_per_million(
+            self.name, self.model, default=configured, override=override
+        )
         cost = (usage.prompt_tokens * in_price + usage.completion_tokens * out_price) / 1_000_000
         return Completion(
             text=text or "", usage=usage, cost_usd=cost, provider=self.name, model=self.model

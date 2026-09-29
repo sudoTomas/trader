@@ -24,9 +24,17 @@ services:
       dockerfile: infra/Dockerfile
     env_file: ../.env
     environment:
-      # host.docker.internal reaches the Spark's nemotron-vllm on :8009 from inside the container
+      # host.docker.internal reaches the Spark's nemotron-vllm on :8009 from inside the container.
+      # Nemotron preset: decide uses this when TRADER_DECIDE_BASE_URL is unset. The preset
+      # client bakes chat_template_kwargs.enable_thinking=false; do not copy that body onto
+      # a vendor URL (OpenAI rejects the argument).
       TRADER_DATABASE_URL: postgresql://trader:trader@db:5432/trader
       TRADER_NEMOTRON_BASE_URL: http://host.docker.internal:8009/v1
+      # #26 — generic endpoints pass through env_file (../.env). Not set here:
+      # `environment` overrides env_file, and an empty default would blank a key
+      # the operator set only in ../.env. Contract: TRADER_DECIDE_BASE_URL,
+      # TRADER_DECIDE_MODEL, TRADER_DECIDE_API_KEY, TRADER_DECIDE_EXTRA_BODY,
+      # TRADER_DECIDE_PRICE_IN, TRADER_DECIDE_PRICE_OUT, and the TRADER_RESEARCH_* twins.
     ports:
       - "8080:8080"
     depends_on:

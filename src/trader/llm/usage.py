@@ -1,8 +1,10 @@
 """Usage metering: real token counts, priced per model, rolled into ``usage_daily``.
 
 v1 recorded ``None`` locally so budget gates always read $0 — here every completion the
-registry serves is recorded with the provider-reported counts, and unknown models fail
-loud rather than silently metering at zero.
+registry serves is recorded with the provider-reported counts. ``PRICES`` is the
+default table. A configurable override replaces a hit; an unknown model uses the
+configured default (0 unless the caller passes an endpoint price) and is logged
+once. A new model id must never raise mid-loop.
 """
 
 from __future__ import annotations
@@ -41,13 +43,47 @@ X_SEARCH_PER_1K_POSTS_USD = 5.0
 X_SEARCH_PER_1K_PROFILES_USD = 10.0
 
 
-def price_per_million(provider: str, model: str) -> tuple[float, float]:
+#: (provider, model) pairs already warned about. One log per process, not per call.
+_unknown_price_logged: set[tuple[str, str]] = set()
+
+
+def _log_unknown_price_once(provider: str, model: str, price: tuple[float, float]) -> None:
+    key = (provider, model)
+    if key in _unknown_price_logged:
+        return
+    _unknown_price_logged.add(key)
+    log.warning(
+        "llm_price_unknown",
+        provider=provider,
+        model=model,
+        price_in=price[0],
+        price_out=price[1],
+    )
+
+
+def price_per_million(
+    provider: str,
+    model: str,
+    *,
+    default: tuple[float, float] = (0.0, 0.0),
+    override: tuple[float, float] | None = None,
+) -> tuple[float, float]:
+    """USD per 1M (prompt, completion) tokens.
+
+    Table hit, unless ``override`` is set (a non-zero ``TRADER_DECIDE_PRICE_*`` /
+    ``TRADER_RESEARCH_PRICE_*``). A miss logs once and returns ``override`` if
+    given, else ``default`` — never raises.
+    """
+    key = (provider, model)
+    if override is not None:
+        if key not in PRICES:
+            _log_unknown_price_once(provider, model, override)
+        return override
     try:
-        return PRICES[(provider, model)]
+        return PRICES[key]
     except KeyError:
-        raise KeyError(
-            f"no price entry for ({provider}, {model}) — add it to trader.llm.usage.PRICES"
-        ) from None
+        _log_unknown_price_once(provider, model, default)
+        return default
 
 
 def x_search_tool_cost_usd(
