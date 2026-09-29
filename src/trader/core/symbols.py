@@ -102,7 +102,8 @@ class SymbolRegistry:
 
 
 def default_registry() -> SymbolRegistry:
-    """The seed universe: the crypto slice (M1) + the equities slice (SPY)."""
+    """The seed universe: the crypto slice (M1), the equities slice (SPY), and the
+    commodity ETF slice (GLD/SLV/USO)."""
     return SymbolRegistry(
         [
             make_symbol(
@@ -119,6 +120,14 @@ def default_registry() -> SymbolRegistry:
             # own later gate, not a day-one equities feature
             # (see docs/lessons.md#per-symbol-shadow).
             make_symbol("SPY", AssetClass.US_EQUITY, shortable=False),
+            # Commodity ETFs (#4): exposure vehicles, long-only by class default, on the
+            # NYSE calendar. Alpaca spells ETFs like equities on both the data and the
+            # trading API, so the canonical ticker is the provider spelling. A new
+            # ticker shadows via TRADER_SHADOW_SYMBOLS before it may submit
+            # (see docs/lessons.md#per-symbol-shadow).
+            make_symbol("GLD", AssetClass.COMMODITY_ETF),
+            make_symbol("SLV", AssetClass.COMMODITY_ETF),
+            make_symbol("USO", AssetClass.COMMODITY_ETF),
         ]
     )
 

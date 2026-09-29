@@ -10,7 +10,8 @@ Order (deliberate — an audit reader should see the cheap absolute gates first)
 2. paper gate    — a live order is impossible unless TRADER_ALPACA_LIVE_ENABLED=true
 3. kill switches — operator pause / position drift: block EVERYTHING (under drift we do
                    not know the true position, so even an exit could be wrong)
-4. class policy  — crypto long-only, equity shortability, venue session open
+4. class policy  — crypto + commodity ETFs long-only, equity shortability, venue
+                   session open
 5. sizing clamps — max position fraction, Kelly cap, minimum notional floor
 6. throughput    — concurrent positions, trades per day
 7. breakers      — daily loss, weekly drawdown: block OPENS, exits stay managed
@@ -206,6 +207,8 @@ def evaluate_chain(ctx: RiskContext) -> RiskOutcome:
     if opening_short:
         if ctx.symbol.asset_class is AssetClass.CRYPTO:
             return deny("class_policy", "crypto is long-only; a sell may only close a long")
+        # Commodity ETFs deny here by class default (shortable=False); equities deny
+        # here too until shortability earns its own gate.
         if not ctx.symbol.shortable:
             return deny("class_policy", f"{ctx.symbol.ticker} is not shortable")
     allow("class_policy", notional)
