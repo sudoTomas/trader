@@ -309,8 +309,8 @@ def build_runner(db: Database, replies: list[str | Exception], **kwargs) -> Loop
         db=db,
         market_data=kwargs.pop("market_data", StubMarketData()),
         llm=StubLLM(replies),
-        guard=RiskGuard(db, LIMITS),
-        symbols=[BTC],
+        guard=kwargs.pop("guard", RiskGuard(db, LIMITS)),
+        symbols=kwargs.pop("symbols", [BTC]),
         shadow=kwargs.pop("shadow", True),
         equity=100_000.0,
         **kwargs,
@@ -567,3 +567,50 @@ async def test_a_hold_tick_trips_daily_loss_when_equity_bleeds(db: Database):
     state = await BreakerStore(db).load()
     assert state.halted_reason == DAILY_LOSS
     assert state.day_start_equity == pytest.approx(100_000.0)
+
+
+# --- trades today (#12) -----------------------------------------------------
+
+
+def _capped_guard(db: Database, max_trades_per_day: int) -> RiskGuard:
+    return RiskGuard(
+        db,
+        RiskLimits(
+            max_position_frac=0.5,
+            approval_notional_usd=100_000.0,
+            max_trades_per_day=max_trades_per_day,
+        ),
+    )
+
+
+async def test_daily_trade_cap_counts_orders_placed_today(db: Database):
+    from trader.store.repos import OrdersRepo
+
+    await OrdersRepo(db).insert(
+        client_order_id="cap-today",
+        symbol="BTC/USD",
+        asset_class="crypto",
+        side="buy",
+        notional=25,
+    )
+    now = datetime.now(tz=UTC)
+    runner = build_runner(db, [OPEN], guard=_capped_guard(db, 1))
+    results = await runner.tick(now, force=True)
+
+    assert results[0].status == DENIED
+    row = await Journal(db).get(results[0].decision_id)
+    assert row["risk_verdicts"][-1]["check"] == "max_trades_per_day"
+
+
+async def test_orders_from_the_previous_session_do_not_spend_the_cap(db: Database):
+    now = datetime.now(tz=UTC)
+    await db.execute(
+        """
+        INSERT INTO orders (client_order_id, symbol, asset_class, side, notional, created_at)
+        VALUES ('cap-yesterday', 'BTC/USD', 'crypto', 'buy', 25, %s)
+        """,
+        (now - timedelta(days=1),),
+    )
+    runner = build_runner(db, [OPEN], guard=_capped_guard(db, 1))
+    results = await runner.tick(now, force=True)
+    assert results[0].status == SHADOW

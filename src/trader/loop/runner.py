@@ -25,8 +25,10 @@ import asyncio
 import math
 import time
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from datetime import time as dt_time
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import structlog
 
@@ -57,6 +59,19 @@ MAX_CRASH_BACKOFF_SECONDS = 300.0
 # next scheduled tick (default 60s) fetches a fresh snapshot.
 EQUITY_CACHE_SECONDS = 15.0
 EQUITY_FALLBACK = "equity_fallback"
+
+
+def _session_window(symbol: Symbol, now: datetime) -> tuple[datetime, datetime]:
+    """``[start, end)`` covering the venue session day that contains ``now``.
+
+    Crypto sessions are UTC dates; NYSE sessions are America/New_York dates.
+    ``session_day`` never crosses local midnight, so midnight-to-midnight is the
+    whole daily trade window.
+    """
+    day = symbol.market_calendar.session_day(now)
+    tz = ZoneInfo("America/New_York") if symbol.market_calendar.name == "nyse" else UTC
+    start = datetime.combine(day, dt_time.min, tzinfo=tz)
+    return start, start + timedelta(days=1)
 
 
 @dataclass
@@ -308,6 +323,19 @@ class LoopRunner:
         log.warning("equity_fallback", source=source, used=used, error=str(exc))
         return used
 
+    async def _trades_today(self, symbol: Symbol, now: datetime) -> int:
+        """Orders already recorded in this symbol's session day.
+
+        Every order row counts, including rejects: a failed submit still consumed
+        an attempt, and the cap is there to limit churn.
+        """
+        start, end = _session_window(symbol, now)
+        row = await self.db.fetch_one(
+            "SELECT count(*) AS n FROM orders WHERE created_at >= %s AND created_at < %s",
+            (start, end),
+        )
+        return int(row["n"]) if row else 0
+
     async def _observe_breakers(self, now: datetime, equity: float) -> None:
         """Roll the session and trip loss breakers off this tick's equity.
 
@@ -463,7 +491,7 @@ class LoopRunner:
                 account=AccountState(
                     equity=equity,
                     positions=positions,
-                    trades_today=0,  # real count arrives with the executor (EAI-176)
+                    trades_today=await self._trades_today(symbol, now),
                 ),
                 now=now,
                 realized_vol=ctx.primary_vol,
