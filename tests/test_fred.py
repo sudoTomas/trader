@@ -7,6 +7,7 @@ The client is exercised with a mocked transport. Context and replay tests stub
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
+from types import SimpleNamespace
 
 import httpx
 
@@ -20,6 +21,7 @@ from trader.eval.replay import ReplayHarness
 from trader.loop.context import ContextBuilder
 from trader.ops.config import Settings
 from trader.store.db import Database
+from trader.surfaces.services import build_registry
 
 BTC = default_registry().get("BTC/USD")
 
@@ -206,3 +208,136 @@ class _HoldLLM:
             provider="stub",
             model="stub",
         )
+
+
+# --- surfaces ---------------------------------------------------------------
+
+
+def _observations_handler(seen: list[dict[str, str]] | None = None):
+    """A FRED-shaped reply: desc order, one missing print, no network."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if seen is not None:
+            seen.append(dict(request.url.params))
+        return httpx.Response(
+            200,
+            json={
+                "observations": [
+                    {"date": "2026-08-12", "value": "18.2"},
+                    {"date": "2026-08-11", "value": "."},
+                    {"date": "2026-08-10", "value": "16.0"},
+                ]
+            },
+        )
+
+    return handler
+
+
+def _runner_with(fred) -> SimpleNamespace:
+    return SimpleNamespace(market_data=SimpleNamespace(fred=fred))
+
+
+async def test_fred_query_returns_the_latest_prints_newest_first(db: Database):
+    """The door reads the same client the decide context uses; nothing is stored."""
+    seen: list[dict[str, str]] = []
+    fred = Fred("key", client=mock_client(_observations_handler(seen)))
+    reg = build_registry(db, runner=_runner_with(fred))
+
+    out = await reg.get("fred").handler(series="VIXCLS", limit=3)
+    assert out == {
+        "series": "VIXCLS",
+        "observations": [
+            {"date": "2026-08-12", "value": 18.2},
+            {"date": "2026-08-10", "value": 16.0},
+        ],
+    }
+    assert seen[0]["series_id"] == "VIXCLS"
+    assert seen[0]["limit"] == "3"
+    assert reg.get("fred").kind == "query"
+    assert reg.get("fred").tool_name == "get_fred"
+
+
+async def test_fred_query_is_unavailable_without_a_key_or_when_the_provider_fails(
+    db: Database, monkeypatch
+):
+    from trader.ops import config
+
+    monkeypatch.setattr(config, "_settings", Settings(auth_disabled=True))
+    out = await build_registry(db).get("fred").handler()
+    assert out["status"] == "unavailable"
+    assert "FRED_API_KEY" in out["reason"]
+
+    def boom(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, text="fred is down")
+
+    fred = Fred("key", client=mock_client(boom))
+    out = await build_registry(db, runner=_runner_with(fred)).get("fred").handler(series="DGS10")
+    assert out["status"] == "unavailable"
+    assert "503" in out["reason"]
+
+
+def test_fred_surfaced_on_api_mcp_and_cli(clean_db: None, monkeypatch):
+    """One capability, three doors: the same observations through REST, MCP, and CLI.
+    Without a loop the door builds its own client from FRED_API_KEY, once."""
+    import asyncio
+    import json
+
+    from fastapi.testclient import TestClient
+    from mcp.client import Client
+    from typer.testing import CliRunner
+
+    import trader.surfaces.cli.main as cli
+    from trader.data import fred as fred_mod
+    from trader.ops import config
+    from trader.surfaces.api.app import create_app
+    from trader.surfaces.mcp.server import build_mcp
+
+    settings = Settings(auth_disabled=True, fred_api_key="fred-key")
+    monkeypatch.setattr(config, "_settings", settings)
+    real_fred = fred_mod.Fred
+    built: list[str] = []
+
+    def fake_fred(api_key: str, **kwargs):
+        built.append(api_key)
+        return real_fred(api_key, client=mock_client(_observations_handler()))
+
+    monkeypatch.setattr(fred_mod, "Fred", fake_fred)
+    expected = {
+        "series": "VIXCLS",
+        "observations": [
+            {"date": "2026-08-12", "value": 18.2},
+            {"date": "2026-08-10", "value": 16.0},
+        ],
+    }
+
+    async def via_registry_and_mcp() -> tuple[dict, dict]:
+        database = Database(min_size=1, max_size=1)
+        await database.open()
+        try:
+            registry = build_registry(database)
+            direct = await registry.get("fred").handler(series="VIXCLS", limit=2)
+            again = await registry.get("fred").handler(series="VIXCLS", limit=2)
+            assert again == direct
+            async with Client(build_mcp(registry)) as mcp_client:
+                tools = await mcp_client.list_tools()
+                assert "get_fred" in {t.name for t in tools.tools}
+                call = await mcp_client.call_tool("get_fred", {"series": "VIXCLS", "limit": 2})
+            payload = call.structured_content
+            via_mcp = payload if "series" in payload else payload["result"]
+            return direct, via_mcp
+        finally:
+            await database.close()
+
+    via_registry, via_mcp = asyncio.run(via_registry_and_mcp())
+    assert built == ["fred-key"]  # one client per registry, shared TTL cache
+
+    with TestClient(create_app(settings)) as tc:
+        via_api = tc.get("/fred", params={"series": "VIXCLS", "limit": 2}).json()
+        assert tc.get("/fred").json()["series"] == "VIXCLS"  # defaults: VIXCLS, 10
+
+    monkeypatch.setattr(cli, "_client", lambda: TestClient(create_app(settings)))
+    result = CliRunner().invoke(cli.app, ["fred", "latest", "--series", "VIXCLS", "--limit", "2"])
+    assert result.exit_code == 0, result.output
+    via_cli = json.loads(result.output)
+
+    assert via_registry == via_api == via_mcp == via_cli == expected

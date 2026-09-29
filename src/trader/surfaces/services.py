@@ -657,6 +657,48 @@ def build_registry(
             return {"status": "unavailable", "reason": "no xAI credential in this build"}
         return await sentiment.get_x_sentiment(default_registry().get(symbol))
 
+    # --- fred macro series ---------------------------------------------------
+
+    fred_from_settings: Any | None = None
+
+    def _fred_client() -> Any | None:
+        """The loop's client when this build runs one (its TTL cache is shared with the
+        decide context); otherwise one built from FRED_API_KEY on first use; None
+        without a key. Fetch-on-use either way — nothing is stored."""
+        nonlocal fred_from_settings
+        client = getattr(getattr(runner, "market_data", None), "fred", None)
+        if client is not None:
+            return client
+        if fred_from_settings is None:
+            from trader.data.fred import Fred
+            from trader.ops.config import get_settings
+
+            key = get_settings().fred_api_key
+            if key:
+                fred_from_settings = Fred(key)
+        return fred_from_settings
+
+    @reg.register(
+        "fred",
+        kind="query",
+        summary="Latest observations of one FRED macro series (VIXCLS by default),"
+        " newest first — the prints the decide context sees.",
+    )
+    async def fred(series: str = "VIXCLS", limit: int = 10) -> dict[str, Any]:
+        client = _fred_client()
+        if client is None:
+            return {"status": "unavailable", "reason": "FRED_API_KEY is not configured"}
+        try:
+            rows = await client.get_series(series, min(max(int(limit), 1), 100))
+        except Exception as exc:  # noqa: BLE001 - a read door reports, never raises
+            return {"status": "unavailable", "reason": str(exc)}
+        return {
+            "series": series,
+            "observations": [
+                {"date": obs_date.isoformat(), "value": value} for obs_date, value in reversed(rows)
+            ],
+        }
+
     # --- replay eval (M5) ----------------------------------------------------
 
     def _run_out(row: dict[str, Any]) -> dict[str, Any]:

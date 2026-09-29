@@ -254,6 +254,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def fetch_x_sentiment(symbol: str = Query()) -> dict:
         return await registry.get("fetch_x_sentiment").handler(symbol=symbol)
 
+    @app.get("/fred")
+    async def fred(
+        series: str = Query(default="VIXCLS", description="FRED series id."),
+        limit: int = Query(default=10, ge=1, le=100),
+    ) -> dict:
+        return await registry.get("fred").handler(series=series, limit=limit)
+
     @app.post("/eval/replay")
     async def run_replay_eval(
         symbol: str = Query(),

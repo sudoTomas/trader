@@ -382,6 +382,19 @@ def sentiment_fetch(symbol: str = typer.Argument(..., help="Symbol, e.g. ETH/USD
     typer.echo(json.dumps(_post("/research/sentiment/fetch", params={"symbol": symbol}), indent=2))
 
 
+fred_app = typer.Typer(help="FRED macro series (VIX etc.) — the prints the decide context sees.")
+app.add_typer(fred_app, name="fred")
+
+
+@fred_app.command("latest")
+def fred_latest(
+    series: str = typer.Option("VIXCLS", help="FRED series id, e.g. VIXCLS, DGS10."),
+    limit: int = typer.Option(10, help="How many observations, newest first."),
+) -> None:
+    """Print the latest observations of one FRED series (unavailable without FRED_API_KEY)."""
+    typer.echo(json.dumps(_get("/fred", params={"series": series, "limit": limit}), indent=2))
+
+
 @app.command()
 def doctor(
     json_output: bool = typer.Option(False, "--json", help="Machine-readable report."),
