@@ -45,7 +45,7 @@ code and `configuration.md` are current.
 | [`research/2026-09-04-robinhood-agentic-trading.md`](research/2026-09-04-robinhood-agentic-trading.md) | What Robinhood's agentic trading with MCP actually is, and whether it fits as a broker. |
 | [`research/2026-09-08-twelve-data-vs-alpaca.md`](research/2026-09-08-twelve-data-vs-alpaca.md) | Which market-data backbone to build on; why Alpaca is primary and Twelve Data a fallback. |
 | [`research/2026-09-16-grok-bots-macro-team.md`](research/2026-09-16-grok-bots-macro-team.md) | Grok "bots" as a macro research team: product truth and the integration design that was accepted. |
-| [`research/xai-api.md`](research/xai-api.md) | Which xAI endpoints a SuperGrok OAuth bearer can reach, and where `x_search` lives. |
+| [`research/xai-api.md`](research/xai-api.md) | Which xAI endpoints a SuperGrok OAuth bearer can reach, and where `x_search` lives; how to fill the matrix with `trader xai probe` (in-service, operator-only). |
 
 ## Reports
 
