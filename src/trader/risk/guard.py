@@ -87,6 +87,7 @@ class RiskContext:
     realized_vol: float | None = None  # measured locally; None → no vol scaling
     live: bool = False  # caller is asking to route to a LIVE broker
     live_enabled: bool = False  # TRADER_ALPACA_LIVE_ENABLED
+    human_approved: bool = False  # a human already cleared the park band; do not re-clamp it
 
     @property
     def position_qty(self) -> float:
@@ -283,6 +284,15 @@ def evaluate_chain(ctx: RiskContext) -> RiskOutcome:
     # --- 8. approval threshold ----------------------------------------------
     # Unattended opens clamp to the cap. Parking is opt-in, and only above that cap.
     # Exits returned at the reducing-position check and never reach this step.
+    # A human approval clears THIS step only — sizing, breakers, and class policy
+    # still bind, so redemption cannot trade a size the chain would not allow.
+    if ctx.human_approved:
+        allow(
+            "approval_threshold",
+            notional,
+            "human-approved; unattended cap already cleared",
+        )
+        return RiskOutcome(True, _resize(ctx.intent, notional, ctx.price), verdicts)
     threshold = ctx.limits.approval_notional_usd
     if not _finite_positive(threshold):
         return deny("approval_threshold", "approval cap is missing or not a positive finite number")
@@ -335,6 +345,10 @@ class RiskGuard:
         self.breakers = BreakerStore(db)
         self.approvals = ApprovalService(db)
 
+    @property
+    def limits(self) -> RiskLimits:
+        return self._limits
+
     async def evaluate(
         self,
         intent: OrderIntent,
@@ -348,6 +362,7 @@ class RiskGuard:
         actor: str = "loop",
         decision_id: int | None = None,
         shadow: bool = False,
+        human_approved: bool = False,
     ) -> RiskOutcome:
         """Run the chain. Returns the (possibly clamped) intent only when approved.
 
@@ -373,6 +388,7 @@ class RiskGuard:
                 realized_vol=realized_vol,
                 live=live,
                 live_enabled=self._live_enabled,
+                human_approved=human_approved,
             )
         )
 

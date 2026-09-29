@@ -138,6 +138,80 @@ def build_registry(
         rows = await ApprovalService(db).pending()
         return [{**r, "created_at": r["created_at"].isoformat()} for r in rows]
 
+    async def _redeem_approved(approval_id: int, resolved_by: str) -> dict[str, Any]:
+        """Fresh price, TTL, tolerance, then the guard. The executor sees only executable()."""
+        import math
+        from datetime import UTC, datetime
+
+        from trader.core.symbols import default_registry
+        from trader.data.base import MarketDataError
+        from trader.risk.approvals import payload_to_intent
+        from trader.risk.guard import AccountState, RiskDenied
+        from trader.store.repos import ApprovalsRepo, PositionsRepo
+
+        if runner is None or getattr(runner, "executor", None) is None:
+            return {"redeemed": False, "reason": "no executor in this build"}
+        guard = getattr(runner, "guard", None)
+        market_data = getattr(runner, "market_data", None)
+        if guard is None or market_data is None:
+            return {"redeemed": False, "reason": "no risk guard in this build"}
+        equity = getattr(runner, "equity", None)
+        if not isinstance(equity, (int, float)) or isinstance(equity, bool) or equity <= 0:
+            return {"redeemed": False, "reason": "account equity unavailable"}
+
+        assert db is not None
+        row = await ApprovalsRepo(db).get(approval_id)
+        if row is None:
+            return {"redeemed": False, "reason": "approval not found"}
+        try:
+            parked = payload_to_intent(row["order_intent"])
+            symbol = default_registry().get(parked.symbol)
+        except (KeyError, TypeError, ValueError) as exc:
+            return {"redeemed": False, "reason": f"unreadable parked intent: {exc}"}
+
+        try:
+            quote = await market_data.get_latest_quote(symbol)
+            price = float(quote.mid)
+        except (MarketDataError, AttributeError, TypeError, ValueError) as exc:
+            return {"redeemed": False, "reason": f"no fresh price: {exc}"}
+        if not math.isfinite(price) or price <= 0:
+            return {"redeemed": False, "reason": "no fresh price"}
+
+        limits = guard.limits
+        service_redeem = await guard.approvals.redeem(
+            approval_id,
+            current_price=price,
+            ttl_seconds=limits.approval_ttl_seconds,
+            price_tolerance_frac=limits.approval_price_tolerance_frac,
+            now=datetime.now(tz=UTC),
+        )
+        if not service_redeem.ok or service_redeem.intent is None:
+            return {"redeemed": False, "reason": service_redeem.reason or "not redeemable"}
+
+        positions = {r["symbol"]: float(r["qty"]) for r in await PositionsRepo(db).all()}
+        outcome = await guard.evaluate(
+            service_redeem.intent,
+            symbol,
+            price=price,
+            account=AccountState(equity=float(equity), positions=positions, trades_today=0),
+            now=datetime.now(tz=UTC),
+            live=False,
+            actor=resolved_by,
+            decision_id=row["decision_id"],
+            shadow=False,
+            human_approved=True,
+        )
+        if not outcome.approved:
+            return {"redeemed": False, "reason": outcome.reason or "risk chain denied the intent"}
+        try:
+            # execute() calls outcome.executable() — the only door to the broker.
+            execution = await runner.executor.execute(
+                outcome, symbol, price=price, decision_id=row["decision_id"]
+            )
+        except RiskDenied as exc:
+            return {"redeemed": False, "reason": str(exc)}
+        return {"redeemed": bool(execution.submitted), "reason": execution.reason or ""}
+
     @reg.register(
         "resolve_approval",
         kind="command",
@@ -153,18 +227,18 @@ def build_registry(
             approval_id, approved=approved, resolved_by=resolved_by
         )
         status = ("approved" if approved else "denied") if resolved else "not pending"
-        await _audit_command(
-            "resolve_approval",
-            {"approval_id": approval_id, "status": status, "resolved_by": resolved_by},
-        )
         out: dict[str, Any] = {"resolved": resolved, "id": approval_id, "status": status}
         if resolved and approved:
-            # Honesty over affordance: nothing redeems approved rows into orders yet
-            # (ApprovalService.redeem has no callers — tracked separately).
-            out["note"] = (
-                "approved in the queue, but approval-to-execution is NOT wired yet —"
-                " this does not place the order"
-            )
+            out.update(await _redeem_approved(approval_id, resolved_by))
+        payload: dict[str, Any] = {
+            "approval_id": approval_id,
+            "status": status,
+            "resolved_by": resolved_by,
+        }
+        if "redeemed" in out:
+            payload["redeemed"] = out["redeemed"]
+            payload["reason"] = out.get("reason", "")
+        await _audit_command("resolve_approval", payload)
         return out
 
     # --- decide loop ------------------------------------------------------

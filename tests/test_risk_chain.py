@@ -416,6 +416,45 @@ def test_approved_open_never_exceeds_the_approval_cap():
             assert outcome.executable().notional <= requested + 1e-9
 
 
+def test_human_approved_open_is_not_reclamped_to_the_cap():
+    """Redemption clears the park band. It does not shrink the size the human approved."""
+    limits = replace(APPROVAL_LIMITS, park_above_usd=4_000.0, max_position_frac=0.50)
+    outcome = evaluate_chain(
+        ctx(
+            limits=limits,
+            human_approved=True,
+            intent=OrderIntent("BTC/USD", Side.BUY, notional=5_000.0),
+        )
+    )
+    assert outcome.approved
+    assert not outcome.approval_required
+    assert outcome.executable().notional == pytest.approx(5_000.0)
+
+
+def test_human_approved_open_still_clamps_to_the_position_cap():
+    outcome = evaluate_chain(
+        ctx(
+            limits=replace(APPROVAL_LIMITS, park_above_usd=4_000.0),
+            human_approved=True,
+            intent=OrderIntent("BTC/USD", Side.BUY, notional=50_000.0),
+        )
+    )
+    assert outcome.approved
+    assert outcome.executable().notional == pytest.approx(5_000.0)
+
+
+def test_human_approved_does_not_bypass_a_breaker():
+    outcome = evaluate_chain(
+        ctx(
+            limits=replace(APPROVAL_LIMITS, park_above_usd=4_000.0),
+            human_approved=True,
+            state=RiskState(halted_reason="daily_loss"),
+            intent=OrderIntent("BTC/USD", Side.BUY, notional=5_000.0),
+        )
+    )
+    assert denied_by(outcome) == "breaker"
+
+
 def test_park_band_must_sit_above_the_cap():
     with pytest.raises(ValueError):
         replace(APPROVAL_LIMITS, park_above_usd=1_000.0)
