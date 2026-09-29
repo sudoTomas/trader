@@ -652,3 +652,68 @@ async def test_rejected_submit_still_links_the_order_to_its_decision(db: Databas
     order = await db.fetch_one("SELECT decision_id FROM orders")
     assert order["decision_id"] == results[0].decision_id
     assert (await Journal(db).get(results[0].decision_id))["status"] == ERROR
+
+
+# --- marks: vol and unrealized pnl (#15) ------------------------------------
+
+
+def _capturing_scheduler():
+    seen: dict[str, Mark] = {}
+    scheduler = SignalScheduler([BTC], TriggerConfig(price_move_pct=9.0))
+
+    def capture(now, marks):
+        seen.update(marks)
+        return SignalScheduler.evaluate(scheduler, now, marks)
+
+    scheduler.evaluate = capture  # type: ignore[method-assign]
+    return scheduler, seen
+
+
+async def test_marks_carry_realized_vol_and_unrealized_pnl(db: Database):
+    from trader.data.indicators import realized_vol
+    from trader.store.repos import PositionsRepo
+
+    series = [100.0 + i for i in range(60)]
+    await PositionsRepo(db).upsert(
+        symbol="BTC/USD", asset_class="crypto", qty=1.0, avg_entry_price=150.0
+    )
+    scheduler, seen = _capturing_scheduler()
+    runner = build_runner(db, [HOLD], market_data=StubMarketData(series), scheduler=scheduler)
+    results = await runner.tick(NOW)
+
+    mark = seen["BTC/USD"]
+    assert mark.realized_vol == pytest.approx(realized_vol(bars(series), 20))
+    assert mark.unrealized_pnl_frac == pytest.approx((159.0 - 150.0) / 150.0)
+    assert POSITION_RISK in results[0].triggers
+
+
+async def test_short_unrealized_pnl_is_signed_against_the_position(db: Database):
+    from trader.store.repos import PositionsRepo
+
+    await PositionsRepo(db).upsert(
+        symbol="BTC/USD", asset_class="crypto", qty=-2.0, avg_entry_price=100.0
+    )
+    scheduler, seen = _capturing_scheduler()
+    runner = build_runner(db, [HOLD], market_data=StubMarketData([110.0] * 30), scheduler=scheduler)
+    results = await runner.tick(NOW)
+
+    # Price above entry: a short is losing, so the fraction is negative.
+    assert seen["BTC/USD"].unrealized_pnl_frac == pytest.approx(-0.10)
+    assert POSITION_RISK in results[0].triggers
+
+
+async def test_mark_vol_stays_empty_when_bars_are_unavailable(db: Database):
+    class BarsDown(StubMarketData):
+        async def get_bars(self, symbol, interval, lookback):
+            from trader.data.base import MarketDataError
+
+            raise MarketDataError("bars down")
+
+    scheduler, seen = _capturing_scheduler()
+    runner = build_runner(db, [HOLD], market_data=BarsDown(), scheduler=scheduler)
+    results = await runner.tick(NOW)
+
+    assert results[0].status == SHADOW  # the quote still decides
+    assert seen["BTC/USD"].price == pytest.approx(159.0)
+    assert seen["BTC/USD"].realized_vol is None
+    assert seen["BTC/USD"].unrealized_pnl_frac is None

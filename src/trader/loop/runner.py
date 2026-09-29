@@ -36,7 +36,12 @@ from trader.brokers.base import BrokerError
 from trader.core.symbols import Symbol
 from trader.data.base import MarketData, MarketDataError
 from trader.llm.registry import LLMRegistry
-from trader.loop.context import ContextBuilder
+from trader.loop.context import (
+    BAR_LOOKBACK,
+    DEFAULT_INTERVALS,
+    ContextBuilder,
+    compute_indicators,
+)
 from trader.loop.decider import Decider, DeciderError
 from trader.loop.journal import (
     DENIED,
@@ -60,6 +65,14 @@ MAX_CRASH_BACKOFF_SECONDS = 300.0
 # next scheduled tick (default 60s) fetches a fresh snapshot.
 EQUITY_CACHE_SECONDS = 15.0
 EQUITY_FALLBACK = "equity_fallback"
+
+
+def _unrealized_pnl_frac(price: float, qty: float, avg_entry: float | None) -> float | None:
+    """Signed move vs entry. Longs gain when price rises; shorts gain when it falls."""
+    if price <= 0 or qty == 0 or avg_entry is None or avg_entry <= 0:
+        return None
+    move = (price - avg_entry) / avg_entry
+    return move if qty > 0 else -move
 
 
 def _session_window(symbol: Symbol, now: datetime) -> tuple[datetime, datetime]:
@@ -249,9 +262,16 @@ class LoopRunner:
             # Holds never reach RiskGuard.evaluate, so the session would otherwise
             # stay frozen until the model wants to trade (#24).
             await self._observe_breakers(now, equity)
-            positions = {row["symbol"]: float(row["qty"]) for row in await self._positions.all()}
+            rows = await self._positions.all()
+            positions = {row["symbol"]: float(row["qty"]) for row in rows}
+            entries = {
+                row["symbol"]: (
+                    float(row["avg_entry_price"]) if row["avg_entry_price"] is not None else None
+                )
+                for row in rows
+            }
             await self._poll_sentiment(now)
-            marks = await self._marks(now, positions)
+            marks = await self._marks(now, positions, entries)
             assert self.scheduler is not None
             if force:
                 triggers = [
@@ -380,7 +400,25 @@ class LoopRunner:
         row = await self._sentiment_repo.latest(ticker)
         return float(row["score"]) if row is not None else None
 
-    async def _marks(self, now: datetime, positions: dict[str, float]) -> dict[str, Mark]:
+    async def _mark_vol(self, symbol: Symbol) -> float | None:
+        """Per-bar realized vol on the same interval the decide context uses.
+
+        A bars outage leaves vol unset so the scheduler simply doesn't see a spike;
+        the quote mark still lands.
+        """
+        try:
+            fetched = await self.market_data.get_bars(symbol, DEFAULT_INTERVALS[0], BAR_LOOKBACK)
+        except MarketDataError as exc:
+            log.warning("mark_vol_unavailable", symbol=symbol.ticker, error=str(exc))
+            return None
+        return compute_indicators(fetched).realized_vol_20
+
+    async def _marks(
+        self,
+        now: datetime,
+        positions: dict[str, float],
+        entries: dict[str, float | None],
+    ) -> dict[str, Mark]:
         """One cheap quote per symbol, for trigger evaluation.
 
         A failed quote still yields a zero-price mark rather than dropping the symbol: the
@@ -395,14 +433,22 @@ class LoopRunner:
             # Sentiment reaches the scheduler only for HELD symbols (EAI-180): the swing
             # trigger exists to re-examine an open position, not to chase the feed.
             score = None
-            if positions.get(symbol.ticker):
+            qty = positions.get(symbol.ticker, 0.0)
+            if qty:
                 score = await self._latest_sentiment(symbol.ticker)
+            vol = await self._mark_vol(symbol)
             try:
                 quote = await self.market_data.get_latest_quote(symbol)
-                marks[symbol.ticker] = Mark(price=quote.mid, sentiment_score=score)
+                price = quote.mid
             except MarketDataError as exc:
                 log.warning("mark_unavailable", symbol=symbol.ticker, error=str(exc))
-                marks[symbol.ticker] = Mark(price=0.0, sentiment_score=score)
+                price = 0.0
+            marks[symbol.ticker] = Mark(
+                price=price,
+                realized_vol=vol,
+                unrealized_pnl_frac=_unrealized_pnl_frac(price, qty, entries.get(symbol.ticker)),
+                sentiment_score=score,
+            )
         return marks
 
     async def _wakeup(
