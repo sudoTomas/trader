@@ -10,6 +10,7 @@ folder holds everything behind it.
 | [`architecture.md`](architecture.md) | The design: prime directive, the money path, the research desk, the LLM and data layers, the three surfaces, safety invariants, and what was deliberately not carried over from v1. Read it before non-trivial work. |
 | [`quickstart.md`](quickstart.md) | The shadow-only profile in under ten minutes, with the expected output of every step and a table of the common `trader doctor` misses. |
 | [`configuration.md`](configuration.md) | Every environment variable, generated from the `Settings` model by `scripts/gen_config_reference.py` and checked in CI. Do not edit by hand. |
+| [`lessons.md`](lessons.md) | The hardened lessons behind the code, one slug per lesson: what broke, what we do now, and where the rule lives. Comments in `src/` and `tests/` cite these slugs. |
 | [`tracker.md`](tracker.md) | Map of remaining work: which GitHub issues are open, closed, or held, and in what order they should land. |
 
 ## Runbooks (operator procedures)

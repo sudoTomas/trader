@@ -15,7 +15,7 @@ docs have one home. None of it is an invariant of the codebase.
 | Repo checkout | `~/repos/trader` (`main`) | `TRADER_REPO`, `%h/repos/trader` in the unit templates |
 | `uv` | Homebrew on Linux: `/home/linuxbrew/.linuxbrew/bin/uv` | `%h/.local/bin/uv` (the installer default) or `PATH` |
 | Host `psql` | not installed — query through `docker exec` into the compose db | `scripts/desk-watch.sh` handles both |
-| v1 archive | `~/repos/trading-agent`, frozen, read-only | not published; cited as `v1:<path>` in comments |
+| v1 archive | `~/repos/trading-agent`, frozen, read-only | not published; its lessons are catalogued in `docs/lessons.md` |
 | Box rules file | `~/SPARK_RESOURCES.md` (shared GPU, memory budget, clock cap) | this page |
 
 ## The decide model: `nemotron-vllm`
@@ -27,7 +27,8 @@ Nemotron preset's default, `TRADER_NEMOTRON_BASE_URL=http://localhost:8009/v1`, 
 this box `TRADER_DECIDE_*` stays unset.
 
 - The preset client bakes `chat_template_kwargs: {enable_thinking: false}` into every
-  request; without it this endpoint collapses to ~0.35 tok/s (v1:EAI-128). That flag is
+  request; without it this endpoint collapses to ~0.35 tok/s
+  (`docs/lessons.md#nemotron-thinking-off`). That flag is
   a code invariant of the preset, not a box fact.
 - It is a shared 4-sequence instance. Research roles (brief, compiler, critic,
   sentiment) run on Grok partly so the decide loop never queues behind them.

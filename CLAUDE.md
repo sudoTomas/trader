@@ -51,8 +51,10 @@ GPU units) are that box's, not invariants. `gh` is the tracker CLI.
 
 ## Referencing v1
 
-v1 is a preserved archive of hardened lessons (private, outside this repo) — cite it as
-`v1:<path>`, don't port its shape. Useful references:
+v1 is a preserved archive of hardened lessons (private, outside this repo). Those lessons
+are catalogued in **`docs/lessons.md`**, one slug per lesson; a comment that leans on one
+cites it as `see docs/lessons.md#<slug>` rather than a ticket id or an archive path. Don't
+port v1's shape. Useful references inside the archive:
 `apps/agent/src/trading_agent/engine/sleeve.py` (risk limits), `engine/signal_monitor.py`
 (triggers), `adapters/broker/{ibkr,reconcile}.py` (future IBKR add-back), migration 017
 (journal replay columns).
@@ -60,5 +62,5 @@ v1 is a preserved archive of hardened lessons (private, outside this repo) — c
 ## Issue tracker
 
 GitHub: [sudoTomas/trader/issues](https://github.com/sudoTomas/trader/issues).
-Map of remaining work: [`docs/tracker.md`](docs/tracker.md). Historical `EAI-*` in
-code is provenance from the Linear era, not the tracker.
+Map of remaining work: [`docs/tracker.md`](docs/tracker.md). Historical `EAI-*` ids in
+the research notes and runbooks are provenance from the Linear era, not the tracker.

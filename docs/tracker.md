@@ -7,9 +7,10 @@ On 2026-09-19 the remaining open work was reconstructed from `HANDOFF.md` and fi
 here. This client could not query or close Linear — cancel the Linear **trader**
 project in the Eastwood AI workspace so agents stop targeting it.
 
-Historical `EAI-*` strings in tests and comments are provenance, not the tracker.
-`v1:EAI-*` cites the frozen `trading-agent` archive. embry0 stays on GitHub
-(`sudoTomas/embry0`).
+Historical `EAI-*` ids in this file and in `docs/research/`, `docs/runbooks/`, and
+`docs/hermes/` are provenance, not the tracker; the lessons those tickets taught are
+catalogued by slug in [`lessons.md`](lessons.md), which is what code comments cite.
+embry0 stays on GitHub (`sudoTomas/embry0`).
 
 ## Open (filed 2026-09-19)
 
