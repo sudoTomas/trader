@@ -48,8 +48,10 @@ HELD_POSITION_BUDGET_CHARS = 700
 # entry: under the lane's budget it stays or goes intact, never truncated mid-sentence.
 EXIT_REVIEW_ASK = (
     "State whether the original thesis still holds. If it does not, or if the position "
-    "has moved against you beyond your stated tolerance, prefer `close` (full, or partial "
-    "via a smaller `notional_usd` to reduce) over `hold`; a hold must justify staying in."
+    "has moved against you by more than 1% since entry, prefer `close` (full, or partial "
+    "via a smaller `notional_usd` to reduce) over `hold`; a hold must justify staying in. "
+    "A loss smaller than 1%, or a position younger than 24 hours, is not by itself a reason "
+    "to close — normal noise around a thesis that still holds is a `hold`."
 )
 # One daily print is enough for the decide prompt. VIX is the series the data
 # layer was built for; more ids can be passed in, but the live builder uses this.
