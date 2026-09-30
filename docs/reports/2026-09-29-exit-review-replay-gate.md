@@ -35,3 +35,33 @@ Sanity: the block appeared in 218/336 run-17 prompts (exactly the steps where a 
 Stage 2/3 are the operator's. Like briefs, the lane has no per-feature shadow: enabling it means live closes on the real paper book (ETH +2%, SPY −0.3% as of 2026-09-29), or a global `TRADER_SHADOW_MODE=true` window with no orders at all. **One gate at a time**: not on the same day as the ETF flip (standing order: on/after 2026-10-03).
 
 Runs: `trader eval show 16` / `trader eval show 17`.
+
+---
+
+## Addendum 2026-09-30 — run 18: a stated numeric tolerance makes it worse
+
+Run 18 `exit-review-on-v9-tolerance` re-ran the candidate with the ask amended to name a tolerance
+("moved against you by more than 1% since entry … a loss smaller than 1%, or a position younger than
+24 hours, is not by itself a reason to close"). Same seed, window, and lanes as runs 16/17. Budget 700
+at the time (the ask fit).
+
+| Run | Wording | Actions | Critic (veto / shrink / approve) | Realized | Unrealized at end | Net (crude) |
+|---|---|---|---|---|---|---|
+| 16 | lane off | 336 hold | 0 / 0 / 0 | $0.00 | +$15.68 | +$15.68 |
+| 17 | v8: thesis + "your stated tolerance" | 2 open, 2 close | 7 / 1 / 3 | −$52.45 | +$85.71 | +$33.26 |
+| 18 | v9: thesis + "1% / 24 h" | 3 open, 3 close | 27 / 0 / 6 | −$171.05 | −$12.93 | −$183.98 |
+
+What the decider did with a number: it treated 1% as a hard stop. Closes at −4.6% (same as v8), then
+at **−1.50%** ("exceeding the 1% adverse move threshold") 25 h after entry, then at **−1.00%** ("meets
+the threshold for preferring close") **9 h** after entry — ignoring the 24 h clause in the same
+sentence. Drafting churn tripled (27 vetoes vs 7). Agreement with the off run fell to 330/336.
+
+**Reading.** A numeric threshold in prompt text becomes a mechanical rule applied without judgment,
+which is exactly what the project's own principle predicts (limits are code, never prompt text;
+docs/architecture.md). The thesis-based wording (v8) produced fewer, better-justified exits. If a
+deterministic stop is wanted, it belongs in RiskGuard or the `position_risk` trigger (which now fires
+live since #15), not in the ask.
+
+**Decision for main:** revert the ask to the v8 wording (kept: the 900-char budget). v8 remains the
+stage-1 evidence for #34. Whether to add a *non-numeric* noise clause and replay once more, or go to
+stage 2 on v8, is the operator's call.
