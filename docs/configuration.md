@@ -19,6 +19,7 @@ Gates at a glance (all default closed):
 - `TRADER_SHADOW_MODE` = `true`
 - `TRADER_LOOP_ENABLED` = `false`
 - `TRADER_SHADOW_SYMBOLS` = *(empty)*
+- `TRADER_EXIT_REVIEW_ENABLED` = `false`
 - `TRADER_BRIEFS_ENABLED` = `false`
 - `TRADER_DESK_ENABLED` = `false`
 - `TRADER_SENTIMENT_TRIGGER_ENABLED` = `false`
@@ -61,6 +62,7 @@ The background scheduler: what it watches, how often, and whether it submits.
 | `TRADER_LOOP_TICK_SECONDS` | `float` | `60.0` | tuning | Seconds between scheduler ticks (quote fetch, mark, trigger evaluation). |
 | `TRADER_LOOP_SYMBOLS` | `str` | `BTC/USD,ETH/USD` | tuning | Comma-separated symbols the loop watches and may trade. |
 | `TRADER_SHADOW_SYMBOLS` | `str` | *(empty)* | gate | Per-symbol shadow: comma-separated tickers that decide and risk-check but never submit, while the rest of the build trades live-paper. A new symbol earns its flip here first. |
+| `TRADER_EXIT_REVIEW_ENABLED` | `bool` | `false` | gate | Exit-review lane: with a position held, the decide prompt gains a held-position block (entry, age, unrealized P&L, latest sentiment) and an explicit ask to justify holding versus `close`/reduce. Advisory only, RiskGuard never sees it. A decide-behavior change: flip only through `docs/runbooks/decide-change-gate.md` (replay it with `trader eval run --exit-review --seed-qty --seed-entry`). |
 | `TRADER_SHADOW_EQUITY` | `float` | `100000.0` | tuning | Equity the risk chain assumes in shadow builds (no broker). Live-paper builds read equity from the broker and keep the last good value when it is down. |
 
 ## Risk limits (RiskGuard)

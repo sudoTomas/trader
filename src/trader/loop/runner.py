@@ -42,6 +42,7 @@ from trader.loop.context import (
     DEFAULT_INTERVALS,
     ContextBuilder,
     compute_indicators,
+    unrealized_pnl_frac,
 )
 from trader.loop.decider import Decider, DeciderError
 from trader.loop.journal import (
@@ -70,14 +71,6 @@ EQUITY_FALLBACK = "equity_fallback"
 # cadence (the scheduler's per-asset-class floor); this is the fallback when a scheduler
 # does not expose one.
 MARK_VOL_FALLBACK_TTL_SECONDS = 300.0
-
-
-def _unrealized_pnl_frac(price: float, qty: float, avg_entry: float | None) -> float | None:
-    """Signed move vs entry. Longs gain when price rises; shorts gain when it falls."""
-    if price <= 0 or qty == 0 or avg_entry is None or avg_entry <= 0:
-        return None
-    move = (price - avg_entry) / avg_entry
-    return move if qty > 0 else -move
 
 
 async def count_trades_today(db: Database, symbol: Symbol, now: datetime) -> int:
@@ -175,6 +168,10 @@ class LoopRunner:
     # Briefs lane, dark by default — briefs compile and store regardless,
     # but only this flag lets them into the decide prompt (a decide-behavior change).
     briefs_enabled: bool = False
+    # Exit-review lane (#34), dark by default: a held-position block in the prompt
+    # (entry, age, unrealized P&L, latest sentiment, an explicit ask to justify holding).
+    # A decide-behavior change; flips only through the decide-change gate.
+    exit_review_enabled: bool = False
     # Decision desk: analyst lanes before the decide, critic after it.
     # Absent = no desk. Advisory: a crashing desk degrades to a plain decide, never blocks.
     desk: Any | None = None
@@ -182,15 +179,17 @@ class LoopRunner:
 
     def __post_init__(self) -> None:
         self.scheduler = self.scheduler or SignalScheduler(self.symbols)
-        self._context = ContextBuilder(
-            self.market_data,
-            macro_views=MacroViewsRepo(self.db),
-            briefs=BriefsRepo(self.db) if self.briefs_enabled else None,
-        )
         self._decider = Decider(self.llm)
         self._journal = Journal(self.db)
         self._positions = PositionsRepo(self.db)
         self._sentiment_repo = SentimentRepo(self.db)
+        self._context = ContextBuilder(
+            self.market_data,
+            macro_views=MacroViewsRepo(self.db),
+            briefs=BriefsRepo(self.db) if self.briefs_enabled else None,
+            exit_review_enabled=self.exit_review_enabled,
+            sentiment=self._sentiment_repo if self.exit_review_enabled else None,
+        )
         self._last_sentiment_poll: dict[str, datetime] = {}
         # ticker -> (fetched at, realized vol). See _mark_vol.
         self._mark_vols: dict[str, tuple[datetime, float | None]] = {}
@@ -288,6 +287,7 @@ class LoopRunner:
             # stay frozen until the model wants to trade (#24).
             await self._observe_breakers(now, equity)
             rows = await self._positions.all()
+            position_rows = {row["symbol"]: row for row in rows}
             positions = {row["symbol"]: float(row["qty"]) for row in rows}
             entries = {
                 row["symbol"]: (
@@ -314,7 +314,15 @@ class LoopRunner:
                 by_symbol.setdefault(trigger.symbol, []).append(trigger)
 
             results = [
-                await self._wakeup(symbol, fired, now, marks, positions, equity)
+                await self._wakeup(
+                    symbol,
+                    fired,
+                    now,
+                    marks,
+                    positions,
+                    equity,
+                    position_row=position_rows.get(symbol.ticker),
+                )
                 for symbol in self.symbols
                 if (fired := by_symbol.get(symbol.ticker))
             ]
@@ -485,7 +493,7 @@ class LoopRunner:
             marks[symbol.ticker] = Mark(
                 price=price,
                 realized_vol=vol,
-                unrealized_pnl_frac=_unrealized_pnl_frac(price, qty, entries.get(symbol.ticker)),
+                unrealized_pnl_frac=unrealized_pnl_frac(price, qty, entries.get(symbol.ticker)),
                 sentiment_score=score,
             )
         return marks
@@ -498,6 +506,8 @@ class LoopRunner:
         marks: dict[str, Mark],
         positions: dict[str, float],
         equity: float,
+        *,
+        position_row: dict[str, Any] | None = None,  # the exit-review lane's input (#34)
     ) -> WakeupResult:
         names = [t.type for t in triggers]
         trigger_label = ",".join(names)
@@ -514,6 +524,7 @@ class LoopRunner:
             position_qty=positions.get(symbol.ticker, 0.0),
             equity=equity,
             recent_decisions=recent,
+            position=position_row,
         )
         macro_view_version = ctx.macro_view.version if ctx.macro_view else None
         brief_version = ctx.brief.version if ctx.brief else None

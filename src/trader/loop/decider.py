@@ -47,6 +47,22 @@ Rules:
 - `rationale` must cite the specific context values that drove the call.
 """
 
+# Appended only when the context carries a held-position block (the exit-review lane,
+# #34): the same flag that renders the block gates this text, so the dark path sends the
+# system prompt byte-for-byte unchanged. Exits are `close` on the wire: a smaller
+# `notional_usd` is a partial exit (RiskGuard resizes it, the executor caps it at held qty).
+EXIT_REVIEW_PROMPT = """
+Exit review (a position is held — see "Held position review" in the context):
+- `close` exits the held position: `side` opposite to the position, `notional_usd` at or
+  above the position's value closes it all; a smaller `notional_usd` reduces it (a partial
+  exit). Use it when the original thesis no longer holds, when the position has moved
+  against you beyond the tolerance you stated at entry, or when sentiment and price now
+  disagree with the reason you are in.
+- `hold` keeps the position and must justify staying in — restate the thesis and why it
+  survives the current context. "Nothing changed" is not a justification when the P&L or
+  sentiment in the review says otherwise.
+"""
+
 
 class DecisionOutput(BaseModel):
     """The decider's contract. Its JSON schema is what the model is constrained to."""
@@ -112,8 +128,11 @@ class Decider:
 
     async def decide(self, ctx: DecisionContext) -> DecisionResult:
         prompt = ctx.to_prompt()
+        system = SYSTEM_PROMPT
+        if ctx.held_position is not None:
+            system += EXIT_REVIEW_PROMPT
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system},
             {"role": "user", "content": prompt},
         ]
         last_error = ""

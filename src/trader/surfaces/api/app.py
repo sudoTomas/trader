@@ -281,7 +281,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         desk: bool = Query(default=False),
         briefs: bool = Query(default=True, description="Include the brief lane."),
         macro_view: bool = Query(default=True, description="Include the Macro View lane."),
+        exit_review: bool | None = Query(
+            default=None,
+            description="Render the held-position block (#34); unset follows the setting.",
+        ),
+        seed_qty: float | None = Query(
+            default=None, description="Seed a held position: signed quantity (with seed_entry)."
+        ),
+        seed_entry: float | None = Query(
+            default=None, description="Seed a held position: average entry price (with seed_qty)."
+        ),
+        seed_opened_at: str | None = Query(
+            default=None, description="Optional seed open time (ISO-8601); default window start."
+        ),
     ) -> dict:
+        seed: dict | None = None
+        if (seed_qty is None) != (seed_entry is None):
+            raise HTTPException(
+                status_code=422, detail="seed_qty and seed_entry must be given together"
+            )
+        if seed_qty is not None:
+            seed = {"qty": seed_qty, "avg_entry_price": seed_entry}
+            if seed_opened_at is not None:
+                seed["opened_at"] = seed_opened_at
         try:
             return await registry.get("run_replay_eval").handler(
                 symbol=symbol,
@@ -291,8 +313,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 desk=desk,
                 briefs=briefs,
                 macro_view=macro_view,
+                exit_review=exit_review,
+                exit_review_seed=seed,
             )
-        except (ValueError, KeyError) as exc:  # bad window / unknown symbol
+        except (ValueError, KeyError) as exc:  # bad window / unknown symbol / bad seed
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.get("/eval/runs")
@@ -372,6 +396,7 @@ def build_evaluator(db: Database, settings: Settings, desk=None, *, xai_manager=
         build_llm_registry(settings, UsageMeter(UsageRepo(db)), xai_manager=xai_manager),
         provider,
         desk=desk,
+        exit_review_enabled=settings.exit_review_enabled,
     )
 
 
@@ -493,6 +518,7 @@ def build_runner(db: Database, settings: Settings, sentiment=None, desk=None, *,
         sentiment_poll_seconds=settings.sentiment_poll_seconds,
         shadow_symbols={t.strip() for t in settings.shadow_symbols.split(",") if t.strip()},
         briefs_enabled=settings.briefs_enabled,
+        exit_review_enabled=settings.exit_review_enabled,
         desk=desk if settings.desk_enabled else None,
     )
 

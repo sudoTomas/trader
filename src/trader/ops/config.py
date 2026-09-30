@@ -155,6 +155,18 @@ class Settings(BaseSettings):
             "new symbol earns its flip here first."
         ),
     )
+    exit_review_enabled: bool = setting(
+        False,
+        category=GATE,
+        section="Decide loop",
+        description=(
+            "Exit-review lane: with a position held, the decide prompt gains a held-position "
+            "block (entry, age, unrealized P&L, latest sentiment) and an explicit ask to "
+            "justify holding versus `close`/reduce. Advisory only, RiskGuard never sees it. "
+            "A decide-behavior change: flip only through `docs/runbooks/decide-change-gate.md` "
+            "(replay it with `trader eval run --exit-review --seed-qty --seed-entry`)."
+        ),
+    )
     shadow_equity: float = setting(
         100_000.0,
         category=TUNING,

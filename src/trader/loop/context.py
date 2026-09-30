@@ -14,12 +14,19 @@ at that instant, not whichever row is current today.
 
 FRED prints (VIX by default) are fetched on use — the latest observation on or
 before ``now``, not a stored window. RiskGuard does not read them either.
+
+The exit-review lane (#34) is a held-position block — entry, age, unrealized P&L, the
+latest sentiment, and an explicit ask to justify staying in — rendered only when
+``exit_review_enabled`` is on AND a position is held. Dark by default; a decide-behavior
+change that earns its flip through replay (docs/runbooks/decide-change-gate.md). It is
+advisory like every other lane: RiskGuard never sees it.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import structlog
@@ -36,6 +43,14 @@ BAR_LOOKBACK = 100
 DEFAULT_INTERVALS = ("1h",)
 MACRO_BUDGET_CHARS = 2000
 BRIEF_BUDGET_CHARS = 1200
+HELD_POSITION_BUDGET_CHARS = 700
+# The explicit ask. The block exists to make the decider answer this, so it is one whole
+# entry: under the lane's budget it stays or goes intact, never truncated mid-sentence.
+EXIT_REVIEW_ASK = (
+    "State whether the original thesis still holds. If it does not, or if the position "
+    "has moved against you beyond your stated tolerance, prefer `close` (full, or partial "
+    "via a smaller `notional_usd` to reduce) over `hold`; a hold must justify staying in."
+)
 # One daily print is enough for the decide prompt. VIX is the series the data
 # layer was built for; more ids can be passed in, but the live builder uses this.
 DEFAULT_FRED_SERIES = ("VIXCLS",)
@@ -109,6 +124,116 @@ def build_brief_slice(
         entries.append(entry)
         used += len(entry)
     return BriefSlice(version=row["version"], entries=entries) if entries else None
+
+
+def unrealized_pnl_frac(price: float, qty: float, avg_entry: float | None) -> float | None:
+    """Signed move vs entry. Longs gain when price rises; shorts gain when it falls.
+
+    Shared by the runner's marks (the position-risk trigger) and the held-position block,
+    so the prompt and the trigger never disagree about the same position.
+    """
+    if price <= 0 or qty == 0 or avg_entry is None or avg_entry <= 0:
+        return None
+    move = (price - avg_entry) / avg_entry
+    return move if qty > 0 else -move
+
+
+def _format_age(delta: timedelta) -> str:
+    total = max(int(delta.total_seconds()), 0)
+    days, rem = divmod(total, 86_400)
+    hours, rem = divmod(rem, 3_600)
+    minutes = rem // 60
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h"
+    return f"{minutes}m"
+
+
+def _as_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+@dataclass(frozen=True)
+class HeldPositionSlice:
+    """The budgeted held-position block for the exit-review lane (advisory only)."""
+
+    entries: list[str]
+
+
+def build_held_position_slice(
+    position: Mapping[str, Any],
+    *,
+    price: float,
+    now: datetime,
+    sentiment: Mapping[str, Any] | None,
+    budget_chars: int = HELD_POSITION_BUDGET_CHARS,
+) -> HeldPositionSlice | None:
+    """Render a held position into whole entries under the lane's own budget.
+
+    ``position`` is a positions-row-shaped mapping: ``qty``, ``avg_entry_price``, and
+    either ``opened_at`` (exact; the replay seed) or ``updated_at`` (the positions row,
+    which reconcile and fills bump — so it bounds the age from below and is labeled that
+    way). No entry price means nothing to review against: no block. Entries drop WHOLE.
+    """
+    qty = _as_float(position.get("qty")) or 0.0
+    entry = _as_float(position.get("avg_entry_price"))
+    if qty == 0.0 or entry is None or entry <= 0:
+        return None
+    side = "long" if qty > 0 else "short"
+    candidates = [f"Entry price: {entry:,.6g} USD ({side} {abs(qty):g} units)"]
+
+    opened_at = position.get("opened_at")
+    updated_at = position.get("updated_at")
+    if isinstance(opened_at, datetime):
+        candidates.append(
+            f"Position age: {_format_age(now - opened_at)} (opened {opened_at.isoformat()})"
+        )
+    elif isinstance(updated_at, datetime):
+        candidates.append(
+            f"Position age: at least {_format_age(now - updated_at)}"
+            f" (position row last changed {updated_at.isoformat()})"
+        )
+
+    pnl = unrealized_pnl_frac(price, qty, entry)
+    if pnl is not None:
+        candidates.append(f"Unrealized P&L: {pnl:+.2%} vs entry (mark {price:,.6g})")
+
+    score = _as_float(sentiment.get("score")) if sentiment is not None else None
+    if score is not None:
+        volume = sentiment.get("volume") if sentiment is not None else None
+        ts = sentiment.get("ts") if sentiment is not None else None
+        line = f"Latest X sentiment: {score:+.2f}"
+        if volume:
+            line += f" ({volume})"
+        if isinstance(ts, datetime):
+            line += f" at {ts.isoformat()}"
+        candidates.append(line)
+
+    candidates.append(EXIT_REVIEW_ASK)
+
+    entries: list[str] = []
+    used = 0
+    for candidate in candidates:
+        if used + len(candidate) > budget_chars:
+            log.info("held_position_entry_dropped_whole", entry_chars=len(candidate))
+            continue
+        entries.append(candidate)
+        used += len(candidate)
+    return HeldPositionSlice(entries=entries) if entries else None
+
+
+def _latest_sentiment_at(rows: list[dict[str, Any]], as_of: datetime) -> dict[str, Any] | None:
+    """Newest scored poll at or before ``as_of`` (id breaks ties)."""
+    eligible = [row for row in rows if row.get("status", "ok") == "ok" and row["ts"] <= as_of]
+    if not eligible:
+        return None
+    return max(eligible, key=lambda row: (row["ts"], int(row.get("id") or 0)))
 
 
 def _latest_at(rows: list[dict[str, Any]], as_of: datetime, ts_key: str) -> dict[str, Any] | None:
@@ -198,6 +323,8 @@ class DecisionContext:
     brief: BriefSlice | None = None  # advisory lane; RiskGuard never sees it
     fred_series: tuple[FredPrint, ...] = ()  # advisory facts; RiskGuard never sees them
     analysts: list[str] = field(default_factory=list)  # desk lanes; advisory
+    # Exit-review lane (#34): present only with the flag on AND a held position.
+    held_position: HeldPositionSlice | None = None  # advisory; RiskGuard never sees it
 
     @property
     def primary_vol(self) -> float | None:
@@ -263,6 +390,14 @@ class DecisionContext:
             ]
             lines += [f"  {entry}" for entry in self.analysts]
 
+        if self.held_position:
+            lines += [
+                "",
+                "Held position review (advisory — the thesis question is yours;"
+                " a deterministic risk layer owns sizing):",
+            ]
+            lines += [f"  {entry}" for entry in self.held_position.entries]
+
         if self.recent_decisions:
             lines += ["", "Recent decisions (newest first):"]
             lines += [
@@ -288,6 +423,9 @@ class ContextBuilder:
         brief_budget_chars: int = BRIEF_BUDGET_CHARS,
         fred: Any | None = None,  # data.fred.Fred; absent → provider.fred, else no lane
         fred_series: tuple[str, ...] = DEFAULT_FRED_SERIES,
+        exit_review_enabled: bool = False,  # #34 lane default; build() may override per call
+        sentiment: Any | None = None,  # store.repos.SentimentRepo; read only for the lane
+        held_position_budget_chars: int = HELD_POSITION_BUDGET_CHARS,
     ) -> None:
         self._data = market_data
         self._intervals = intervals
@@ -298,6 +436,9 @@ class ContextBuilder:
         self._brief_budget = brief_budget_chars
         self._fred = fred
         self._fred_series = fred_series
+        self._exit_review = exit_review_enabled
+        self._sentiment = sentiment
+        self._held_budget = held_position_budget_chars
         # (latest version, rows). Invalidated when a newer version appears, so a
         # long-lived replay harness does not freeze the first run's history.
         self._macro_cache: tuple[int, list[dict[str, Any]]] | None = None
@@ -368,6 +509,8 @@ class ContextBuilder:
         recent_decisions: list[dict[str, Any]] | None = None,
         research_as_of: datetime | None = None,
         include_briefs: bool = True,
+        position: Mapping[str, Any] | None = None,  # positions row (or a replay seed)
+        exit_review: bool | None = None,  # None → the builder's default
     ) -> DecisionContext:
         bars: dict[str, list[Bar]] = {}
         indicators: dict[str, Indicators] = {}
@@ -433,6 +576,21 @@ class ContextBuilder:
             log.warning("fred_unavailable", error=str(exc))
             fred_series = ()
 
+        held_position: HeldPositionSlice | None = None
+        review = self._exit_review if exit_review is None else exit_review
+        if review and position_qty != 0 and position is not None and price > 0:
+            try:
+                sentiment_row = await self._held_sentiment(symbol.ticker, research_as_of)
+                held_position = build_held_position_slice(
+                    position,
+                    price=price,
+                    now=now,
+                    sentiment=sentiment_row,
+                    budget_chars=self._held_budget,
+                )
+            except Exception as exc:  # noqa: BLE001 - advisory must never block a decide
+                log.warning("held_position_unavailable", symbol=symbol.ticker, error=str(exc))
+
         return DecisionContext(
             symbol=symbol,
             now=now,
@@ -446,4 +604,14 @@ class ContextBuilder:
             macro_view=macro_view,
             brief=brief,
             fred_series=fred_series,
+            held_position=held_position,
         )
+
+    async def _held_sentiment(self, ticker: str, as_of: datetime | None) -> dict[str, Any] | None:
+        """Latest scored poll for the held symbol. Live reads ``latest()``; replay pins
+        it to the step so a later poll cannot leak into a historical prompt."""
+        if self._sentiment is None:
+            return None
+        if as_of is None:
+            return await self._sentiment.latest(ticker)
+        return _latest_sentiment_at(await self._sentiment.recent(ticker, limit=500), as_of)

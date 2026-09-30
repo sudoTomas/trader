@@ -301,6 +301,20 @@ def eval_run_cmd(
     macro_view: bool = typer.Option(
         True, "--macro-view/--no-macro-view", help="Macro View lane in the prompt."
     ),
+    exit_review: bool | None = typer.Option(
+        None,
+        "--exit-review/--no-exit-review",
+        help="Held-position review block in the prompt (#34); unset follows the setting.",
+    ),
+    seed_qty: float | None = typer.Option(
+        None, help="Seed a held position for the window: signed qty (with --seed-entry)."
+    ),
+    seed_entry: float | None = typer.Option(
+        None, help="Seed a held position: average entry price (with --seed-qty)."
+    ),
+    seed_opened_at: str | None = typer.Option(
+        None, help="Seed open time (ISO-8601, tz-aware); default is the window start."
+    ),
 ) -> None:
     """Start a background replay over [start, end); poll with `trader eval show`."""
     params = {
@@ -311,7 +325,13 @@ def eval_run_cmd(
         "desk": desk,
         "briefs": briefs,
         "macro_view": macro_view,
+        "exit_review": exit_review,
+        "seed_qty": seed_qty,
+        "seed_entry": seed_entry,
+        "seed_opened_at": seed_opened_at,
     }
+    # Unset options stay off the wire (an empty query value is not "unset" to the API).
+    params = {k: v for k, v in params.items() if v is not None}
     typer.echo(json.dumps(_post("/eval/replay", params=params), indent=2))
 
 
