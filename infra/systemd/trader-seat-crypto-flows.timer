@@ -1,0 +1,11 @@
+# Daily trigger for trader-seat-crypto-flows.service: 13:00 UTC, after the US ETF flow
+# prints for the prior session are out. Persistent=true runs a missed tick after a reboot.
+[Unit]
+Description=Daily trader Grok desk seat (crypto-flows)
+
+[Timer]
+OnCalendar=*-*-* 13:00:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

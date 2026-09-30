@@ -1,0 +1,22 @@
+# Grok desk seat: crypto-flows (#9). One daily sweep, as a standalone process — never
+# inside trader-api. It calls xAI itself (XAI_API_KEY) and submits notes to the running
+# API with the capture-scoped key (TRADER_CAPTURE_API_KEY). Pair with
+# trader-seat-crypto-flows.timer:
+#   cp infra/systemd/trader-seat-crypto-flows.{service,timer} ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now trader-seat-crypto-flows.timer
+#
+# Settings come from the checkout's .env (WorkingDirectory), exactly like trader-api:
+# TRADER_API_BASE_URL, TRADER_CAPTURE_API_KEY, XAI_API_KEY, TRADER_SEAT_*. The run log
+# lands in TRADER_SEAT_STATE_PATH (default ~/.local/state/trader/seat-runs.jsonl);
+# `trader seat report` reads it back. Runbook: docs/runbooks/research-capture.md.
+[Unit]
+Description=trader Grok desk seat: crypto-flows (daily sweep -> POST /research/notes)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/repos/trader
+# uv from the official installer lands in ~/.local/bin; adjust like trader-api.service.
+#Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/uv run trader seat run crypto-flows

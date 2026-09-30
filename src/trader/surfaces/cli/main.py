@@ -562,5 +562,127 @@ def screener_run(
     typer.echo(json.dumps(_get("/screener", params=params), indent=2))
 
 
+seat_app = typer.Typer(
+    help="Grok desk seats — standalone research sweeps (local: xAI + the capture key)."
+)
+app.add_typer(seat_app, name="seat")
+
+
+def _seat_log_to_stderr() -> None:
+    import sys
+
+    import structlog
+
+    if not structlog.is_configured():
+        structlog.configure(logger_factory=structlog.PrintLoggerFactory(sys.stderr))
+
+
+@seat_app.command("run")
+def seat_run(
+    seat: str = typer.Argument(..., help="Seat name, e.g. crypto-flows."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Sweep and gate, print what would be submitted, POST nothing."
+    ),
+    credential: str = typer.Option(
+        "api_key",
+        help="api_key (XAI_API_KEY; default) | oauth | auto. oauth/auto share trader-api's "
+        "rotating OAuth lineage — one-shots only.",
+    ),
+    hours: int = typer.Option(24, min=1, max=168, help="Search window ending now, in hours."),
+    json_output: bool = typer.Option(False, "--json", help="Print the run record as JSON."),
+) -> None:
+    """One sweep of a desk seat: xAI /v1/responses (x_search + web_search) → grounding,
+    dedupe and size gates → POST /research/notes with TRADER_CAPTURE_API_KEY. Runs as its
+    own process (like `trader xai login`, reads Settings directly) and records its usage and
+    estimated cost in TRADER_SEAT_STATE_PATH. Zero grounded findings is a successful run."""
+    import asyncio
+
+    from trader.seats import SEATS
+    from trader.seats import runner as seat_runner
+
+    if seat not in SEATS:
+        typer.echo(f"unknown seat {seat!r}; known: {', '.join(sorted(SEATS))}", err=True)
+        raise typer.Exit(2)
+    _seat_log_to_stderr()
+    settings = get_settings()
+
+    async def _run() -> dict:
+        capture_http = seat_runner.build_capture_http(settings)
+        xai_http = seat_runner.build_xai_http(settings, credential=credential)
+        async with capture_http, xai_http:
+            runner = seat_runner.SeatRunner(
+                SEATS[seat],
+                xai=seat_runner.SeatXaiClient(xai_http, model=settings.seat_model),
+                capture=seat_runner.CaptureClient(capture_http),
+                max_notes=settings.seat_max_notes,
+                max_chars=settings.seat_note_max_chars,
+                state_path=settings.seat_state_path,
+                window_hours=hours,
+            )
+            return await runner.run(dry_run=dry_run)
+
+    try:
+        record = asyncio.run(_run())
+    except seat_runner.SeatError as exc:
+        typer.echo(f"seat {seat}: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    if json_output:
+        typer.echo(json.dumps(record, indent=2))
+        return
+    verb = "would submit" if dry_run else "submitted"
+    typer.echo(
+        f"{seat}: {record['candidates']} candidate(s), {verb} "
+        f"{len(record['would_submit'] if dry_run else record['submitted'])}, "
+        f"dropped {len(record['dropped'])}, est. cost ${record['cost_usd']['total_usd']:.4f}"
+    )
+    for row in record["would_submit"] if dry_run else record["submitted"]:
+        ident = f"note:{row['id']}" if row.get("id") is not None else "-"
+        typer.echo(f"  {ident:<10} {row['title']}  ({row.get('source') or '-'})")
+    for drop in record["dropped"]:
+        typer.echo(f"  dropped [{drop['reason']}] {drop['title']}")
+
+
+@seat_app.command("report")
+def seat_report(
+    seat: str = typer.Option("", help="Filter to one seat; empty = every seat."),
+    limit: int = typer.Option(10, min=1, max=500, help="How many runs, newest first."),
+    json_output: bool = typer.Option(False, "--json", help="Rows as JSON."),
+) -> None:
+    """The citation loop (#10): for each logged seat run, which of its submitted note ids
+    the CURRENT Macro View cites ([note:N]), plus the seat's own cost estimate. Reads the
+    view with the capture key; the day's usage_daily total is added only when
+    TRADER_API_KEY is set (GET /usage is operator-only)."""
+    import asyncio
+
+    from trader.seats import runner as seat_runner
+
+    _seat_log_to_stderr()
+    settings = get_settings()
+    runs = seat_runner.read_runs(settings.seat_state_path, seat=seat or None, limit=limit)
+
+    async def _build() -> list[dict]:
+        capture_http = seat_runner.build_capture_http(settings)
+        usage_http = seat_runner.build_operator_http(settings)
+        async with capture_http:
+            capture = seat_runner.CaptureClient(capture_http)
+            if usage_http is None:
+                return await seat_runner.build_report(runs, capture)
+            async with usage_http:
+                return await seat_runner.build_report(runs, capture, usage_http=usage_http)
+
+    try:
+        rows = asyncio.run(_build())
+    except seat_runner.SeatError as exc:
+        typer.echo(f"seat report: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    if json_output:
+        typer.echo(json.dumps(rows, indent=2))
+        return
+    if not runs:
+        typer.echo(f"no seat runs logged at {settings.seat_state_path}")
+        return
+    typer.echo(seat_runner.render_report(rows))
+
+
 if __name__ == "__main__":
     app()
