@@ -146,3 +146,76 @@ Desk):
   loses convenience, not function.
 - A Hermes-submitted note is an operator note like any other: same auth, same audit row,
   same auto-stale window, same advisory firewall downstream (RiskGuard never reads research).
+
+## Grok desk seat (#9, #20)
+
+A **seat** is a stateless research function the box runs on a timer: one prompt + tool
+scope, one `POST https://api.x.ai/v1/responses` with `x_search` + `web_search` (tools
+exist only there — docs/research/xai-api.md), local deterministic gates, then the same
+capture door Hermes uses. It is a **standalone process** (`trader seat run <seat>`), never
+part of `trader-api`, and it holds exactly two credentials: an xAI credential for the
+search and `TRADER_CAPTURE_API_KEY` for the write path. The operator key never touches
+the seat's write path. Design: `docs/research/2026-09-16-grok-bots-macro-team.md`
+(accepted 2026-09-17). One seat ships: **`crypto-flows`** — ETF flows, exchange balances,
+stablecoin supply, funding/basis, on-chain activity, regulatory flow news, 1×/day.
+
+What one run does (`src/trader/seats/runner.py`):
+
+1. `GET /research/notes` (capture key) — the live notes, for the dedupe gate and for the
+   "already filed, only file changes" list the prompt receives.
+2. One `/v1/responses` call on `TRADER_SEAT_MODEL` (`grok-4.3`) with `x_search`
+   (`from_date`/`to_date` = the last 24 h) and `web_search`, structured JSON out:
+   `{notes: [{title, body, symbols, tags, source, authored_at, confidence, citations}]}`,
+   at most `TRADER_SEAT_MAX_NOTES` (3). The prompt carries the research-capture rules
+   from the Hermes skill: distill, numbers as the source states them, no opinion,
+   `authored_at` only when the source shows it, **zero grounded findings → `[]` is a
+   successful sweep**.
+3. **Grounding gate** — a note keeps only the citations the tool layer actually
+   returned; none left means the claim is the model's prior and the note is dropped
+   (docs/lessons.md#sentiment-no-citations-is-unavailable). `source` must be a grounded
+   URL. `authored_at` survives only tz-aware and not in the future; else omitted, never
+   guessed. `symbols` is clipped to the seat's scope (`ETH/USD`, `BTC/USD`);
+   `asset_classes` is always `["crypto"]`; tags are `["grok-desk","crypto-flows", …]`.
+4. **Dedupe gate** — a live note from the last 7 days with the same title or source URL
+   blocks the submit (and duplicates inside the batch collapse). A repeated claim with a
+   new number is a new note; the compiler treats contradiction as information.
+5. **Size gate** — a body over `TRADER_SEAT_NOTE_MAX_CHARS` (1,400) goes back to the
+   model once to distill; still over → dropped.
+6. `POST /research/notes` per survivor, capture key only. The service recompiles the
+   Macro View on its own debounce; the seat never calls `compile`.
+7. Append one JSON line to `TRADER_SEAT_STATE_PATH`
+   (`~/.local/state/trader/seat-runs.jsonl`): submitted note ids, drops with reasons,
+   token usage, and the seat's **own cost estimate** (token prices from `llm/usage.py`,
+   x_search per-post/profile units from citations, web_search per call). The seat runs
+   outside the service meter, so `usage_daily` never sees this spend — the file is the
+   record.
+
+**Credential rule.** Exactly one process owns the rotating SuperGrok OAuth lineage and it
+is `trader-api` (docs/lessons.md#oauth-refresh-margin), so the seat authenticates with
+`XAI_API_KEY` by default and refuses to run without one. `--credential oauth` (or
+`auto`) reads the shared encrypted token store for a one-shot — a small race window
+against the service's own refresh; use it deliberately, not from the timer.
+
+```bash
+# First manual run, on the box, from the checkout (.env supplies the keys):
+uv run trader seat run crypto-flows --dry-run        # sweep + gates, POST nothing
+uv run trader seat run crypto-flows                  # the real thing; prints ids + est. cost
+uv run trader seat run crypto-flows --json           # the full run record
+uv run trader note list                              # the notes, tagged grok-desk
+tail -1 ~/.local/state/trader/seat-runs.jsonl        # the run log line
+```
+
+Then the timer (daily 13:00 UTC, after the prior session's ETF flow prints):
+
+```bash
+cp infra/systemd/trader-seat-crypto-flows.{service,timer} ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now trader-seat-crypto-flows.timer
+systemctl --user list-timers trader-seat-crypto-flows.timer
+journalctl --user -u trader-seat-crypto-flows.service -n 50
+```
+
+The unit runs `uv run trader seat run crypto-flows` in `~/repos/trader`, so it reads the
+same `.env` as `trader-api` (`TRADER_API_BASE_URL`, `TRADER_CAPTURE_API_KEY`,
+`XAI_API_KEY`, `TRADER_SEAT_*`). Adding a second seat is a new `Seat` in
+`src/trader/seats/` plus its own unit pair — after a week of cited, non-duplicative
+crypto-flows notes, per the design's §3.5.

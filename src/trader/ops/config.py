@@ -335,6 +335,48 @@ class Settings(BaseSettings):
         ),
         ge=61,
     )
+    seat_model: str = setting(
+        "grok-4.3",
+        category=ENDPOINT,
+        section="Research Desk",
+        description=(
+            "Grok model for the desk seats (`trader seat run <seat>`, a standalone process "
+            "outside `trader-api`). Must be entitled on `/v1/responses` with `x_search` and "
+            "`web_search` (probe matrix: docs/research/xai-api.md). The seat authenticates "
+            "with `XAI_API_KEY` by default; `--credential oauth` shares the service's OAuth "
+            "lineage and is for one-shots only."
+        ),
+    )
+    seat_max_notes: int = setting(
+        3,
+        category=TUNING,
+        section="Research Desk",
+        description=(
+            "Hard cap on notes one seat sweep may submit after the grounding and dedupe "
+            "gates; the rest are dropped and logged."
+        ),
+        ge=1,
+    )
+    seat_note_max_chars: int = setting(
+        1400,
+        category=TUNING,
+        section="Research Desk",
+        description=(
+            "Seat note body cap. A longer body is sent back to the model to distill once; "
+            "still over → dropped. Keeps notes inside the decide prompt's research lane."
+        ),
+        ge=200,
+    )
+    seat_state_path: str = setting(
+        "~/.local/state/trader/seat-runs.jsonl",
+        category=TUNING,
+        section="Research Desk",
+        description=(
+            "Append-only JSONL of seat runs (submitted note ids, usage, estimated cost). The "
+            "seat runs outside the service meter, so this is its spend record; `trader seat "
+            "report` reads it back for the citation loop."
+        ),
+    )
 
     # --- LLM endpoints ---
     nemotron_base_url: str = setting(

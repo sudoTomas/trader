@@ -97,6 +97,10 @@ Notes, Macro View compilation, briefs, the decision desk and X sentiment. Every 
 | `TRADER_SENTIMENT_X_HANDLES` | `str` | *(empty)* | tuning | Comma-separated allowlist of X handles for x_search; empty = open search. |
 | `TRADER_SCREENER_MIN_DOLLAR_VOLUME_USD` | `float` | `50000000.0` | tuning | Screener liquidity floor: symbols whose 20-day average dollar volume (close x volume) is below this are skipped before ranking. The screener is a query (`GET /screener`, `get_screener`, `trader screener run`); it is not wired into the decide loop. |
 | `TRADER_SCREENER_LOOKBACK_DAYS` | `int` | `90` | tuning | Daily bars the screener fetches per symbol (one or two multi-symbol Alpaca requests per query, nothing stored). Must cover the 60-day momentum window: at least 61 trading days; 90 leaves slack for holidays. |
+| `TRADER_SEAT_MODEL` | `str` | `grok-4.3` | endpoint | Grok model for the desk seats (`trader seat run <seat>`, a standalone process outside `trader-api`). Must be entitled on `/v1/responses` with `x_search` and `web_search` (probe matrix: docs/research/xai-api.md). The seat authenticates with `XAI_API_KEY` by default; `--credential oauth` shares the service's OAuth lineage and is for one-shots only. |
+| `TRADER_SEAT_MAX_NOTES` | `int` | `3` | tuning | Hard cap on notes one seat sweep may submit after the grounding and dedupe gates; the rest are dropped and logged. |
+| `TRADER_SEAT_NOTE_MAX_CHARS` | `int` | `1400` | tuning | Seat note body cap. A longer body is sent back to the model to distill once; still over → dropped. Keeps notes inside the decide prompt's research lane. |
+| `TRADER_SEAT_STATE_PATH` | `str` | `~/.local/state/trader/seat-runs.jsonl` | tuning | Append-only JSONL of seat runs (submitted note ids, usage, estimated cost). The seat runs outside the service meter, so this is its spend record; `trader seat report` reads it back for the citation loop. |
 
 ## LLM endpoints
 
