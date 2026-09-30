@@ -1,14 +1,17 @@
 # Grok desk seat: crypto-flows (#9). One daily sweep, as a standalone process — never
-# inside trader-api. It calls xAI itself (XAI_API_KEY) and submits notes to the running
-# API with the capture-scoped key (TRADER_CAPTURE_API_KEY). Pair with
-# trader-seat-crypto-flows.timer:
+# inside trader-api. It calls xAI itself on the SAME SuperGrok OAuth login as trader-api
+# (the shared encrypted token store; refreshes are serialized across processes by the
+# store's flock, #68 — no --credential flag needed; add `--credential api_key` to run on
+# XAI_API_KEY instead) and submits notes to the running API with the capture-scoped key
+# (TRADER_CAPTURE_API_KEY). Pair with trader-seat-crypto-flows.timer:
 #   cp infra/systemd/trader-seat-crypto-flows.{service,timer} ~/.config/systemd/user/
 #   systemctl --user daemon-reload && systemctl --user enable --now trader-seat-crypto-flows.timer
 #
 # Settings come from the checkout's .env (WorkingDirectory), exactly like trader-api:
-# TRADER_API_BASE_URL, TRADER_CAPTURE_API_KEY, XAI_API_KEY, TRADER_SEAT_*. The run log
-# lands in TRADER_SEAT_STATE_PATH (default ~/.local/state/trader/seat-runs.jsonl);
-# `trader seat report` reads it back. Runbook: docs/runbooks/research-capture.md.
+# TRADER_API_BASE_URL, TRADER_CAPTURE_API_KEY, TRADER_XAI_TOKEN_KEY (+ TRADER_XAI_TOKEN_PATH
+# if trader-api overrides it), TRADER_SEAT_*. The run log lands in TRADER_SEAT_STATE_PATH
+# (default ~/.local/state/trader/seat-runs.jsonl); `trader seat report` reads it back.
+# Runbook: docs/runbooks/research-capture.md.
 [Unit]
 Description=trader Grok desk seat: crypto-flows (daily sweep -> POST /research/notes)
 After=network-online.target

@@ -584,17 +584,20 @@ def seat_run(
         False, "--dry-run", help="Sweep and gate, print what would be submitted, POST nothing."
     ),
     credential: str = typer.Option(
-        "api_key",
-        help="api_key (XAI_API_KEY; default) | oauth | auto. oauth/auto share trader-api's "
-        "rotating OAuth lineage — one-shots only.",
+        "oauth",
+        help="oauth (default: trader-api's SuperGrok login via the shared, locked token "
+        "store; XAI_API_KEY only when no store is configured) | api_key (the key alone) | "
+        "auto (OAuth, key as runtime fallback).",
     ),
     hours: int = typer.Option(24, min=1, max=168, help="Search window ending now, in hours."),
     json_output: bool = typer.Option(False, "--json", help="Print the run record as JSON."),
 ) -> None:
     """One sweep of a desk seat: xAI /v1/responses (x_search + web_search) → grounding,
     dedupe and size gates → POST /research/notes with TRADER_CAPTURE_API_KEY. Runs as its
-    own process (like `trader xai login`, reads Settings directly) and records its usage and
-    estimated cost in TRADER_SEAT_STATE_PATH. Zero grounded findings is a successful run."""
+    own process (like `trader xai login`, reads Settings directly) on the service's OAuth
+    login by default (safe from a timer: the token store is locked across processes) and
+    records its usage and estimated cost in TRADER_SEAT_STATE_PATH. Zero grounded findings
+    is a successful run."""
     import asyncio
 
     from trader.seats import SEATS
