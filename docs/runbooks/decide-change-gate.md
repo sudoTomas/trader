@@ -41,6 +41,47 @@ bad opens and kept exits — not merely a different PnL number. A desk-on replay
 critic on Grok costs real money per intent step; the hold-skip keeps it small, but check
 `/usage` after.
 
+### Exit-review lane (#34)
+
+`TRADER_EXIT_REVIEW_ENABLED` (dark) adds a **held-position block** to the decide prompt
+whenever a position is held: entry price, position age, unrealized P&L, the latest X
+sentiment for that symbol, and an explicit ask to state whether the thesis still holds and
+to prefer `close` (full, or partial via a smaller `notional_usd`) over `hold` when it does
+not. The system prompt gains a matching description of `close`/reduce only when the block
+is present. Advisory: RiskGuard never sees it (asserted structurally in
+`tests/test_exit_review.py`).
+
+Replay starts flat, so the harness **seeds** a held position for the window
+(`--seed-qty` / `--seed-entry`; an in-memory book for the crude sim only, never a
+`positions` row). Seed the SAME position into both runs so only the block differs; the
+crude PnL then starts from that seed (a close realizes against the seeded entry, a run that
+never closes carries the seed's mark-to-bars move as `unrealized_pnl`). The two commands
+for the ETH window the briefs gate used (run them one after the other — two replays at
+once 429 Alpaca), seeded with the book's ETH position — take `qty` / `avg_entry_price`
+from `trader positions` at the time of the run, not from memory (the values below are the
+2026-09-29 book):
+
+```bash
+trader eval run --symbol ETH/USD --start 2026-09-13T00:00:00+00:00 \
+    --end 2026-09-27T00:00:00+00:00 --seed-qty 0.3779 --seed-entry 2584.0 \
+    --no-exit-review --label exit-review-off
+trader eval run --symbol ETH/USD --start 2026-09-13T00:00:00+00:00 \
+    --end 2026-09-27T00:00:00+00:00 --seed-qty 0.3779 --seed-entry 2584.0 \
+    --exit-review --label exit-review-on
+```
+
+(API: `POST /eval/replay?...&exit_review=true&seed_qty=0.3779&seed_entry=2584`; MCP:
+`run_replay_eval(exit_review=true, exit_review_seed={"qty": 0.3779,
+"avg_entry_price": 2584.0})`. `--seed-opened-at` dates the position for the age line;
+default is the window start. Unset `--exit-review` follows the setting, i.e. off.)
+
+What to compare: **kept exits** (`close` in `actions`, and whether they land on the steps
+where P&L or sentiment turned against the seed) and the **hold rate**, before the crude
+PnL. Every step's decision records the `held_position` entries the decider saw
+(`trader eval show <id>`), so a close can be read against the block that prompted it. A
+candidate that closes on every dip is as wrong as one that never closes: the lane earns
+its shadow window if exits track the thesis, not the noise.
+
 ## 2. Shadow window (live inputs, no orders)
 
 Only if the replay comparison favors the candidate: run it against live data without

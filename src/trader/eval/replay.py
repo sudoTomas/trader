@@ -24,10 +24,20 @@ the brief lane so a baseline can still match the dark live path, and
 ``config={"macro_view": false}`` drops the Macro View lane the same way, so either
 lane can be scored alone. Replay writes ``eval_runs`` / ``eval_steps`` only — it
 does not flip briefs into the live loop.
+
+The exit-review lane (#34) is replayed the same way: ``config={"exit_review": true}``
+renders the held-position block (absent → the harness default, which follows
+``TRADER_EXIT_REVIEW_ENABLED``, off). Replay starts flat, so a run can **seed** a held
+position for the window with ``config={"exit_review_seed": {"qty", "avg_entry_price"}}``
+— an in-memory book for the crude sim only, never a ``positions`` row. The crude PnL then
+starts from that seed: a close realizes against the seeded entry, and a run that never
+closes carries the seed's mark-to-bars move as ``unrealized_pnl``. Seed the SAME
+position into the baseline and the candidate; only the block should differ.
 """
 
 from __future__ import annotations
 
+import math
 import time
 from datetime import datetime, timedelta
 from typing import Any
@@ -42,13 +52,38 @@ from trader.loop.context import ContextBuilder
 from trader.loop.decider import Decider, DeciderError
 from trader.loop.scheduler import Trigger
 from trader.store.db import Database
-from trader.store.repos import BriefsRepo, EvalRepo, MacroViewsRepo
+from trader.store.repos import BriefsRepo, EvalRepo, MacroViewsRepo, SentimentRepo
 
 log = structlog.get_logger(__name__)
 
 INTERVAL_SECONDS = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "1d": 86400}
 DEFAULT_MAX_STEPS = 500
 REPLAY_TRIGGER = "replay"
+
+
+def validate_seed(seed: Any) -> dict[str, Any]:
+    """The seeded position for an exit-review replay: a non-zero ``qty`` and a positive
+    ``avg_entry_price``; ``opened_at`` (ISO-8601, tz-aware) optionally dates it, else
+    the position is treated as opened at the window start."""
+    if not isinstance(seed, dict):
+        raise ValueError("exit_review_seed must be an object with qty and avg_entry_price")
+    try:
+        qty = float(seed["qty"])
+        entry = float(seed["avg_entry_price"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("exit_review_seed needs numeric qty and avg_entry_price") from exc
+    if not math.isfinite(qty) or qty == 0.0:
+        raise ValueError("exit_review_seed qty must be a non-zero finite number")
+    if not math.isfinite(entry) or entry <= 0.0:
+        raise ValueError("exit_review_seed avg_entry_price must be positive and finite")
+    out: dict[str, Any] = {"qty": qty, "avg_entry_price": entry}
+    opened_at = seed.get("opened_at")
+    if opened_at is not None:
+        parsed = datetime.fromisoformat(opened_at) if isinstance(opened_at, str) else opened_at
+        if not isinstance(parsed, datetime) or parsed.tzinfo is None:
+            raise ValueError("exit_review_seed opened_at must be a tz-aware ISO-8601 timestamp")
+        out["opened_at"] = parsed.isoformat()
+    return out
 
 
 class ReplayMarketData:
@@ -93,6 +128,7 @@ class ReplayHarness:
         max_steps: int = DEFAULT_MAX_STEPS,
         equity: float = 100_000.0,
         desk: Any | None = None,  # desk.desk.Desk; enables config={"desk": true} runs
+        exit_review_enabled: bool = False,  # default for runs that do not say (#34)
     ) -> None:
         self._db = db
         self._repo = EvalRepo(db)
@@ -110,6 +146,9 @@ class ReplayHarness:
                 # ReplayMarketData is the bars view. Macro series stay on the real
                 # provider and are capped at the step's date inside ContextBuilder.
                 fred=getattr(provider, "fred", None),
+                # The exit-review lane is a per-call switch; the sentiment read is
+                # pinned to the step (research_as_of) like the research lanes.
+                sentiment=SentimentRepo(db),
             )
             for include_macro_view in (True, False)
         }
@@ -117,6 +156,7 @@ class ReplayHarness:
         self._max_steps = max_steps
         self._equity = equity
         self._desk = desk
+        self._exit_review_default = exit_review_enabled
 
     # -- public API ----------------------------------------------------------
 
@@ -137,6 +177,8 @@ class ReplayHarness:
             )
         if (config or {}).get("desk") and self._desk is None:
             raise ValueError("desk replay requested but no desk is wired into this harness")
+        if config and config.get("exit_review_seed") is not None:
+            config = {**config, "exit_review_seed": validate_seed(config["exit_review_seed"])}
         return await self._repo.create_run(
             label=label,
             symbol=symbol.ticker,
@@ -157,6 +199,10 @@ class ReplayHarness:
         # View to score the brief lane on its own.
         include_briefs = bool(config.get("briefs", True))
         include_macro_view = bool(config.get("macro_view", True))
+        # The exit-review lane defaults to the harness setting (live: dark). A seed is
+        # independent of the flag so baseline and candidate share the same held book.
+        exit_review = bool(config.get("exit_review", self._exit_review_default))
+        seed = config.get("exit_review_seed")
         try:
             summary = await self._walk(
                 run_id,
@@ -166,6 +212,8 @@ class ReplayHarness:
                 use_desk=use_desk,
                 include_briefs=include_briefs,
                 include_macro_view=include_macro_view,
+                exit_review=exit_review,
+                seed=validate_seed(seed) if seed is not None else None,
             )
             await self._repo.finish_run(run_id, status="done", summary=summary)
         except Exception as exc:  # noqa: BLE001 - a failed run must say so, not hang
@@ -199,6 +247,8 @@ class ReplayHarness:
         use_desk: bool,
         include_briefs: bool,
         include_macro_view: bool = True,
+        exit_review: bool = False,
+        seed: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         context = self._contexts[include_macro_view]
         actions: dict[str, int] = {}
@@ -207,6 +257,17 @@ class ReplayHarness:
         steps = errors = skipped_closed = skipped_no_data = 0
         qty = entry = realized = cost = 0.0
         last_price = 0.0
+        # The sim's one-position book. A seed pre-loads it so the exit-review block has a
+        # position to review from the first step; opened_at dates the position for the
+        # block's age line (the seed's own, else the window start; the sim's own opens
+        # stamp the step they land on).
+        opened_at: datetime | None = None
+        if seed is not None:
+            qty = seed["qty"]
+            entry = seed["avg_entry_price"]
+            opened_at = (
+                datetime.fromisoformat(seed["opened_at"]) if seed.get("opened_at") else start
+            )
 
         as_of = start
         while as_of < end:
@@ -225,6 +286,12 @@ class ReplayHarness:
                 recent_decisions=list(recent),
                 research_as_of=as_of,
                 include_briefs=include_briefs,
+                exit_review=exit_review,
+                position=(
+                    {"qty": qty, "avg_entry_price": entry, "opened_at": opened_at}
+                    if qty != 0.0
+                    else None
+                ),
             )
             if ctx.price <= 0:
                 skipped_no_data += 1
@@ -269,9 +336,11 @@ class ReplayHarness:
                 if decision.action.value == "open" and qty == 0.0:
                     qty = side * decision.intent.notional / ctx.price
                     entry = ctx.price
+                    opened_at = as_of
                 elif decision.action.value == "close" and qty != 0.0:
                     realized += (ctx.price - entry) * qty
                     qty = 0.0
+                    opened_at = None
 
             # Versions ride the step decision: the eval listing omits the prompt, and
             # the gate has to see which research row the step actually used.
@@ -286,6 +355,8 @@ class ReplayHarness:
             if ctx.brief is not None:
                 decision_row["brief_version"] = ctx.brief.version
                 decision_row["brief"] = ctx.brief.entries
+            if ctx.held_position is not None:
+                decision_row["held_position"] = ctx.held_position.entries
             if desk_info is not None:
                 decision_row["desk"] = desk_info
             await self._repo.add_step(
@@ -312,6 +383,8 @@ class ReplayHarness:
 
         return {
             **({"desk": desk_tally} if use_desk else {}),
+            **({"exit_review_seed": seed} if seed is not None else {}),
+            "exit_review": exit_review,
             "steps": steps,
             "errors": errors,
             "skipped_closed": skipped_closed,

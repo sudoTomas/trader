@@ -722,9 +722,15 @@ def build_registry(
         desk: bool = False,
         briefs: bool = True,
         macro_view: bool = True,
+        exit_review: bool | None = None,
+        exit_review_seed: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """``briefs`` / ``macro_view`` drop a research lane from the replayed prompt;
-        a baseline with ``briefs=False`` matches the live path while that lane is dark."""
+        a baseline with ``briefs=False`` matches the live path while that lane is dark.
+        ``exit_review`` renders the held-position block (None → follows
+        ``TRADER_EXIT_REVIEW_ENABLED``); ``exit_review_seed`` ({"qty", "avg_entry_price",
+        optional "opened_at"}) starts the run's crude book with that position held so the
+        block has something to review — seed baseline and candidate alike."""
         import asyncio
         from datetime import datetime
 
@@ -733,7 +739,11 @@ def build_registry(
         if evaluator is None:
             return {"run_id": None, "status": "unavailable", "reason": "no evaluator in build"}
         sym = default_registry().get(symbol)
-        config = {"desk": desk, "briefs": briefs, "macro_view": macro_view}
+        config: dict[str, Any] = {"desk": desk, "briefs": briefs, "macro_view": macro_view}
+        if exit_review is not None:
+            config["exit_review"] = exit_review
+        if exit_review_seed is not None:
+            config["exit_review_seed"] = exit_review_seed
         run_id = await evaluator.create_run(
             sym,
             datetime.fromisoformat(start),
