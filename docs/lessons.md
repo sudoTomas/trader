@@ -265,7 +265,8 @@ serialize under a lock; exactly one process owns the lineage; a 403 on refresh i
 entitlement failure and quarantines without retry; `XAI_API_KEY` is a first-class
 fallback.
 
-**Where.** `src/trader/llm/xai_auth.py`.
+**Where.** `src/trader/llm/xai_auth.py`. One manager per process — `create_app` builds
+it once and every builder shares it (#63); see `surfaces/api/app.py::build_xai_manager`.
 
 ## guided-decoding-omitted-keys
 

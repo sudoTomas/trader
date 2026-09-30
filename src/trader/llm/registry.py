@@ -20,6 +20,7 @@ from trader.llm.nemotron import apply_thinking_guard, nemotron_client
 from trader.llm.openai_compat import OpenAIChatClient, loads_extra_body
 from trader.llm.usage import UsageMeter
 from trader.llm.xai import xai_client
+from trader.llm.xai_auth import XaiCredentialManager
 from trader.ops.config import Settings
 
 log = structlog.get_logger(__name__)
@@ -154,8 +155,17 @@ def build_research_client(
     )
 
 
-def build_llm_registry(settings: Settings, meter: UsageMeter | None = None) -> LLMRegistry:
+def build_llm_registry(
+    settings: Settings,
+    meter: UsageMeter | None = None,
+    *,
+    xai_manager: XaiCredentialManager | None = None,
+) -> LLMRegistry:
     """Wire the chains this build can serve from configured credentials.
+
+    ``xai_manager`` is the process-wide OAuth credential manager (``create_app`` builds
+    one and threads it through every registry); None falls back to building one per
+    call, which store-less builds and tests rely on.
 
     Grok fronts research roles when any xAI credential path exists and
     ``TRADER_RESEARCH_BASE_URL`` is empty — SuperGrok OAuth (device-code login)
@@ -174,7 +184,7 @@ def build_llm_registry(settings: Settings, meter: UsageMeter | None = None) -> L
         for role in RESEARCH_ROLES:
             routes[role] = [research]
         return LLMRegistry(routes, meter)
-    grok = xai_client(settings)
+    grok = xai_client(settings, manager=xai_manager)
     # Research prefers Grok; the decide client backstops whether xAI is absent
     # or the decide role itself moved off the self-hosted vLLM (the Desk must
     # work before any Grok credential exists — see

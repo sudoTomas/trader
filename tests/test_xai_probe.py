@@ -476,7 +476,7 @@ def test_probe_xai_round_trip_api_mcp_cli(clean_db: None, monkeypatch: pytest.Mo
     monkeypatch.setattr(xai_probe, "probe_matrix", fake_matrix)
     import trader.surfaces.api.app as app_mod
 
-    monkeypatch.setattr(app_mod, "build_xai_http", lambda settings: object())
+    monkeypatch.setattr(app_mod, "build_xai_http", lambda settings, **kw: object())
     settings = Settings(auth_disabled=True)
 
     with TestClient(create_app(settings)) as tc:

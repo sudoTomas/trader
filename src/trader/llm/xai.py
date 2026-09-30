@@ -77,6 +77,8 @@ def xai_http_client(
 
     Diagnostics (``llm/xai_probe.py``) reuse this so they exercise the exact credential
     path the roles do: no second OAuth client, no token-file access outside the manager.
+    A ``manager`` handed in is used as-is (one per process, #63); ``build_manager`` is
+    only the fallback for store-less callers.
     """
     manager = manager if manager is not None else build_manager(settings)
     if manager is None and not settings.xai_api_key:

@@ -154,7 +154,14 @@ def _jwt_exp(token: str) -> float | None:
 
 
 class XaiCredentialManager:
-    """Single owner of the rotating refresh lineage; serves in-memory access tokens."""
+    """Single owner of the rotating refresh lineage; serves in-memory access tokens.
+
+    Build ONE per process and share it (``surfaces/api/app.py::create_app`` does): every
+    ``get_access_token`` call — from any client — takes the same lock, re-checks the cache
+    inside it, and a refresh re-reads the store before spending the refresh token. Two
+    managers over one store would each decide to refresh on their own and double-spend
+    the single-use rotation (#63).
+    """
 
     def __init__(
         self,
@@ -321,7 +328,10 @@ class XaiCredentialManager:
 
 def build_manager(settings: Settings) -> XaiCredentialManager | None:
     """A manager when the encrypted store is usable in this environment, else None
-    (the provider then resolves to the XAI_API_KEY fallback; consumers never know)."""
+    (the provider then resolves to the XAI_API_KEY fallback; consumers never know).
+
+    Call it once per process and pass the result down (``create_app`` does); the
+    client factories only fall back to it when no manager is handed in."""
     if not settings.xai_token_key:
         return None
     return XaiCredentialManager(XaiCredentialStore(settings.xai_token_path, settings.xai_token_key))
