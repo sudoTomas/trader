@@ -14,6 +14,26 @@ import httpx
 from trader.llm.base import Completion, LLMError, Usage
 from trader.llm.usage import price_per_million
 
+#: llama.cpp (Ollama's engine) compiles a JSON schema into a GBNF grammar and rejects
+#: any repetition bound of 2000 or more ("failed to parse grammar", #70). Generic
+#: clients cap length bounds at this; the reply is still validated against the model's
+#: real schema, so the contract does not change.
+GRAMMAR_REPETITION_CAP = 1999
+
+
+def cap_repetition(schema: Any, cap: int) -> Any:
+    """Copy of ``schema`` with every ``maxLength``/``maxItems`` above ``cap`` lowered to it."""
+    if isinstance(schema, list):
+        return [cap_repetition(item, cap) for item in schema]
+    if not isinstance(schema, dict):
+        return schema
+    out = {key: cap_repetition(value, cap) for key, value in schema.items()}
+    for key in ("maxLength", "maxItems"):
+        bound = out.get(key)
+        if isinstance(bound, int) and not isinstance(bound, bool) and bound > cap:
+            out[key] = cap
+    return out
+
 
 def loads_extra_body(raw: str) -> dict[str, Any]:
     """Parse a ``TRADER_*_EXTRA_BODY`` value. Empty is ``{}``; else a JSON object."""
@@ -44,6 +64,7 @@ class OpenAIChatClient:
         timeout: float = 120.0,
         price_in: float = 0.0,
         price_out: float = 0.0,
+        schema_repetition_cap: int | None = None,
     ) -> None:
         self.name = name
         self.model = model
@@ -51,6 +72,8 @@ class OpenAIChatClient:
         # Zeros mean "use PRICES, else meter $0". Any non-zero side overrides the table.
         self._price_in = price_in
         self._price_out = price_out
+        # None sends schemas as given (vLLM, xAI); set for grammar engines like llama.cpp.
+        self._schema_cap = schema_repetition_cap
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self._client = client or httpx.AsyncClient(
             base_url=base_url, headers=headers, timeout=timeout
@@ -75,6 +98,8 @@ class OpenAIChatClient:
             **self._extra_body,
         }
         if schema is not None:
+            if self._schema_cap is not None:
+                schema = cap_repetition(schema, self._schema_cap)
             body["response_format"] = {
                 "type": "json_schema",
                 "json_schema": {"name": "response", "schema": schema, "strict": True},

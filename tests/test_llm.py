@@ -276,6 +276,91 @@ async def test_decide_url_matching_nemotron_preset_keeps_thinking_disabled():
     assert seen["body"]["chat_template_kwargs"]["keep"] == 1
 
 
+LONG_BOUNDS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "rationale": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "tags": {"type": "array", "maxItems": 5000, "items": {"type": "string", "maxLength": 40}},
+        "maxLength": {"type": "integer"},  # a property NAMED maxLength is data, not a bound
+    },
+}
+
+
+async def test_generic_endpoint_caps_schema_bounds_for_llama_cpp():
+    # Ollama/llama.cpp rejects repetition bounds >= 2000 ("failed to parse grammar", #70).
+    seen: dict = {}
+    settings = Settings(
+        auth_disabled=True,
+        decide_base_url="http://mars:11434/v1",
+        decide_model="ornith-15-35b",
+    )
+    from trader.llm.registry import build_decide_client
+
+    client = build_decide_client(settings, client=capture_client(seen, VLLM_RESPONSE))
+    await client.complete([{"role": "user", "content": "decide"}], schema=LONG_BOUNDS_SCHEMA)
+
+    sent = seen["body"]["response_format"]["json_schema"]["schema"]["properties"]
+    assert sent["rationale"]["maxLength"] == 1999
+    assert sent["rationale"]["minLength"] == 1
+    assert sent["tags"]["maxItems"] == 1999
+    assert sent["tags"]["items"]["maxLength"] == 40  # small bounds pass through
+    assert sent["maxLength"] == {"type": "integer"}
+    # The caller's schema is not mutated: pydantic still validates the real 2000.
+    assert LONG_BOUNDS_SCHEMA["properties"]["rationale"]["maxLength"] == 2000
+
+
+async def test_generic_research_endpoint_caps_schema_bounds_too():
+    seen: dict = {}
+    settings = Settings(
+        auth_disabled=True,
+        research_base_url="http://mars:11434/v1",
+        research_model="ornith-15-35b",
+    )
+    from trader.llm.registry import build_research_client
+
+    client = build_research_client(settings, client=capture_client(seen, VLLM_RESPONSE))
+    await client.complete([{"role": "user", "content": "compile"}], schema=LONG_BOUNDS_SCHEMA)
+    sent = seen["body"]["response_format"]["json_schema"]["schema"]["properties"]
+    assert sent["rationale"]["maxLength"] == 1999
+
+
+async def test_real_decision_schema_fits_the_grammar_cap_on_generic_endpoints():
+    from trader.llm.registry import build_decide_client
+    from trader.loop.decider import DECISION_SCHEMA
+
+    seen: dict = {}
+    settings = Settings(
+        auth_disabled=True, decide_base_url="http://mars:11434/v1", decide_model="m"
+    )
+    client = build_decide_client(settings, client=capture_client(seen, VLLM_RESPONSE))
+    await client.complete([{"role": "user", "content": "decide"}], schema=DECISION_SCHEMA)
+    sent = seen["body"]["response_format"]["json_schema"]["schema"]
+    assert sent["properties"]["rationale"]["maxLength"] == 1999
+    assert DECISION_SCHEMA["properties"]["rationale"]["maxLength"] == 2000
+
+
+async def test_nemotron_preset_sends_schema_bounds_untouched():
+    seen: dict = {}
+    client = nemotron_client(SETTINGS, client=capture_client(seen, VLLM_RESPONSE))
+    await client.complete([{"role": "user", "content": "decide"}], schema=LONG_BOUNDS_SCHEMA)
+    assert seen["body"]["response_format"]["json_schema"]["schema"] == LONG_BOUNDS_SCHEMA
+
+
+async def test_decide_url_matching_nemotron_preset_sends_schema_bounds_untouched():
+    # The Spark reached through the generic settings is still the Spark: byte-identical.
+    seen: dict = {}
+    settings = Settings(
+        auth_disabled=True,
+        decide_base_url=SETTINGS.nemotron_base_url,
+        decide_model="nemotron-3-super",
+    )
+    from trader.llm.registry import build_decide_client
+
+    client = build_decide_client(settings, client=capture_client(seen, VLLM_RESPONSE))
+    await client.complete([{"role": "user", "content": "decide"}], schema=LONG_BOUNDS_SCHEMA)
+    assert seen["body"]["response_format"]["json_schema"]["schema"] == LONG_BOUNDS_SCHEMA
+
+
 def test_one_decide_endpoint_backstops_research_without_xai():
     settings = Settings(
         auth_disabled=True,

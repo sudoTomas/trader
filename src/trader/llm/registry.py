@@ -17,7 +17,11 @@ import structlog
 
 from trader.llm.base import Completion, LLMClient, LLMError
 from trader.llm.nemotron import apply_thinking_guard, nemotron_client
-from trader.llm.openai_compat import OpenAIChatClient, loads_extra_body
+from trader.llm.openai_compat import (
+    GRAMMAR_REPETITION_CAP,
+    OpenAIChatClient,
+    loads_extra_body,
+)
 from trader.llm.usage import UsageMeter
 from trader.llm.xai import xai_client
 from trader.llm.xai_auth import XaiCredentialManager
@@ -89,6 +93,7 @@ def _generic_client(
     price_out: float,
     model_setting: str,
     client: httpx.AsyncClient | None,
+    schema_repetition_cap: int | None,
 ) -> OpenAIChatClient:
     if not model:
         raise LLMError(f"{model_setting} is required when the base URL is set")
@@ -101,6 +106,7 @@ def _generic_client(
         client=client,
         price_in=price_in,
         price_out=price_out,
+        schema_repetition_cap=schema_repetition_cap,
     )
 
 
@@ -116,7 +122,8 @@ def build_decide_client(
     if not base_url:
         return nemotron_client(settings, client=client)
     extra = loads_extra_body(settings.decide_extra_body)
-    if _same_endpoint(base_url, settings.nemotron_base_url):
+    spark = _same_endpoint(base_url, settings.nemotron_base_url)
+    if spark:
         extra = apply_thinking_guard(extra)
     return _generic_client(
         base_url=base_url,
@@ -127,6 +134,8 @@ def build_decide_client(
         price_out=settings.decide_price_out,
         model_setting="TRADER_DECIDE_MODEL",
         client=client,
+        # The Spark's vLLM takes the schema as-is; anything else may be llama.cpp (#70).
+        schema_repetition_cap=None if spark else GRAMMAR_REPETITION_CAP,
     )
 
 
@@ -141,7 +150,8 @@ def build_research_client(
     if not base_url:
         return None
     extra = loads_extra_body(settings.research_extra_body)
-    if _same_endpoint(base_url, settings.nemotron_base_url):
+    spark = _same_endpoint(base_url, settings.nemotron_base_url)
+    if spark:
         extra = apply_thinking_guard(extra)
     return _generic_client(
         base_url=base_url,
@@ -152,6 +162,8 @@ def build_research_client(
         price_out=settings.research_price_out,
         model_setting="TRADER_RESEARCH_MODEL",
         client=client,
+        # The Spark's vLLM takes the schema as-is; anything else may be llama.cpp (#70).
+        schema_repetition_cap=None if spark else GRAMMAR_REPETITION_CAP,
     )
 
 
