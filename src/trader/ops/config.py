@@ -355,8 +355,8 @@ class Settings(BaseSettings):
             "Grok model for the desk seats (`trader seat run <seat>`, a standalone process "
             "outside `trader-api`). Must be entitled on `/v1/responses` with `x_search` and "
             "`web_search` (probe matrix: docs/research/xai-api.md). The seat authenticates "
-            "with `XAI_API_KEY` by default; `--credential oauth` shares the service's OAuth "
-            "lineage and is for one-shots only."
+            "with the shared SuperGrok OAuth login by default (cross-process refresh lock, #68); "
+            "`--credential api_key` pins `XAI_API_KEY` instead."
         ),
     )
     seat_max_notes: int = setting(
