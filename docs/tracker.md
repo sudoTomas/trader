@@ -22,10 +22,10 @@ embry0 stays on GitHub (`sudoTomas/embry0`).
 | [#4](https://github.com/sudoTomas/trader/issues/4) **closed 2026-09-29 (PR #59; shadow-first)** | EAI-187 | Commodity ETFs |
 | [#5](https://github.com/sudoTomas/trader/issues/5) **closed 2026-09-29 (PR #60)** | EAI-189 | Screener |
 | [#6](https://github.com/sudoTomas/trader/issues/6) **closed 2026-09-29** | EAI-191 | IBKR decision record (deferred; re-file when wanted) |
-| [#7](https://github.com/sudoTomas/trader/issues/7) | EAI-173 | Probe SuperGrok OAuth vs `/v1/responses` |
+| [#7](https://github.com/sudoTomas/trader/issues/7) **closed 2026-09-29 (matrix recorded, 530cfb0)** | EAI-173 | Probe SuperGrok OAuth vs `/v1/responses` |
 | [#8](https://github.com/sudoTomas/trader/issues/8) **closed 2026-09-29 (PR #58)** | — | Capture-scoped API key |
-| [#9](https://github.com/sudoTomas/trader/issues/9) | — | crypto-flows Grok desk seat |
-| [#10](https://github.com/sudoTomas/trader/issues/10) | — | Sweep citation loop |
+| [#9](https://github.com/sudoTomas/trader/issues/9) **closed 2026-09-29 (PR #66)** | — | crypto-flows Grok desk seat |
+| [#10](https://github.com/sudoTomas/trader/issues/10) **closed 2026-09-29 (PR #66)** | — | Sweep citation loop |
 | [#11](https://github.com/sudoTomas/trader/issues/11) **closed 2026-09-29 (PR #39)** | — | Wire `ApprovalService.redeem()` |
 | [#12](https://github.com/sudoTomas/trader/issues/12) **closed 2026-09-29 (PR #40)** | — | Count `trades_today` |
 | [#13](https://github.com/sudoTomas/trader/issues/13) **closed 2026-09-29 (PR #40)** | — | Alpaca account equity, not `shadow_equity` |
@@ -59,6 +59,11 @@ embry0 stays on GitHub (`sudoTomas/embry0`).
 
 Batch one (2026-09-29) merged as PRs #36 (D), #39 (B), #38 (C), #37 (E), #40 (A); report in
 `docs/reports/2026-09-29-batch-one.md`. Deployed only after the operator restarts `trader-api`.
+
+Batch four (2026-09-29/30): #63 shared xAI manager (PR #64), #34 exit-review lane built dark + replay
+flag (PR #65; issue stays open through the gate), #9 + #10 Grok crypto-flows seat and citation report
+(PR #66). Briefs lane flipped live 2026-09-29 after the neutral replay (`docs/reports/2026-09-29-briefs-replay-gate.md`).
+GLD/SLV/USO in per-symbol shadow since 2026-09-29 19:35 UTC.
 
 Batch three (2026-09-29): #8 (PR #58), #4 (PR #59), #7 probe capability (PR #61, issue open until the
 matrix is recorded), #5 (PR #60), fixes lane (PR #62: single-source version, FRED door for #17, replay
