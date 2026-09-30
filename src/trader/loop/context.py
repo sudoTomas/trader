@@ -43,7 +43,7 @@ BAR_LOOKBACK = 100
 DEFAULT_INTERVALS = ("1h",)
 MACRO_BUDGET_CHARS = 2000
 BRIEF_BUDGET_CHARS = 1200
-HELD_POSITION_BUDGET_CHARS = 700
+HELD_POSITION_BUDGET_CHARS = 900
 # The explicit ask. The block exists to make the decider answer this, so it is one whole
 # entry: under the lane's budget it stays or goes intact, never truncated mid-sentence.
 EXIT_REVIEW_ASK = (
