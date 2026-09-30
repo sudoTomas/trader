@@ -33,13 +33,16 @@ from trader.seats.runner import (
     SweepCost,
     append_run,
     build_capture_http,
+    build_report,
     build_xai_http,
+    cited_note_ids,
     estimate_cost,
     ground,
     is_duplicate,
     parse_notes,
     parse_responses_payload,
     read_runs,
+    render_report,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -598,6 +601,87 @@ def test_state_file_is_append_only_jsonl(tmp_path: Path) -> None:
     assert read_runs(tmp_path / "missing.jsonl") == []
 
 
+# --- #10 citation loop ----------------------------------------------------------------
+
+
+def view(thesis: str, sections: dict[str, str], note_ids: list[int], version: int = 4) -> dict:
+    return {
+        "version": version,
+        "compiled_by": "xai:grok-4",
+        "global_thesis": thesis,
+        "sections": sections,
+        "note_ids": note_ids,
+        "created_at": NOW.isoformat(),
+    }
+
+
+def test_cited_note_ids_parses_the_compiler_markers() -> None:
+    v = view(
+        "Risk-off [note:101] and [note:7].",
+        {"crypto": "Outflows [note:102][note:101]"},
+        [7, 101, 102, 103],
+    )
+    assert cited_note_ids(v) == {7, 101, 102}
+    assert cited_note_ids(None) == set()
+
+
+def run_record(ts: datetime, ids: list[int], cost: float, *, dry_run: bool = False) -> dict:
+    return {
+        "ts": ts.isoformat(),
+        "seat": "crypto-flows",
+        "model": "grok-4.3",
+        "submitted": [{"id": i, "title": f"n{i}", "source": None} for i in ids],
+        "dropped": [],
+        "cost_usd": {"total_usd": cost},
+        "usage": {},
+        "dry_run": dry_run,
+    }
+
+
+async def test_build_report_matches_submitted_ids_against_the_current_view() -> None:
+    api = FakeApi(
+        view=view(
+            "Thesis [note:101].", {"crypto": "Flows [note:102] [note:200]"}, [101, 102, 103, 200]
+        )
+    )
+    runs = [
+        run_record(NOW, [101, 102, 103], 0.42),
+        run_record(NOW - timedelta(days=1), [90], 0.31),
+        run_record(NOW - timedelta(days=2), [80], 0.10, dry_run=True),
+    ]
+    rows = await build_report(runs, CaptureClient(api.http()))
+    assert [r["submitted_ids"] for r in rows] == [[101, 102, 103], [90]]  # dry runs excluded
+    assert rows[0]["cited_ids"] == [101, 102]
+    assert rows[0]["in_view_ids"] == [101, 102, 103]
+    assert rows[1]["cited_ids"] == [] and rows[1]["in_view_ids"] == []
+    assert rows[0]["view_version"] == 4
+    assert rows[0]["seat_usd"] == 0.42
+    assert rows[0]["metered_usd"] is None  # no operator key → seat estimate only
+    assert all(r.headers["x-api-key"] == CAPTURE for r in api.requests)
+
+    text = render_report(rows)
+    assert "101,102" in text and "0.42" in text
+    assert "2/3" in text  # cited/submitted for the first run
+
+
+async def test_build_report_reads_usage_daily_with_the_operator_key_only_for_that_read() -> None:
+    api = FakeApi(view=view("x [note:101]", {}, [101]), usage_total=1.23)
+    runs = [run_record(NOW, [101], 0.4)]
+    rows = await build_report(runs, CaptureClient(api.http()), usage_http=api.http(OPERATOR))
+    assert rows[0]["metered_usd"] == 1.23
+    by_path = {r.url.path: r.headers["x-api-key"] for r in api.requests}
+    assert by_path["/usage"] == OPERATOR
+    assert by_path["/research/view"] == CAPTURE
+    usage_req = next(r for r in api.requests if r.url.path == "/usage")
+    assert usage_req.url.params["day"] == "2026-09-29"
+
+
+async def test_build_report_without_a_view_cites_nothing() -> None:
+    api = FakeApi(view=None)
+    rows = await build_report([run_record(NOW, [1], 0.1)], CaptureClient(api.http()))
+    assert rows[0]["cited_ids"] == [] and rows[0]["view_version"] is None
+
+
 # --- CLI --------------------------------------------------------------------------------
 
 
@@ -652,6 +736,50 @@ def test_cli_seat_run_fails_closed_without_a_capture_key(monkeypatch: pytest.Mon
     result = CliRunner().invoke(cli.app, ["seat", "run", "crypto-flows"])
     assert result.exit_code == 1
     assert "TRADER_CAPTURE_API_KEY" in result.output
+
+
+def test_cli_seat_report_table_and_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from trader.surfaces.cli import main as cli
+
+    path = tmp_path / "runs.jsonl"
+    append_run(path, run_record(NOW - timedelta(days=1), [90], 0.31))
+    append_run(path, run_record(NOW, [101, 102], 0.42))
+    api = FakeApi(view=view("t [note:101]", {}, [101, 102]), usage_total=2.0)
+    settings = Settings(
+        api_key="", capture_api_key=CAPTURE, api_base_url=API_BASE, seat_state_path=str(path)
+    )
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    monkeypatch.setattr(seat_runner, "build_capture_http", lambda s: api.http())
+
+    result = CliRunner().invoke(cli.app, ["seat", "report", "--json"])
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.output)
+    assert [r["submitted_ids"] for r in rows] == [[101, 102], [90]]
+    assert rows[0]["cited_ids"] == [101]
+    assert rows[0]["metered_usd"] is None  # blank TRADER_API_KEY → no /usage read
+    assert not [r for r in api.requests if r.url.path == "/usage"]
+
+    result = CliRunner().invoke(cli.app, ["seat", "report", "--limit", "1"])
+    assert result.exit_code == 0, result.output
+    assert "1/2" in result.output and "90" not in result.output
+
+
+def test_cli_seat_report_uses_operator_key_for_usage_when_present(monkeypatch, tmp_path: Path):
+    from trader.surfaces.cli import main as cli
+
+    path = tmp_path / "runs.jsonl"
+    append_run(path, run_record(NOW, [101], 0.42))
+    api = FakeApi(view=view("t [note:101]", {}, [101]), usage_total=2.0)
+    settings = Settings(
+        api_key=OPERATOR, capture_api_key=CAPTURE, api_base_url=API_BASE, seat_state_path=str(path)
+    )
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    monkeypatch.setattr(seat_runner, "build_capture_http", lambda s: api.http())
+    monkeypatch.setattr(seat_runner, "build_operator_http", lambda s: api.http(OPERATOR))
+
+    result = CliRunner().invoke(cli.app, ["seat", "report", "--json"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)[0]["metered_usd"] == 2.0
 
 
 # --- settings + systemd templates -------------------------------------------------------

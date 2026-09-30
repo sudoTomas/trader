@@ -622,5 +622,47 @@ def seat_run(
         typer.echo(f"  dropped [{drop['reason']}] {drop['title']}")
 
 
+@seat_app.command("report")
+def seat_report(
+    seat: str = typer.Option("", help="Filter to one seat; empty = every seat."),
+    limit: int = typer.Option(10, min=1, max=500, help="How many runs, newest first."),
+    json_output: bool = typer.Option(False, "--json", help="Rows as JSON."),
+) -> None:
+    """The citation loop (#10): for each logged seat run, which of its submitted note ids
+    the CURRENT Macro View cites ([note:N]), plus the seat's own cost estimate. Reads the
+    view with the capture key; the day's usage_daily total is added only when
+    TRADER_API_KEY is set (GET /usage is operator-only)."""
+    import asyncio
+
+    from trader.seats import runner as seat_runner
+
+    _seat_log_to_stderr()
+    settings = get_settings()
+    runs = seat_runner.read_runs(settings.seat_state_path, seat=seat or None, limit=limit)
+
+    async def _build() -> list[dict]:
+        capture_http = seat_runner.build_capture_http(settings)
+        usage_http = seat_runner.build_operator_http(settings)
+        async with capture_http:
+            capture = seat_runner.CaptureClient(capture_http)
+            if usage_http is None:
+                return await seat_runner.build_report(runs, capture)
+            async with usage_http:
+                return await seat_runner.build_report(runs, capture, usage_http=usage_http)
+
+    try:
+        rows = asyncio.run(_build())
+    except seat_runner.SeatError as exc:
+        typer.echo(f"seat report: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    if json_output:
+        typer.echo(json.dumps(rows, indent=2))
+        return
+    if not runs:
+        typer.echo(f"no seat runs logged at {settings.seat_state_path}")
+        return
+    typer.echo(seat_runner.render_report(rows))
+
+
 if __name__ == "__main__":
     app()

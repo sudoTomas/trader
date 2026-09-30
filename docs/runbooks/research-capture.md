@@ -219,3 +219,26 @@ same `.env` as `trader-api` (`TRADER_API_BASE_URL`, `TRADER_CAPTURE_API_KEY`,
 `XAI_API_KEY`, `TRADER_SEAT_*`). Adding a second seat is a new `Seat` in
 `src/trader/seats/` plus its own unit pair — after a week of cited, non-duplicative
 crypto-flows notes, per the design's §3.5.
+
+### Closing the loop: which seat notes the Macro View cites (#10)
+
+The compiler drops uncited claims, so the real distillation-quality metric is not "notes
+submitted" but "notes the compiled Macro View actually cites". `trader seat report`
+reads the run log back, fetches the current view (`GET /research/view`, capture key),
+and matches each run's submitted ids against the `[note:N]` markers the compiler emits
+(`research/compiler.py`). Per run: cited/submitted, the cited ids, the seat's own cost
+estimate, and — only when `TRADER_API_KEY` is set, because `GET /usage` is
+operator-only — the day's `usage_daily` total (the service-side spend the notes
+triggered: compile, briefs). The seat's own spend is never in `usage_daily`; the
+`seat $` column is that record.
+
+```bash
+uv run trader seat report                 # table, newest 10 runs
+uv run trader seat report --limit 30 --json
+uv run trader seat report --seat crypto-flows
+```
+
+Read it the way the Hermes skill does after a PDF batch: a week of runs where most
+submitted ids show up cited and few drops read `duplicate` is the bar for adding the
+next seat; a run where nothing is cited means the distillation missed, not that the
+compiler is wrong.

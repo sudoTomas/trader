@@ -14,6 +14,10 @@ dropped; ``authored_at`` is kept only when it parses tz-aware and is not in the 
 The seat is outside the service's usage meter, so it prices its own spend with the same
 table (``llm/usage.py``) and records it locally. ``CaptureClient`` holds the capture key
 and exposes exactly the capture surface — enforced in code, not prompt.
+
+#10 lives at the bottom: ``build_report`` reads the run log back and asks the current
+Macro View which submitted ids it actually cites (``[note:N]`` markers, the compiler's
+own format — ``research/compiler.py``).
 """
 
 from __future__ import annotations
@@ -472,6 +476,15 @@ def build_capture_http(settings: Settings) -> httpx.AsyncClient:
     )
 
 
+def build_operator_http(settings: Settings) -> httpx.AsyncClient | None:
+    """Operator-key client for the one operator-only read (`GET /usage`) in `seat report`."""
+    if not settings.api_key:
+        return None
+    return httpx.AsyncClient(
+        base_url=settings.api_base_url, headers={"x-api-key": settings.api_key}, timeout=60.0
+    )
+
+
 def build_xai_http(settings: Settings, *, credential: str = "api_key") -> httpx.AsyncClient:
     """The xAI client for a standalone seat process.
 
@@ -701,3 +714,98 @@ class SeatRunner:
         if s.authored_at is not None:
             payload["authored_at"] = s.authored_at.isoformat()
         return payload
+
+
+# --- #10: the citation loop ----------------------------------------------------------------------
+
+
+def cited_note_ids(view: dict[str, Any] | None) -> set[int]:
+    """Note ids the compiled Macro View cites: ``[note:N]`` in the thesis and sections."""
+    if not view:
+        return set()
+    texts = [str(view.get("global_thesis") or "")]
+    sections = view.get("sections") or {}
+    if isinstance(sections, dict):
+        texts.extend(str(v) for v in sections.values())
+    return {int(m) for text in texts for m in CITATION.findall(text)}
+
+
+async def _usage_total_for_day(usage_http: httpx.AsyncClient, day: str) -> float | None:
+    try:
+        resp = await usage_http.get("/usage", params={"day": day})
+        resp.raise_for_status()
+    except httpx.HTTPError as exc:
+        log.warning("seat_report_usage_unavailable", day=day, error=str(exc))
+        return None
+    totals = (resp.json() or {}).get("totals") or {}
+    value = totals.get("cost_usd")
+    return float(value) if value is not None else None
+
+
+async def build_report(
+    runs: list[dict[str, Any]],
+    capture: CaptureClient,
+    *,
+    usage_http: httpx.AsyncClient | None = None,
+) -> list[dict[str, Any]]:
+    """Per run: which submitted ids the CURRENT Macro View cites, plus cost.
+
+    ``seat_usd`` is the seat's own estimate from the run log. ``metered_usd`` is the
+    day's ``usage_daily`` total (service-side spend: the compile the notes triggered
+    etc.), read with the operator key when one is given, else None. Dry runs are skipped.
+    """
+    view = await capture.macro_view()
+    cited = cited_note_ids(view)
+    inputs = {int(i) for i in (view or {}).get("note_ids") or []}
+    version = (view or {}).get("version")
+    usage_cache: dict[str, float | None] = {}
+    rows: list[dict[str, Any]] = []
+    for run in runs:
+        if run.get("dry_run"):
+            continue
+        ids = [int(s["id"]) for s in run.get("submitted") or [] if s.get("id") is not None]
+        day = str(run.get("ts", ""))[:10]
+        metered: float | None = None
+        if usage_http is not None and day:
+            if day not in usage_cache:
+                usage_cache[day] = await _usage_total_for_day(usage_http, day)
+            metered = usage_cache[day]
+        rows.append(
+            {
+                "ts": run.get("ts"),
+                "seat": run.get("seat"),
+                "model": run.get("model"),
+                "submitted_ids": ids,
+                "cited_ids": sorted(i for i in ids if i in cited),
+                "in_view_ids": sorted(i for i in ids if i in inputs),
+                "view_version": version,
+                "seat_usd": float((run.get("cost_usd") or {}).get("total_usd") or 0.0),
+                "metered_usd": metered,
+            }
+        )
+    return rows
+
+
+def render_report(rows: list[dict[str, Any]]) -> str:
+    header = (
+        f"{'run (UTC)':<17}{'seat':<14}{'cited/sub':<11}{'cited ids':<18}"
+        f"{'seat $':>8}{'day metered $':>15}"
+    )
+    lines = [header]
+    total_sub = total_cited = 0
+    for r in rows:
+        n_sub, n_cited = len(r["submitted_ids"]), len(r["cited_ids"])
+        total_sub += n_sub
+        total_cited += n_cited
+        metered = "-" if r["metered_usd"] is None else f"{r['metered_usd']:.4f}"
+        lines.append(
+            f"{str(r['ts'])[:16]:<17}{str(r['seat']):<14}{f'{n_cited}/{n_sub}':<11}"
+            f"{(','.join(str(i) for i in r['cited_ids']) or '-'):<18}"
+            f"{r['seat_usd']:>8.4f}{metered:>15}"
+        )
+    version = rows[0]["view_version"] if rows else None
+    lines.append(
+        f"cited {total_cited}/{total_sub} submitted notes in Macro View "
+        f"{'v' + str(version) if version else '(none compiled)'}"
+    )
+    return "\n".join(lines)
