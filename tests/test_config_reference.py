@@ -76,6 +76,7 @@ def test_gates_are_marked_and_default_dark(gen) -> None:
         "loop_enabled",
         "desk_enabled",
         "briefs_enabled",
+        "exit_review_enabled",
         "sentiment_trigger_enabled",
         "auth_disabled",
     ):

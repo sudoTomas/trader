@@ -33,6 +33,7 @@ os.environ["TRADER_SHADOW_MODE"] = "true"
 os.environ["TRADER_SENTIMENT_TRIGGER_ENABLED"] = "false"
 os.environ["TRADER_DESK_ENABLED"] = "false"
 os.environ["TRADER_BRIEFS_ENABLED"] = "false"
+os.environ["TRADER_EXIT_REVIEW_ENABLED"] = "false"
 os.environ["TRADER_SHADOW_SYMBOLS"] = ""
 # Likewise credentials: tests that want a credential construct one explicitly; the
 # operator's real keys must never leak in (they also make local runs diverge from CI,
