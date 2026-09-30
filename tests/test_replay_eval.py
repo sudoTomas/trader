@@ -372,7 +372,7 @@ def test_eval_run_lane_flags_on_api_and_cli(clean_db: None, monkeypatch):
     from trader.ops.config import Settings
 
     evaluator = RecordingEvaluator()
-    monkeypatch.setattr(app_mod, "build_evaluator", lambda db, settings, desk=None: evaluator)
+    monkeypatch.setattr(app_mod, "build_evaluator", lambda db, settings, desk=None, **kw: evaluator)
     settings = Settings(auth_disabled=True)
     window = {"start": (NOW - timedelta(hours=2)).isoformat(), "end": NOW.isoformat()}
 

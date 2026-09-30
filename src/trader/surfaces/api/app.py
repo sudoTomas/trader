@@ -55,13 +55,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # The pool object is cheap to build unopened; the lifespan opens/closes it.
     db = Database(settings.database_url)
-    sentiment = build_sentiment(db, settings)
-    desk = build_desk(db, settings)
-    runner = build_runner(db, settings, sentiment, desk) if settings.loop_enabled else None
+    # ONE xAI OAuth credential manager per process: every builder below that reaches
+    # api.x.ai shares it, so a single lock spends the single-use rotating refresh token
+    # (#63, docs/lessons.md#oauth-refresh-margin). None without TRADER_XAI_TOKEN_KEY.
+    xai_manager = build_xai_manager(settings)
+    sentiment = build_sentiment(db, settings, xai_manager=xai_manager)
+    desk = build_desk(db, settings, xai_manager=xai_manager)
+    runner = (
+        build_runner(db, settings, sentiment, desk, xai_manager=xai_manager)
+        if settings.loop_enabled
+        else None
+    )
     mirror = build_mirror(db, settings)
-    compiler = build_compiler(db, settings, mirror)
-    briefs = build_briefs(db, settings)
-    evaluator = build_evaluator(db, settings, desk)
+    compiler = build_compiler(db, settings, mirror, xai_manager=xai_manager)
+    briefs = build_briefs(db, settings, xai_manager=xai_manager)
+    evaluator = build_evaluator(db, settings, desk, xai_manager=xai_manager)
+    xai_http = build_xai_http(settings, xai_manager=xai_manager)
     registry = build_registry(
         db,
         runner,
@@ -70,7 +79,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         sentiment,
         evaluator,
         briefs,
-        xai_http=build_xai_http(settings),
+        xai_http=xai_http,
         screener=build_screener_data(db, settings),
     )
     mcp = build_mcp(registry)
@@ -103,6 +112,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.db = db
     app.state.registry = registry
     app.state.runner = runner
+    app.state.xai_manager = xai_manager
+    app.state.xai_http = xai_http
     app.add_middleware(
         ApiKeyMiddleware,
         api_key=settings.api_key,
@@ -318,28 +329,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     return app
 
 
-def build_sentiment(db: Database, settings: Settings):
-    """X sentiment service — None without an xAI credential path (x_search is xAI-only)."""
-    import httpx
-
-    from trader.llm.xai import ManagedBearerAuth
+def build_xai_manager(settings: Settings):
+    """The process-wide SuperGrok OAuth credential manager — built ONCE here and handed to
+    every builder below (``xai_manager=``). None without ``TRADER_XAI_TOKEN_KEY``; the
+    builders then run the same ``build_manager`` fallback they always did (None → API key)."""
     from trader.llm.xai_auth import build_manager
+
+    return build_manager(settings)
+
+
+def build_sentiment(db: Database, settings: Settings, *, xai_manager=None):
+    """X sentiment service — None without an xAI credential path (x_search is xAI-only).
+    Rides the roles' authenticated client (OAuth-then-key) over the shared manager."""
+    from trader.llm.xai import xai_http_client
     from trader.research.sentiment import SentimentService, XSentimentClient
 
-    manager = build_manager(settings)
-    if manager is None and not settings.xai_api_key:
+    http = xai_http_client(settings, manager=xai_manager)
+    if http is None:
         return None
-    http = httpx.AsyncClient(
-        base_url=settings.xai_base_url,
-        auth=ManagedBearerAuth(manager, settings.xai_api_key),
-        timeout=120.0,
-    )
     handles = [h.strip() for h in settings.sentiment_x_handles.split(",") if h.strip()]
     client = XSentimentClient(http, model=settings.xai_model, allowed_x_handles=handles)
     return SentimentService(db, client, daily_call_cap=settings.sentiment_daily_call_cap)
 
 
-def build_evaluator(db: Database, settings: Settings, desk=None):
+def build_evaluator(db: Database, settings: Settings, desk=None, *, xai_manager=None):
     """The replay eval harness (offline; Nemotron decide role by default — free).
     None without market-data credentials — every builder here must degrade gracefully,
     because ``app = create_app()`` runs at import time (uvicorn's entrypoint). The desk
@@ -355,7 +368,10 @@ def build_evaluator(db: Database, settings: Settings, desk=None):
     except ValueError:  # no Alpaca keys in this environment (e.g. CI)
         return None
     return ReplayHarness(
-        db, build_llm_registry(settings, UsageMeter(UsageRepo(db))), provider, desk=desk
+        db,
+        build_llm_registry(settings, UsageMeter(UsageRepo(db)), xai_manager=xai_manager),
+        provider,
+        desk=desk,
     )
 
 
@@ -371,7 +387,7 @@ def build_screener_data(db: Database, settings: Settings):
     return AlpacaData(settings.alpaca_api_key_id, settings.alpaca_api_secret)
 
 
-def build_desk(db: Database, settings: Settings):
+def build_desk(db: Database, settings: Settings, *, xai_manager=None):
     """The decision desk — built in every store-backed build (replay needs it); the LIVE
     loop only receives it when TRADER_DESK_ENABLED=true (see create_app)."""
     from trader.desk.desk import Desk
@@ -380,7 +396,7 @@ def build_desk(db: Database, settings: Settings):
     from trader.store.repos import UsageRepo
 
     return Desk(
-        build_llm_registry(settings, UsageMeter(UsageRepo(db))),
+        build_llm_registry(settings, UsageMeter(UsageRepo(db)), xai_manager=xai_manager),
         usage=UsageRepo(db),
         critic_daily_usd=settings.desk_critic_daily_usd,
     )
@@ -395,7 +411,7 @@ def build_mirror(db: Database, settings: Settings):
     return MarkdownMirror(db, settings.research_mirror_dir)
 
 
-def build_compiler(db: Database, settings: Settings, mirror=None):
+def build_compiler(db: Database, settings: Settings, mirror=None, *, xai_manager=None):
     """The Macro View compiler — present in every store-backed build, loop or not."""
     from trader.llm.registry import build_llm_registry
     from trader.llm.usage import UsageMeter
@@ -404,13 +420,13 @@ def build_compiler(db: Database, settings: Settings, mirror=None):
 
     return MacroViewCompiler(
         db,
-        build_llm_registry(settings, UsageMeter(UsageRepo(db))),
+        build_llm_registry(settings, UsageMeter(UsageRepo(db)), xai_manager=xai_manager),
         debounce_seconds=settings.research_compile_debounce_seconds,
         on_compiled=mirror.export_quietly if mirror is not None else None,
     )
 
 
-def build_briefs(db: Database, settings: Settings):
+def build_briefs(db: Database, settings: Settings, *, xai_manager=None):
     """The per-candidate brief compiler — present in every store-backed build. The lane
     into the decide prompt is gated separately (TRADER_BRIEFS_ENABLED, see build_runner)."""
     from trader.llm.registry import build_llm_registry
@@ -420,13 +436,13 @@ def build_briefs(db: Database, settings: Settings):
 
     return BriefCompiler(
         db,
-        build_llm_registry(settings, UsageMeter(UsageRepo(db))),
+        build_llm_registry(settings, UsageMeter(UsageRepo(db)), xai_manager=xai_manager),
         symbols=[t.strip() for t in settings.loop_symbols.split(",") if t.strip()],
         debounce_seconds=settings.research_compile_debounce_seconds,
     )
 
 
-def build_runner(db: Database, settings: Settings, sentiment=None, desk=None):
+def build_runner(db: Database, settings: Settings, sentiment=None, desk=None, *, xai_manager=None):
     """Assemble the decide loop from configured providers (opt-in via TRADER_LOOP_ENABLED)."""
     from trader.brokers.alpaca import AlpacaBroker
     from trader.core.symbols import default_registry
@@ -456,7 +472,7 @@ def build_runner(db: Database, settings: Settings, sentiment=None, desk=None):
     return LoopRunner(
         db=db,
         market_data=build_market_data(settings),
-        llm=build_llm_registry(settings, UsageMeter(UsageRepo(db))),
+        llm=build_llm_registry(settings, UsageMeter(UsageRepo(db)), xai_manager=xai_manager),
         guard=RiskGuard(
             db, limits_from_settings(settings), live_enabled=settings.alpaca_live_enabled
         ),
@@ -481,12 +497,12 @@ def build_runner(db: Database, settings: Settings, sentiment=None, desk=None):
     )
 
 
-def build_xai_http(settings: Settings):
+def build_xai_http(settings: Settings, *, xai_manager=None):
     """The service's authenticated api.x.ai client for the operator diagnostics
     (`trader xai probe`): the roles' credential path, None without any xAI credential."""
     from trader.llm.xai import xai_http_client
 
-    return xai_http_client(settings)
+    return xai_http_client(settings, manager=xai_manager)
 
 
 app = create_app()

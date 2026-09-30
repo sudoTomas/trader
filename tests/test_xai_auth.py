@@ -340,3 +340,116 @@ async def test_refresh_refuses_tampered_token_endpoint(tmp_path: Path):
     with pytest.raises(XaiAuthError, match="non-x.ai"):
         await manager.get_access_token()
     assert calls == 0  # the refresh token never left the process
+
+
+# --- one manager per process (#63) -----------------------------------------
+
+
+class CountingStore:
+    """Stands in for XaiCredentialStore: counts reads and rotations, no disk."""
+
+    def __init__(self, state: DurableState) -> None:
+        self.state = state
+        self.loads = 0
+        self.saves = 0
+
+    def load(self) -> DurableState | None:
+        self.loads += 1
+        return self.state
+
+    def save(self, state: DurableState) -> None:
+        self.saves += 1
+        self.state = state
+
+
+def refresh_counter(access: str = "access-1"):
+    seen: dict = {"refreshes": 0, "refresh_tokens": []}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["refreshes"] += 1
+        seen["refresh_tokens"].append(
+            dict(httpx.QueryParams(request.content.decode()))["refresh_token"]
+        )
+        return httpx.Response(200, json=token_response(access=access))
+
+    return seen, handler
+
+
+async def test_two_clients_sharing_one_manager_refresh_once():
+    """Two roles (two ManagedBearerAuth clients) over ONE manager: concurrent first
+    calls serialize under the manager's lock and spend a single rotating refresh token."""
+    store = CountingStore(STATE)
+    seen, handler = refresh_counter()
+    manager = XaiCredentialManager(
+        store, http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    )
+    settings = Settings(auth_disabled=True)
+    first: dict = {}
+    second: dict = {}
+    a = grok_with_auth(settings, manager, first)
+    b = grok_with_auth(settings, manager, second)
+
+    await asyncio.gather(
+        a.complete([{"role": "user", "content": "x"}]),
+        b.complete([{"role": "user", "content": "y"}]),
+    )
+    assert first["auth"] == second["auth"] == "Bearer access-1"
+    assert seen["refreshes"] == 1  # one lineage, one burn
+    assert store.saves == 1  # the rotation persisted exactly once
+    assert store.loads == 1  # a refresh reads the store; a cache hit does not
+
+
+async def test_refresh_re_reads_the_store_before_spending():
+    """A refresh decides from the store as it is NOW — not from a token captured at
+    construction — so a lineage rotated elsewhere (login, another writer) is honored."""
+    store = CountingStore(STATE)
+    seen, handler = refresh_counter()
+    now = [0.0]
+    manager = XaiCredentialManager(
+        store,
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        clock=lambda: now[0],
+    )
+    await manager.get_access_token()
+    assert seen["refresh_tokens"] == ["refresh-1"]
+
+    store.state = DurableState(
+        refresh_token="refresh-elsewhere", client_id="client", token_endpoint=STATE.token_endpoint
+    )
+    now[0] = 10 * 3600.0  # past the cached token's expiry
+    await manager.get_access_token()
+    assert seen["refresh_tokens"] == ["refresh-1", "refresh-elsewhere"]
+    assert store.loads == 2
+
+
+def test_client_factories_never_build_a_second_manager(monkeypatch: pytest.MonkeyPatch):
+    """Given a manager, ``xai_http_client`` / ``xai_client`` / ``build_llm_registry``
+    reuse it; the per-call ``build_manager`` fallback only runs when none is passed."""
+    from trader.llm import xai_auth
+    from trader.llm.registry import build_llm_registry
+    from trader.llm.xai import ManagedBearerAuth, xai_http_client
+
+    built = {"n": 0}
+    real = xai_auth.XaiCredentialManager
+
+    class Counting(real):
+        def __init__(self, *args, **kwargs) -> None:
+            built["n"] += 1
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(xai_auth, "XaiCredentialManager", Counting)
+    settings = Settings(auth_disabled=True, xai_token_key=KEY, xai_token_path="/nonexistent/x.enc")
+    shared = XaiCredentialManager(CountingStore(STATE), http_client=httpx.AsyncClient())
+
+    http = xai_http_client(settings, manager=shared)
+    assert isinstance(http.auth, ManagedBearerAuth) and http.auth._manager is shared
+    grok = xai_client(settings, manager=shared)
+    assert grok._client.auth._manager is shared
+    registry = build_llm_registry(settings, xai_manager=shared)
+    assert registry.chain_for("brief")[0]._client.auth._manager is shared
+    assert built["n"] == 0
+
+    # No manager passed: the fallback builds one per call, exactly as before.
+    fallback = build_llm_registry(settings)
+    assert fallback.chain_for("brief")[0]._client.auth._manager is not shared
+    assert built["n"] == 1
