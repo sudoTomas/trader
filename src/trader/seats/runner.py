@@ -58,6 +58,9 @@ CITATION = re.compile(r"\[note:(\d+)\]")
 JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
 
 CREDENTIALS = ("api_key", "oauth", "auto")
+#: The seat shares trader-api's SuperGrok login by default (#68: the token store's
+#: cross-process lock makes a timer-driven refresh safe); the API key is the alternative.
+DEFAULT_CREDENTIAL = "oauth"
 
 
 class SeatError(RuntimeError):
@@ -485,14 +488,19 @@ def build_operator_http(settings: Settings) -> httpx.AsyncClient | None:
     )
 
 
-def build_xai_http(settings: Settings, *, credential: str = "api_key") -> httpx.AsyncClient:
+def build_xai_http(
+    settings: Settings, *, credential: str = DEFAULT_CREDENTIAL
+) -> httpx.AsyncClient:
     """The xAI client for a standalone seat process.
 
-    Default ``api_key``: ``XAI_API_KEY`` alone, because exactly one process owns the
-    rotating OAuth refresh lineage and that process is ``trader-api``
-    (docs/lessons.md#oauth-refresh-margin). ``oauth`` / ``auto`` read the shared token
-    store on purpose — a one-shot with a small race window against the service's own
-    refresh; the operator opts in per run.
+    Default ``oauth``: the same SuperGrok login as ``trader-api``, through the shared
+    encrypted token store. Safe from a timer because the manager holds a cross-process
+    lock across every refresh and adopts a rotation the service already made (#68,
+    docs/lessons.md#oauth-refresh-margin). With the store configured, ``oauth`` never
+    falls back to the key silently (a quarantine surfaces as a failed run); with no store
+    configured (``TRADER_XAI_TOKEN_KEY`` unset) it runs on ``XAI_API_KEY``. ``api_key``
+    pins the key alone; ``auto`` is OAuth with the key as a runtime fallback. The seat
+    refuses only when neither credential path exists.
     """
     if credential not in CREDENTIALS:
         raise SeatError(f"credential must be one of {', '.join(CREDENTIALS)}")
@@ -500,17 +508,18 @@ def build_xai_http(settings: Settings, *, credential: str = "api_key") -> httpx.
     if credential == "api_key":
         if not settings.xai_api_key:
             raise SeatError(
-                "XAI_API_KEY is unset. The seat authenticates with the API key by default; "
-                "pass --credential oauth to share the service's SuperGrok OAuth lineage "
-                "for this one run."
+                "XAI_API_KEY is unset; --credential api_key needs it. Omit the flag to share "
+                "the service's SuperGrok OAuth login (TRADER_XAI_TOKEN_KEY + `trader xai login`)."
             )
     else:
         manager = build_manager(settings)
-        if manager is None and credential == "oauth":
-            raise SeatError("TRADER_XAI_TOKEN_KEY is unset: no OAuth store to share")
         if manager is None and not settings.xai_api_key:
-            raise SeatError("no xAI credential: set XAI_API_KEY or TRADER_XAI_TOKEN_KEY")
-    fallback = settings.xai_api_key if credential != "oauth" else ""
+            raise SeatError(
+                "no xAI credential: set TRADER_XAI_TOKEN_KEY and run `trader xai login` "
+                "(the shared OAuth login), or set XAI_API_KEY"
+            )
+    # ``oauth`` with a store: the login only. Without one it can only mean the key.
+    fallback = settings.xai_api_key if (credential != "oauth" or manager is None) else ""
     return httpx.AsyncClient(
         base_url=settings.xai_base_url,
         auth=ManagedBearerAuth(manager, fallback),

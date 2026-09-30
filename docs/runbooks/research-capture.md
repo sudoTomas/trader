@@ -190,11 +190,16 @@ What one run does (`src/trader/seats/runner.py`):
    outside the service meter, so `usage_daily` never sees this spend — the file is the
    record.
 
-**Credential rule.** Exactly one process owns the rotating SuperGrok OAuth lineage and it
-is `trader-api` (docs/lessons.md#oauth-refresh-margin), so the seat authenticates with
-`XAI_API_KEY` by default and refuses to run without one. `--credential oauth` (or
-`auto`) reads the shared encrypted token store for a one-shot — a small race window
-against the service's own refresh; use it deliberately, not from the timer.
+**Credential rule.** The seat runs on the **same SuperGrok OAuth login as `trader-api`
+by default** (`--credential oauth`, operator decision 2026-09-29: no pay-per-use key).
+The rotating refresh token is single-use, so the shared encrypted token store is guarded
+by a cross-process `flock` (`<token_path>.lock`, #68): whichever process refreshes first
+persists the rotation and the other re-reads the store and adopts it — one refresh, no
+double-spend, safe from the timer (docs/lessons.md#oauth-refresh-margin). Nothing else
+changes for the service: a seat run that finds the login quarantined fails its run and
+never falls back to a key on its own. `--credential api_key` runs on `XAI_API_KEY` alone
+(the alternative); `auto` is OAuth with the key as a runtime fallback. The seat refuses
+only when neither `TRADER_XAI_TOKEN_KEY` (+ `trader xai login`) nor `XAI_API_KEY` exists.
 
 ```bash
 # First manual run, on the box, from the checkout (.env supplies the keys):
@@ -216,7 +221,8 @@ journalctl --user -u trader-seat-crypto-flows.service -n 50
 
 The unit runs `uv run trader seat run crypto-flows` in `~/repos/trader`, so it reads the
 same `.env` as `trader-api` (`TRADER_API_BASE_URL`, `TRADER_CAPTURE_API_KEY`,
-`XAI_API_KEY`, `TRADER_SEAT_*`). Adding a second seat is a new `Seat` in
+`TRADER_XAI_TOKEN_KEY` and the token store it points at, `TRADER_SEAT_*`) and shares the
+service's OAuth login; it forces no `--credential`. Adding a second seat is a new `Seat` in
 `src/trader/seats/` plus its own unit pair — after a week of cited, non-duplicative
 crypto-flows notes, per the design's §3.5.
 

@@ -576,13 +576,35 @@ def test_build_capture_http_uses_the_capture_key_never_the_operator_key() -> Non
         build_capture_http(Settings(api_key=OPERATOR, capture_api_key=""))
 
 
-def test_build_xai_http_defaults_to_the_api_key_and_refuses_without_one() -> None:
+def test_build_xai_http_defaults_to_oauth_and_refuses_only_without_any_credential() -> None:
+    """#68: the seat shares trader-api's OAuth login by default (the store's cross-process
+    lock makes a timer-driven refresh safe). It refuses only when neither credential path
+    exists; the API key is the alternative, not a prerequisite."""
+    from cryptography.fernet import Fernet
+
+    from trader.llm.xai import ManagedBearerAuth
+
+    assert seat_runner.DEFAULT_CREDENTIAL == "oauth"
+    token_key = Fernet.generate_key().decode()
+
+    with pytest.raises(seat_runner.SeatError, match="TRADER_XAI_TOKEN_KEY.*XAI_API_KEY"):
+        build_xai_http(Settings(xai_api_key="", xai_token_key=""))
+
+    http = build_xai_http(Settings(xai_token_key=token_key, xai_base_url=XAI_BASE))
+    assert str(http.base_url).rstrip("/") == XAI_BASE
+    auth = http.auth
+    assert isinstance(auth, ManagedBearerAuth) and auth._manager is not None
+    assert auth._fallback_key == ""  # oauth means the login, never a silent key fallback
+
+    # No OAuth store configured, an API key present: the default still runs, on the key.
+    http = build_xai_http(Settings(xai_api_key="k", xai_token_key="", xai_base_url=XAI_BASE))
+    assert http.auth._manager is None and http.auth._fallback_key == "k"
+
+    # The explicit paths keep refusing when what they pin is missing.
     with pytest.raises(seat_runner.SeatError, match="XAI_API_KEY"):
         build_xai_http(Settings(xai_api_key=""), credential="api_key")
     http = build_xai_http(Settings(xai_api_key="k", xai_base_url=XAI_BASE), credential="api_key")
-    assert str(http.base_url).rstrip("/") == XAI_BASE
-    with pytest.raises(seat_runner.SeatError, match="TRADER_XAI_TOKEN_KEY"):
-        build_xai_http(Settings(xai_api_key=""), credential="oauth")
+    assert http.auth._manager is None and http.auth._fallback_key == "k"
     with pytest.raises(seat_runner.SeatError, match="credential"):
         build_xai_http(Settings(xai_api_key="k"), credential="bogus")
 
@@ -700,7 +722,7 @@ def test_cli_seat_run_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     monkeypatch.setattr(seat_runner, "build_capture_http", lambda s: api.http())
 
     def fake_xai(s, *, credential):
-        assert credential == "api_key"
+        assert credential == "oauth"  # the CLI default (#68)
         assert s.seat_model == "grok-4.3"
         return httpx.AsyncClient(
             base_url=XAI_BASE,

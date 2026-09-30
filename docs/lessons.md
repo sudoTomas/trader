@@ -263,7 +263,10 @@ the TTL, so every call refreshed and burned a rotating token. Seeding from the G
 The rotated refresh token is persisted before the access token is served; refreshes
 serialize under a lock; exactly one process owns the lineage; a 403 on refresh is an
 entitlement failure and quarantines without retry; `XAI_API_KEY` is a first-class
-fallback.
+fallback. Across processes — the crypto-flows seat timer shares trader-api's login — a
+`flock` on `<token_path>.lock` is held across read → refresh → write and the store is
+re-read after taking it, so a rotation made elsewhere is adopted instead of double-spent
+(#68).
 
 **Where.** `src/trader/llm/xai_auth.py`. One manager per process — `create_app` builds
 it once and every builder shares it (#63); see `surfaces/api/app.py::build_xai_manager`.
