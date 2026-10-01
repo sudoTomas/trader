@@ -60,6 +60,9 @@ embry0 stays on GitHub (`sudoTomas/embry0`).
 Batch one (2026-09-29) merged as PRs #36 (D), #39 (B), #38 (C), #37 (E), #40 (A); report in
 `docs/reports/2026-09-29-batch-one.md`. Deployed only after the operator restarts `trader-api`.
 
+2026-09-30: #70 (Ollama grammar cap, reported by HermeticOrmus) + #67 (sentiment cadence across restarts) merged as PR #72;
+#20 epic closed; exit-review lane (#34) live since 14:00 UTC on v8 wording after runs 16/17/18.
+
 Batch four (2026-09-29/30): #63 shared xAI manager (PR #64), #34 exit-review lane built dark + replay
 flag (PR #65; issue stays open through the gate), #9 + #10 Grok crypto-flows seat and citation report
 (PR #66). Briefs lane flipped live 2026-09-29 after the neutral replay (`docs/reports/2026-09-29-briefs-replay-gate.md`).
