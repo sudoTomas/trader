@@ -696,7 +696,6 @@ def build_runner(
 ):
     """Assemble the decide loop from configured providers (opt-in via TRADER_LOOP_ENABLED)."""
     from trader.brokers.alpaca import AlpacaBroker
-    from trader.core.symbols import default_registry
     from trader.data.composite import build_market_data
     from trader.loop.confirm import Confirmer
     from trader.loop.executor import Executor
@@ -705,7 +704,7 @@ def build_runner(
     from trader.risk.guard import RiskGuard
     from trader.risk.limits import limits_from_settings
 
-    symbols_registry = default_registry()
+    symbols_registry = settings.symbol_registry()
     tickers = [t.strip() for t in settings.loop_symbols.split(",") if t.strip()]
     symbols = [symbols_registry.get(t) for t in tickers]
 

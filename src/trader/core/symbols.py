@@ -7,6 +7,8 @@ every field per symbol (the v1 mistake).
 
 from __future__ import annotations
 
+import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -104,10 +106,35 @@ class SymbolRegistry:
         return SymbolRegistry([*[s for s in self.all() if s.ticker != symbol.ticker], symbol])
 
 
-def default_registry() -> SymbolRegistry:
+#: A plain US listing: 1-5 letters, optionally a class suffix (BRK.B). Crypto pairs and
+#: anything exotic must be defined explicitly in the seed universe, never minted.
+_EXTRA_TICKER = re.compile(r"^[A-Z]{1,5}(\.[A-Z])?$")
+
+
+def default_registry(extra: Iterable[str] = ()) -> SymbolRegistry:
     """The seed universe: the crypto slice (M1), the equities slice (SPY), and the
-    commodity ETF slice (GLD/SLV/USO)."""
-    return SymbolRegistry(
+    commodity ETF slice (GLD/SLV/USO), plus ``extra`` US-listed stocks or ETFs.
+
+    Extras are minted as long-only US equities on the NYSE calendar. A ticker already in
+    the seed keeps its seed definition; a malformed one raises so a typo never reaches
+    the money path quietly. Each new name should still shadow first via
+    ``TRADER_SHADOW_SYMBOLS`` (see docs/lessons.md#per-symbol-shadow).
+    """
+    seed = _seed_symbols()
+    known = {s.ticker for s in seed}
+    for raw in extra:
+        ticker = raw.strip().upper()
+        if not ticker or ticker in known:
+            continue
+        if not _EXTRA_TICKER.match(ticker):
+            raise ValueError(f"extra symbol '{raw}' is not a plain US ticker")
+        seed.append(make_symbol(ticker, AssetClass.US_EQUITY, shortable=False))
+        known.add(ticker)
+    return SymbolRegistry(seed)
+
+
+def _seed_symbols() -> list[Symbol]:
+    return list(
         [
             make_symbol(
                 "BTC/USD",
