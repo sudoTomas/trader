@@ -89,6 +89,7 @@ def _generic_client(
     price_out: float,
     model_setting: str,
     client: httpx.AsyncClient | None,
+    grammar_safe: bool,
 ) -> OpenAIChatClient:
     if not model:
         raise LLMError(f"{model_setting} is required when the base URL is set")
@@ -101,6 +102,7 @@ def _generic_client(
         client=client,
         price_in=price_in,
         price_out=price_out,
+        grammar_safe=grammar_safe,
     )
 
 
@@ -110,13 +112,16 @@ def build_decide_client(
     """The money-path client: generic endpoint, or the Nemotron preset when unset.
 
     A generic URL equal to ``TRADER_NEMOTRON_BASE_URL`` still gets the thinking
-    guard. Any other host does not — OpenAI rejects ``chat_template_kwargs``.
+    guard and the untouched wire schema. Any other host gets neither: OpenAI rejects
+    ``chat_template_kwargs``, and Ollama / llama.cpp reject a schema bound of 2000
+    (see ``grammar_safe_schema``).
     """
     base_url = settings.decide_base_url.strip()
     if not base_url:
         return nemotron_client(settings, client=client)
     extra = loads_extra_body(settings.decide_extra_body)
-    if _same_endpoint(base_url, settings.nemotron_base_url):
+    on_preset = _same_endpoint(base_url, settings.nemotron_base_url)
+    if on_preset:
         extra = apply_thinking_guard(extra)
     return _generic_client(
         base_url=base_url,
@@ -127,6 +132,7 @@ def build_decide_client(
         price_out=settings.decide_price_out,
         model_setting="TRADER_DECIDE_MODEL",
         client=client,
+        grammar_safe=not on_preset,
     )
 
 
@@ -141,7 +147,8 @@ def build_research_client(
     if not base_url:
         return None
     extra = loads_extra_body(settings.research_extra_body)
-    if _same_endpoint(base_url, settings.nemotron_base_url):
+    on_preset = _same_endpoint(base_url, settings.nemotron_base_url)
+    if on_preset:
         extra = apply_thinking_guard(extra)
     return _generic_client(
         base_url=base_url,
@@ -152,6 +159,7 @@ def build_research_client(
         price_out=settings.research_price_out,
         model_setting="TRADER_RESEARCH_MODEL",
         client=client,
+        grammar_safe=not on_preset,
     )
 
 

@@ -371,3 +371,137 @@ async def test_completions_meter_into_usage_daily(db: Database):
     assert row["requests"] == 2
     assert row["prompt_tokens"] == 200 and row["completion_tokens"] == 20  # non-zero, real
     assert float(row["cost_usd"]) == pytest.approx(0.10)
+
+
+# --- grammar-safe wire schema (#70) ------------------------------------------
+
+# Every bound at or above llama.cpp's GBNF repetition cap, at every nesting level the
+# pydantic schema generator can produce; plus the values that must survive untouched.
+GRAMMAR_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "rationale": {"type": "string", "maxLength": 2000},
+        "short": {"type": "string", "maxLength": 1999},
+        "free": {"type": "string"},
+        "tags": {
+            "type": "array",
+            "maxItems": 4000,
+            "items": {"type": "string", "maxLength": 2000},
+        },
+        "either": {"anyOf": [{"type": "string", "maxLength": 2500}, {"type": "null"}]},
+        "leg": {"$ref": "#/$defs/Leg"},
+    },
+    "$defs": {
+        "Leg": {
+            "type": "object",
+            "properties": {"note": {"type": "string", "maxLength": 2000}},
+            "allOf": [{"oneOf": [{"maxLength": 3000}]}],
+        }
+    },
+    "required": ["rationale", "short", "free", "tags", "either", "leg"],
+}
+
+
+def _generic(seen: dict, **overrides) -> OpenAIChatClient:
+    from trader.llm.registry import build_decide_client
+
+    settings = Settings(
+        auth_disabled=True,
+        decide_base_url=overrides.pop("decide_base_url", "http://mars:11434/v1"),
+        decide_model=overrides.pop("decide_model", "ornith-15-35b"),
+        **overrides,
+    )
+    return build_decide_client(settings, client=capture_client(seen, VLLM_RESPONSE))
+
+
+async def test_generic_client_caps_schema_bounds_below_the_grammar_repetition_cap():
+    """Ollama/llama.cpp compile the schema to GBNF and 400 on any bound >= 2000 (#70)."""
+    seen: dict = {}
+    original = json.loads(json.dumps(GRAMMAR_SCHEMA))
+    await _generic(seen).complete([{"role": "user", "content": "decide"}], schema=GRAMMAR_SCHEMA)
+
+    wire = seen["body"]["response_format"]["json_schema"]["schema"]
+    props = wire["properties"]
+    assert props["rationale"]["maxLength"] == 1999
+    assert props["short"]["maxLength"] == 1999  # already under the cap: untouched
+    assert "maxLength" not in props["free"]  # absent stays absent
+    assert props["tags"]["maxItems"] == 1999
+    assert props["tags"]["items"]["maxLength"] == 1999
+    assert props["either"]["anyOf"][0]["maxLength"] == 1999
+    assert props["either"]["anyOf"][1] == {"type": "null"}
+    leg = wire["$defs"]["Leg"]
+    assert leg["properties"]["note"]["maxLength"] == 1999
+    assert leg["allOf"][0]["oneOf"][0]["maxLength"] == 1999
+    assert wire["required"] == original["required"]
+    assert seen["body"]["response_format"]["json_schema"]["strict"] is True
+    assert GRAMMAR_SCHEMA == original  # the caller's schema is not mutated
+
+
+async def test_generic_client_sends_the_real_decision_schema_grammar_safe():
+    from trader.loop.decider import DECISION_SCHEMA
+
+    seen: dict = {}
+    await _generic(seen).complete([{"role": "user", "content": "decide"}], schema=DECISION_SCHEMA)
+    wire = seen["body"]["response_format"]["json_schema"]["schema"]
+    assert wire["properties"]["rationale"]["maxLength"] == 1999
+    assert DECISION_SCHEMA["properties"]["rationale"]["maxLength"] == 2000  # untouched
+
+
+async def test_nemotron_preset_sends_the_schema_untouched():
+    """The Spark's decide lane stays byte-identical: vLLM accepts 2000."""
+    from trader.loop.decider import DECISION_SCHEMA
+
+    seen: dict = {}
+    client = nemotron_client(SETTINGS, client=capture_client(seen, VLLM_RESPONSE))
+    await client.complete([{"role": "user", "content": "decide"}], schema=DECISION_SCHEMA)
+    assert seen["body"]["response_format"]["json_schema"]["schema"] == DECISION_SCHEMA
+    assert seen["body"]["response_format"]["json_schema"]["schema"]["properties"]["rationale"] == {
+        "maxLength": 2000,
+        "minLength": 1,
+        "title": "Rationale",
+        "type": "string",
+    }
+
+
+async def test_generic_client_on_the_nemotron_url_sends_the_schema_untouched():
+    seen: dict = {}
+    client = _generic(
+        seen, decide_base_url=SETTINGS.nemotron_base_url, decide_model="nemotron-3-super"
+    )
+    await client.complete([{"role": "user", "content": "decide"}], schema=GRAMMAR_SCHEMA)
+    assert seen["body"]["response_format"]["json_schema"]["schema"] == GRAMMAR_SCHEMA
+    assert seen["body"]["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+async def test_research_client_is_grammar_safe_unless_on_the_preset_url():
+    from trader.llm.registry import build_research_client
+
+    seen: dict = {}
+    settings = Settings(
+        auth_disabled=True, research_base_url="http://mars:11434/v1", research_model="qwen3"
+    )
+    client = build_research_client(settings, client=capture_client(seen, VLLM_RESPONSE))
+    assert client is not None
+    await client.complete([{"role": "user", "content": "brief"}], schema=GRAMMAR_SCHEMA)
+    assert seen["body"]["response_format"]["json_schema"]["schema"]["properties"]["rationale"] == {
+        "type": "string",
+        "maxLength": 1999,
+    }
+
+    on_preset: dict = {}
+    settings = Settings(
+        auth_disabled=True, research_base_url=SETTINGS.nemotron_base_url, research_model="n"
+    )
+    client = build_research_client(settings, client=capture_client(on_preset, VLLM_RESPONSE))
+    assert client is not None
+    await client.complete([{"role": "user", "content": "brief"}], schema=GRAMMAR_SCHEMA)
+    assert on_preset["body"]["response_format"]["json_schema"]["schema"] == GRAMMAR_SCHEMA
+
+
+def test_decision_output_still_rejects_a_rationale_over_the_real_limit():
+    """Only the wire schema is capped; the contract on the reply stays 2000."""
+    from trader.loop.decider import DecisionOutput
+
+    DecisionOutput(action="hold", conviction=0.1, rationale="x" * 2000)
+    with pytest.raises(ValidationError):
+        DecisionOutput(action="hold", conviction=0.1, rationale="x" * 2001)

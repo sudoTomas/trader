@@ -73,6 +73,15 @@ TRADER_LOOP_SYMBOLS=BTC/USD,ETH/USD  # crypto trades 24/7, so a first run works 
 Leave every `XAI_*` / `TRADER_XAI_*` line commented out, and leave
 `TRADER_ALPACA_LIVE_ENABLED=false` exactly as the example has it.
 
+**Running the decide role on Ollama / llama.cpp.** Option (a) works with a local Ollama
+(`TRADER_DECIDE_BASE_URL=http://localhost:11434/v1`, `TRADER_DECIDE_MODEL=<your model>`,
+no key). Two things differ from vLLM: the schema the generic client sends caps every
+`maxLength` / `maxItems` at 1999, because llama.cpp compiles the schema to a GBNF grammar
+and rejects any bound of 2000 or more (the reply is still validated against the real
+2000-character rationale limit); and Ollama ignores `chat_template_kwargs`, so a reasoning
+model needs `TRADER_DECIDE_EXTRA_BODY={"reasoning_effort": "none"}` — without it the model
+spends the decide token budget thinking and returns empty content.
+
 ## 3. `trader doctor` (1 min)
 
 ```bash
