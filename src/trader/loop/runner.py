@@ -191,6 +191,8 @@ class LoopRunner:
             sentiment=self._sentiment_repo if self.exit_review_enabled else None,
         )
         self._last_sentiment_poll: dict[str, datetime] = {}
+        # Symbols whose last-poll stamp was seeded from the journal (see _poll_sentiment).
+        self._sentiment_seeded: set[str] = set()
         # ticker -> (fetched at, realized vol). See _mark_vol.
         self._mark_vols: dict[str, tuple[datetime, float | None]] = {}
         self._equity_as_of: datetime | None = None
@@ -408,6 +410,11 @@ class LoopRunner:
         Unheld names are skipped: the scheduler only reads sentiment for positions,
         so polling the rest is pure cost. The daily call cap inside the service
         still bounds however short ``sentiment_poll_seconds`` is set.
+
+        The cadence survives restarts: the first time a symbol is considered, its
+        last-poll stamp is seeded from the latest journaled poll (one query, once per
+        symbol), so a redeploy does not re-poll every held name on its first tick.
+        No journaled row means poll now.
         """
         if self.sentiment is None:
             return
@@ -416,7 +423,7 @@ class LoopRunner:
                 continue
             if not positions.get(symbol.ticker):
                 continue
-            last = self._last_sentiment_poll.get(symbol.ticker)
+            last = await self._seeded_last_sentiment_poll(symbol.ticker)
             if last is not None and (now - last).total_seconds() < self.sentiment_poll_seconds:
                 continue
             # Stamp before the call: a failing provider must not be hammered every tick.
@@ -425,6 +432,15 @@ class LoopRunner:
                 await self.sentiment.get_x_sentiment(symbol)
             except Exception as exc:  # noqa: BLE001 - sentiment is advisory, the loop is not
                 log.warning("sentiment_poll_failed", symbol=symbol.ticker, error=str(exc))
+
+    async def _seeded_last_sentiment_poll(self, ticker: str) -> datetime | None:
+        """In-memory last-poll stamp, seeded once per symbol from ``sentiment_scores``."""
+        if ticker not in self._sentiment_seeded:
+            self._sentiment_seeded.add(ticker)
+            row = await self._sentiment_repo.latest(ticker)
+            if row is not None and ticker not in self._last_sentiment_poll:
+                self._last_sentiment_poll[ticker] = row["ts"]
+        return self._last_sentiment_poll.get(ticker)
 
     async def _latest_sentiment(self, ticker: str) -> float | None:
         row = await self._sentiment_repo.latest(ticker)

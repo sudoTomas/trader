@@ -443,7 +443,10 @@ class Settings(BaseSettings):
         section="LLM endpoints",
         description=(
             "JSON object merged into every chat-completions body for the decide client "
-            '(e.g. `{"reasoning_effort": "low"}`). Must parse as an object.'
+            '(e.g. `{"reasoning_effort": "low"}`). Must parse as an object. Ollama / '
+            "llama.cpp ignore `chat_template_kwargs`; their no-thinking switch is "
+            '`{"reasoning_effort": "none"}`. Without it a reasoning model burns the '
+            "decide token budget thinking and returns empty content."
         ),
     )
     decide_price_in: float = setting(
@@ -487,7 +490,12 @@ class Settings(BaseSettings):
         "",
         category=TUNING,
         section="LLM endpoints",
-        description="JSON object merged into the research roles' chat-completions bodies.",
+        description=(
+            "JSON object merged into the research roles' chat-completions bodies. On "
+            'Ollama / llama.cpp use `{"reasoning_effort": "none"}` to turn thinking off '
+            "(`chat_template_kwargs` is ignored there); otherwise a reasoning model spends "
+            "the token budget thinking and returns empty content."
+        ),
     )
     research_price_in: float = setting(
         0.0,

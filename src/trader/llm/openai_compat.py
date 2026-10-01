@@ -14,6 +14,15 @@ import httpx
 from trader.llm.base import Completion, LLMError, Usage
 from trader.llm.usage import price_per_million
 
+#: llama.cpp (Ollama's engine) compiles a JSON schema into a GBNF grammar and rejects any
+#: repetition bound of 2000 or more ("failed to parse grammar", HTTP 400). Bisected on
+#: Ollama with the real decide schema: 1999 passes, 2000 fails; vLLM accepts 2000.
+GRAMMAR_REPETITION_CAP = 1999
+_BOUND_KEYS = ("maxLength", "maxItems")
+_SUBSCHEMA_LISTS = ("anyOf", "oneOf", "allOf", "prefixItems")
+_SUBSCHEMA_MAPS = ("properties", "$defs", "definitions", "patternProperties")
+_SUBSCHEMA_ONE = ("items", "additionalProperties", "not")
+
 
 def loads_extra_body(raw: str) -> dict[str, Any]:
     """Parse a ``TRADER_*_EXTRA_BODY`` value. Empty is ``{}``; else a JSON object."""
@@ -29,8 +38,38 @@ def loads_extra_body(raw: str) -> dict[str, Any]:
     return parsed
 
 
+def grammar_safe_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Copy of ``schema`` with every ``maxLength`` / ``maxItems`` capped at 1999.
+
+    Wire-only: pydantic still validates the reply against the real bound, so the
+    contract is unchanged; a grammar-backed server just stops refusing the request.
+    Recurses through ``properties``, ``items``, ``anyOf``/``oneOf``/``allOf`` and
+    ``$defs``. Values already under the cap, and absent bounds, are left alone.
+    """
+    out: dict[str, Any] = {}
+    for key, value in schema.items():
+        if key in _BOUND_KEYS and isinstance(value, int) and value > GRAMMAR_REPETITION_CAP:
+            out[key] = GRAMMAR_REPETITION_CAP
+        elif key in _SUBSCHEMA_LISTS and isinstance(value, list):
+            out[key] = [grammar_safe_schema(v) if isinstance(v, dict) else v for v in value]
+        elif key in _SUBSCHEMA_MAPS and isinstance(value, dict):
+            out[key] = {
+                k: grammar_safe_schema(v) if isinstance(v, dict) else v for k, v in value.items()
+            }
+        elif key in _SUBSCHEMA_ONE and isinstance(value, dict):
+            out[key] = grammar_safe_schema(value)
+        else:
+            out[key] = value
+    return out
+
+
 class OpenAIChatClient:
-    """One provider+model over the OpenAI chat-completions wire format."""
+    """One provider+model over the OpenAI chat-completions wire format.
+
+    ``grammar_safe`` sends schemas through :func:`grammar_safe_schema` (generic
+    endpoints, which may be Ollama / llama.cpp). The Nemotron preset leaves it off so
+    the self-hosted vLLM lane's request body stays byte-identical.
+    """
 
     def __init__(
         self,
@@ -44,10 +83,12 @@ class OpenAIChatClient:
         timeout: float = 120.0,
         price_in: float = 0.0,
         price_out: float = 0.0,
+        grammar_safe: bool = False,
     ) -> None:
         self.name = name
         self.model = model
         self._extra_body = extra_body or {}
+        self._grammar_safe = grammar_safe
         # Zeros mean "use PRICES, else meter $0". Any non-zero side overrides the table.
         self._price_in = price_in
         self._price_out = price_out
@@ -75,9 +116,10 @@ class OpenAIChatClient:
             **self._extra_body,
         }
         if schema is not None:
+            wire = grammar_safe_schema(schema) if self._grammar_safe else schema
             body["response_format"] = {
                 "type": "json_schema",
-                "json_schema": {"name": "response", "schema": schema, "strict": True},
+                "json_schema": {"name": "response", "schema": wire, "strict": True},
             }
         try:
             resp = await self._client.post("/chat/completions", json=body)

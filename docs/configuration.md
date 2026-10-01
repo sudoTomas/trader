@@ -115,13 +115,13 @@ Two roles, each any OpenAI-compatible `/v1`: **decide** (also the desk analysts)
 | `TRADER_DECIDE_BASE_URL` | `str` | *(empty)* | endpoint | Any OpenAI-compatible `/v1` for the decide (and analyst) role: OpenAI, Groq, Together, Ollama, vLLM, xAI. Empty selects the Nemotron preset above, which is the only client that sends `chat_template_kwargs`; a vendor API such as OpenAI rejects that argument, so it is never sent to a generic URL. |
 | `TRADER_DECIDE_MODEL` | `str` | *(empty)* | endpoint | Model id at `TRADER_DECIDE_BASE_URL` (ignored under the Nemotron preset). |
 | `TRADER_DECIDE_API_KEY` | `str` | *(empty)* | credential | Bearer key for `TRADER_DECIDE_BASE_URL`; blank for unauthenticated hosts. |
-| `TRADER_DECIDE_EXTRA_BODY` | `str` | *(empty)* | tuning | JSON object merged into every chat-completions body for the decide client (e.g. `{"reasoning_effort": "low"}`). Must parse as an object. |
+| `TRADER_DECIDE_EXTRA_BODY` | `str` | *(empty)* | tuning | JSON object merged into every chat-completions body for the decide client (e.g. `{"reasoning_effort": "low"}`). Must parse as an object. Ollama / llama.cpp ignore `chat_template_kwargs`; their no-thinking switch is `{"reasoning_effort": "none"}`. Without it a reasoning model burns the decide token budget thinking and returns empty content. |
 | `TRADER_DECIDE_PRICE_IN` | `float` | `0.0` | tuning | USD per 1M input tokens for the decide model. `0` reads the built-in PRICES table, else $0 (logged once); non-zero overrides the table. |
 | `TRADER_DECIDE_PRICE_OUT` | `float` | `0.0` | tuning | USD per 1M output tokens for the decide model; same rules as the input price. |
 | `TRADER_RESEARCH_BASE_URL` | `str` | *(empty)* | endpoint | Same shape as the decide endpoint, for the brief, compiler, critic and registry sentiment roles. Empty keeps xAI if configured, else the decide client. x_search stays xAI-only. |
 | `TRADER_RESEARCH_MODEL` | `str` | *(empty)* | endpoint | Model id at `TRADER_RESEARCH_BASE_URL`. |
 | `TRADER_RESEARCH_API_KEY` | `str` | *(empty)* | credential | Bearer key for `TRADER_RESEARCH_BASE_URL`. |
-| `TRADER_RESEARCH_EXTRA_BODY` | `str` | *(empty)* | tuning | JSON object merged into the research roles' chat-completions bodies. |
+| `TRADER_RESEARCH_EXTRA_BODY` | `str` | *(empty)* | tuning | JSON object merged into the research roles' chat-completions bodies. On Ollama / llama.cpp use `{"reasoning_effort": "none"}` to turn thinking off (`chat_template_kwargs` is ignored there); otherwise a reasoning model spends the token budget thinking and returns empty content. |
 | `TRADER_RESEARCH_PRICE_IN` | `float` | `0.0` | tuning | USD per 1M input tokens for the research model (`0` = PRICES table, else $0). |
 | `TRADER_RESEARCH_PRICE_OUT` | `float` | `0.0` | tuning | USD per 1M output tokens for the research model. |
 | `TRADER_XAI_BASE_URL` | `str` | `https://api.x.ai/v1` | endpoint | xAI API base for Grok research roles and x_search sentiment. |
