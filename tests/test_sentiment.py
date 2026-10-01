@@ -254,7 +254,15 @@ async def test_runner_polls_on_cadence_and_feeds_held_marks(db: Database):
     from trader.store.repos import PositionsRepo
 
     await PositionsRepo(db).upsert(symbol="BTC/USD", asset_class="crypto", qty=1.0)
-    await SentimentRepo(db).insert(symbol="BTC/USD", status="ok", score=0.7, model="grok-4")
+    row_id = await SentimentRepo(db).insert(
+        symbol="BTC/USD", status="ok", score=0.7, model="grok-4"
+    )
+    # Older than the 3h cadence: the stamp seeds from the journal (#67), so a fresh
+    # row would (correctly) suppress this first poll.
+    await db.execute(
+        "UPDATE sentiment_scores SET ts = %s WHERE id = %s",
+        (LOOP_NOW - timedelta(hours=4), row_id),
+    )
 
     svc = StubSentimentService()
     scheduler = RecordingScheduler()

@@ -835,3 +835,79 @@ async def test_sentiment_polls_held_symbols_only_every_three_hours(db: Database)
     assert svc.polled == ["BTC/USD"]  # inside the 3h window
     await runner.tick(now + timedelta(hours=3), force=True)
     assert svc.polled == ["BTC/USD", "BTC/USD"]
+
+
+# --- sentiment cadence survives restarts (#67) -------------------------------
+
+
+async def _hold_btc(db: Database) -> None:
+    from trader.store.repos import PositionsRepo
+
+    await PositionsRepo(db).upsert(
+        symbol="BTC/USD", asset_class="crypto", qty=0.5, avg_entry_price=100.0
+    )
+
+
+async def _journal_poll(db: Database, ticker: str, age: timedelta) -> int:
+    from trader.store.repos import SentimentRepo
+
+    row_id = await SentimentRepo(db).insert(symbol=ticker, status="ok", score=0.2, model="t")
+    await db.execute(
+        "UPDATE sentiment_scores SET ts = %s WHERE id = %s",
+        (datetime.now(tz=UTC) - age, row_id),
+    )
+    return row_id
+
+
+async def test_first_tick_after_a_restart_does_not_repoll_a_recent_sentiment_row(db: Database):
+    """A restart is not a reason to spend a poll: the cadence runs from the journal."""
+    await _hold_btc(db)
+    await _journal_poll(db, "BTC/USD", timedelta(hours=1))
+    svc = RecordingSentiment()
+    runner = build_runner(db, [HOLD] * 4, sentiment=svc)
+
+    now = datetime.now(tz=UTC)
+    await runner.tick(now, force=True)
+    assert svc.polled == []
+    # ...and the cadence is measured from the journaled poll, not from process start.
+    await runner.tick(now + timedelta(hours=2, minutes=1), force=True)
+    assert svc.polled == ["BTC/USD"]
+
+
+async def test_first_tick_after_a_restart_polls_when_the_journaled_row_is_stale(db: Database):
+    await _hold_btc(db)
+    await _journal_poll(db, "BTC/USD", timedelta(hours=4))
+    svc = RecordingSentiment()
+    runner = build_runner(db, [HOLD] * 2, sentiment=svc)
+
+    await runner.tick(datetime.now(tz=UTC), force=True)
+    assert svc.polled == ["BTC/USD"]
+
+
+async def test_sentiment_poll_seed_happens_once_per_symbol(db: Database):
+    """The journal is read the first time a symbol is considered; after that the
+    in-memory stamp rules, exactly as before a restart."""
+    from trader.store.repos import PositionsRepo
+
+    eth = default_registry().get("ETH/USD")
+    await _hold_btc(db)
+    await PositionsRepo(db).upsert(
+        symbol="ETH/USD", asset_class="crypto", qty=1.0, avg_entry_price=100.0
+    )
+    btc_row = await _journal_poll(db, "BTC/USD", timedelta(hours=1))
+    await _journal_poll(db, "ETH/USD", timedelta(hours=4))
+    svc = RecordingSentiment()
+    runner = build_runner(db, [HOLD] * 8, symbols=[BTC, eth], sentiment=svc)
+
+    now = datetime.now(tz=UTC)
+    await runner.tick(now, force=True)
+    assert svc.polled == ["ETH/USD"]  # per symbol: BTC fresh, ETH stale
+
+    # Backdating BTC's row now changes nothing: the seed is not re-read per tick.
+    await db.execute(
+        "UPDATE sentiment_scores SET ts = %s WHERE id = %s", (now - timedelta(hours=9), btc_row)
+    )
+    await runner.tick(now + timedelta(minutes=1), force=True)
+    assert svc.polled == ["ETH/USD"]
+    await runner.tick(now + timedelta(hours=2, minutes=1), force=True)
+    assert svc.polled == ["ETH/USD", "BTC/USD"]  # 3h after BTC's journaled poll
