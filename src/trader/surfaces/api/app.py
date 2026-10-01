@@ -509,6 +509,7 @@ def build_runner(db: Database, settings: Settings, sentiment=None, desk=None, *,
         scheduler=SignalScheduler(
             symbols,
             TriggerConfig(
+                max_heartbeats_per_tick=settings.loop_max_heartbeats_per_tick,
                 sentiment_enabled=settings.sentiment_trigger_enabled,
                 sentiment_swing=settings.sentiment_swing_threshold,
             ),
