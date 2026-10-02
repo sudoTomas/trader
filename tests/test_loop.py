@@ -408,6 +408,20 @@ async def test_shadow_journal_is_replayable(db: Database):
     assert json.loads(json.dumps(row["decision"]))["conviction"] == 0.8
 
 
+async def test_prompt_history_says_hold_not_shadow_hold(db: Database):
+    """A hold places nothing in any mode, so its history line never reads "shadow"."""
+    runner = build_runner(db, [HOLD, OPEN, HOLD])
+    await runner.tick(NOW)
+    await runner.tick(NOW + timedelta(minutes=5), force=True)
+    last = await runner.tick(NOW + timedelta(minutes=10), force=True)
+
+    row = await Journal(db).get(last[0].decision_id)
+    history = row["prompt"].split("Recent decisions (newest first):")[1]
+    assert "shadow hold" not in history
+    assert history.count("-> hold") == 1
+    assert "-> shadow open" in history  # a shadowed open still says it never reached the broker
+
+
 # --- account equity (#13) ---------------------------------------------------
 
 

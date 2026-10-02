@@ -404,11 +404,24 @@ class DecisionContext:
         if self.recent_decisions:
             lines += ["", "Recent decisions (newest first):"]
             lines += [
-                f"  - {d['ts']} {d['trigger']} -> {d['status']}"
-                f" {(d.get('decision') or {}).get('action', '')}"
+                f"  - {d['ts']} {d['trigger']} -> {_history_outcome(d)}"
                 for d in self.recent_decisions
             ]
         return "\n".join(lines)
+
+
+def _history_outcome(row: dict[str, Any]) -> str:
+    """What a past decision did, for the prompt's history lines.
+
+    The journal stamps every hold ``shadow`` in any mode (a hold has no order), so the
+    raw status would tell a live decider "shadow hold" about its own live holds. A hold
+    reads as plain ``hold``; any other action keeps its status, which still says whether
+    an open was shadowed, denied, or executed.
+    """
+    action = (row.get("decision") or {}).get("action", "")
+    if action == "hold":
+        return "hold"
+    return f"{row['status']} {action}".rstrip()
 
 
 class ContextBuilder:
