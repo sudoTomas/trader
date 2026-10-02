@@ -46,6 +46,12 @@ curl -X POST "$TRADER_API_BASE_URL/research/notes/42/retire" -H "x-api-key: …"
 Tools on the `/mcp` mount (same auth): `submit_research_note`, `get_research_notes`,
 `retire_note`. Same parameters as the API body.
 
+## Email newsletter import
+
+`clients/investing-group/` turns The Investing Group (Chicago) meeting summaries into notes
+over `POST /research/notes`, hourly, once per email, only when Gmail's DMARC verdict passes
+for the group's domain. It uses the capture-scoped key. Setup: its README.
+
 ## The compiled Macro View (part 2, EAI-178)
 
 Note changes recompile the Macro View automatically after a quiet window
