@@ -16,6 +16,7 @@ import httpx
 import structlog
 
 from trader.llm.base import Completion, LLMClient, LLMError
+from trader.llm.jev import JEV_PROVIDER, JevClient
 from trader.llm.nemotron import apply_thinking_guard, nemotron_client
 from trader.llm.openai_compat import OpenAIChatClient, loads_extra_body
 from trader.llm.usage import UsageMeter
@@ -106,16 +107,36 @@ def _generic_client(
     )
 
 
+def build_jev_client(settings: Settings, *, client: httpx.AsyncClient | None = None) -> JevClient:
+    """The decide role on TypeSafe's Jev (``TRADER_DECIDE_PROVIDER=jev``)."""
+    key = settings.jev_api_key.strip()
+    if not key:
+        raise LLMError("TRADER_JEV_API_KEY is required when TRADER_DECIDE_PROVIDER=jev")
+    return JevClient(
+        api_key=key,
+        base_url=settings.jev_base_url.strip(),
+        model=settings.jev_model.strip(),
+        notional_usd=settings.jev_notional_usd,
+        research_led_open=settings.jev_research_led_open,
+        client=client,
+        price_in=settings.decide_price_in,
+        price_out=settings.decide_price_out,
+    )
+
+
 def build_decide_client(
     settings: Settings, *, client: httpx.AsyncClient | None = None
-) -> OpenAIChatClient:
-    """The money-path client: generic endpoint, or the Nemotron preset when unset.
+) -> LLMClient:
+    """The money-path client: Jev when selected, else a generic endpoint, else the
+    Nemotron preset.
 
     A generic URL equal to ``TRADER_NEMOTRON_BASE_URL`` still gets the thinking
     guard and the untouched wire schema. Any other host gets neither: OpenAI rejects
     ``chat_template_kwargs``, and Ollama / llama.cpp reject a schema bound of 2000
     (see ``grammar_safe_schema``).
     """
+    if settings.decide_provider == JEV_PROVIDER:
+        return build_jev_client(settings, client=client)
     base_url = settings.decide_base_url.strip()
     if not base_url:
         return nemotron_client(settings, client=client)
@@ -184,9 +205,12 @@ def build_llm_registry(
     they are not routed at xAI on their own).
     """
     decide = build_decide_client(settings)
+    # Jev answers only the decide schema, so it is never an analyst or a research
+    # backstop; those roles keep whatever else is configured.
+    backstop: list[LLMClient] = [] if decide.name == JEV_PROVIDER else [decide]
     # Analysts run on every wakeup. On the Nemotron preset that is free; a paid
     # decide endpoint bills them too. Desk stays dark unless TRADER_DESK_ENABLED.
-    routes: dict[str, list[LLMClient]] = {"decide": [decide], "analyst": [decide]}
+    routes: dict[str, list[LLMClient]] = {"decide": [decide], "analyst": backstop}
     research = build_research_client(settings)
     if research is not None:
         for role in RESEARCH_ROLES:
@@ -200,5 +224,5 @@ def build_llm_registry(
     # ordering: Grok reviews the decide draft when both exist; otherwise the
     # critique is same-model, not skipped.
     for role in RESEARCH_ROLES:
-        routes[role] = [grok, decide] if grok is not None else [decide]
+        routes[role] = ([grok] if grok is not None else []) + backstop
     return LLMRegistry(routes, meter)
