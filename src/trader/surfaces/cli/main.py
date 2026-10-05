@@ -562,6 +562,39 @@ def screener_run(
     typer.echo(json.dumps(_get("/screener", params=params), indent=2))
 
 
+config_app = typer.Typer(help="The running service's effective configuration (read-only).")
+app.add_typer(config_app, name="config")
+
+
+def _config_cell(setting: dict) -> str:
+    if setting["category"] == "credential":
+        return "(set)" if setting["set"] else "(unset)"
+    value = setting["value"]
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return '""' if value == "" else str(value)
+
+
+@config_app.command("show")
+def config_show(
+    json_output: bool = typer.Option(False, "--json", help="The full snapshot as JSON."),
+) -> None:
+    """Print every setting the running API sees (env + .env), by section. `*` marks a value
+    that differs from the default; credentials show only (set)/(unset), never a value."""
+    out = _get("/config")
+    if json_output or not isinstance(out, dict):
+        typer.echo(json.dumps(out, indent=2))
+        return
+    for section in out["sections"]:
+        typer.echo(f"\n[{section['name']}]")
+        for setting in section["settings"]:
+            mark = "*" if setting["changed"] else " "
+            line = f"{mark} {setting['env']:<40} {_config_cell(setting)}"
+            if setting["changed"] and setting["category"] != "credential":
+                line += f"  (default {_config_cell({**setting, 'value': setting['default']})})"
+            typer.echo(line)
+
+
 seat_app = typer.Typer(
     help="Grok desk seats — standalone research sweeps (local: xAI + the capture key)."
 )

@@ -11,9 +11,12 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from trader.store.db import Database
+
+if TYPE_CHECKING:
+    from trader.ops.config import Settings
 
 
 def _read_version() -> str:
@@ -85,6 +88,7 @@ def build_registry(
     briefs: Any | None = None,
     xai_http: Any | None = None,
     screener: Any | None = None,
+    settings: Settings | None = None,
 ) -> ServiceRegistry:
     """Construct the registry with the capabilities available in this build.
 
@@ -96,7 +100,8 @@ def build_registry(
     service's authenticated api.x.ai client (``llm.xai.xai_http_client``), None without
     an xAI credential path; only the operator diagnostics use it. ``screener`` is a
     multi-symbol daily-bars provider (``get_daily_bars_multi``), absent without
-    market-data credentials.
+    market-data credentials. ``settings`` is the process's live ``Settings`` (the one the
+    app was built from); the ``config`` snapshot reads it, else ``get_settings()``.
     """
     reg = ServiceRegistry()
 
@@ -902,6 +907,20 @@ def build_registry(
             limit=limit,
         )
         return {**result.as_dict(), "lookback_days": settings.screener_lookback_days}
+
+    # --- config ---------------------------------------------------------------
+
+    @reg.register(
+        "config",
+        kind="query",
+        summary="Effective settings of the running service by section: default, value, and"
+        " whether each differs; credentials report only whether they are set.",
+    )
+    async def config() -> dict[str, Any]:
+        from trader.ops.config import get_settings
+        from trader.ops.config_reference import snapshot
+
+        return snapshot(settings if settings is not None else get_settings())
 
     async def _audit_command(action: str, payload: dict[str, Any]) -> None:
         """Commands are state-changing: every one leaves an append-only trace."""

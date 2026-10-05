@@ -81,6 +81,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         briefs,
         xai_http=xai_http,
         screener=build_screener_data(db, settings),
+        settings=settings,
     )
     mcp = build_mcp(registry)
     capture_mcp = build_mcp(registry, only=CAPTURE_CAPABILITIES, name="trader-capture")
@@ -347,6 +348,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except MarketDataError as exc:  # the venue could not answer
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.get("/config")
+    async def config() -> dict:
+        return await registry.get("config").handler()
 
     app.mount("/mcp", mcp_app)
     app.mount("/mcp-capture", capture_mcp_app)

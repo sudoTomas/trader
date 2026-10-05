@@ -68,6 +68,7 @@ journal when the operator runs a query for you.
 | `get_eval_runs` / `get_eval_run` | `GET /eval/runs[/{id}]` | replay eval results |
 | `get_audit` | `GET /audit` | append-only audit trail |
 | `get_approvals` | `GET /risk/approvals` | order intents parked for a human |
+| `get_config` | `GET /config` | effective settings by section (credentials: set or not, never a value) |
 
 ### Commands Hermes SHOULD use — research capture (the intended integration)
 

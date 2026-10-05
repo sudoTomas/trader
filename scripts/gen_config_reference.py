@@ -87,7 +87,7 @@ ENV_EXAMPLE_HINTS = {"shadow_symbols": "SPY"}
 
 
 def collect_fields() -> list[FieldDoc]:
-    """Field metadata, derived in `trader.ops.config_reference`."""
+    """Field metadata, shared with the `config` query (`trader.ops.config_reference`)."""
     try:
         return config_reference.collect_fields()
     except ValueError as exc:

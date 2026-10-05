@@ -192,7 +192,7 @@ capability: queries read as `get_<name>`, commands keep their name. An excerpt:
 ```
 get_health  get_decisions  get_decision  get_positions  get_orders  get_risk_status
 get_loop_status  get_macro_view  get_research_notes  get_brief  get_sentiment
-get_eval_runs  get_usage  get_audit
+get_eval_runs  get_usage  get_audit  get_config
 wake_trader  pause  resume  resume_breaker  resolve_approval
 submit_research_note  retire_note  compile_macro_view  fetch_x_sentiment
 run_replay_eval  reconcile  flatten_all (confirm-gated)
@@ -203,6 +203,7 @@ run_replay_eval  reconcile  flatten_all (confirm-gated)
 ```bash
 trader risk status          # kill switches, breaker halts, configured limits
 trader loop status          # shadow/live mode and counters
+trader config show          # effective settings by section; * = differs from default
 trader broker reconcile     # {"drift": {}} or a pause until resolved
 ```
 

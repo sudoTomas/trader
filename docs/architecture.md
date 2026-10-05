@@ -208,7 +208,8 @@ capability, defined once, three doors.
   registry. Deliberately **no raw place-order tool** — orders exist only through the
   RiskGuarded loop. Tools: health, portfolio, positions, decisions, wake_trader,
   pause/resume, risk status, resume_breaker, approvals (list/approve/deny), briefs, sentiment,
-  bars, usage, research (submit/list/retire note, get_macro_view), flatten_all (confirm-gated).
+  bars, usage, research (submit/list/retire note, get_macro_view), config (read-only
+  effective settings, secrets masked), flatten_all (confirm-gated).
 - **CLI** (typer, `trader ...`): wraps the same services over the API for operator use.
 
 ## Safety invariants (summary)
