@@ -172,7 +172,11 @@ What one run does (`src/trader/seats/runner.py`):
 2. One `/v1/responses` call on `TRADER_SEAT_MODEL` (`grok-4.3`) with `x_search`
    (`from_date`/`to_date` = the last 24 h) and `web_search`, structured JSON out:
    `{notes: [{title, body, symbols, tags, source, authored_at, confidence, citations}]}`,
-   at most `TRADER_SEAT_MAX_NOTES` (3). The prompt carries the research-capture rules
+   at most `TRADER_SEAT_MAX_NOTES` (3). A seat that declares `x_handles` restricts
+   x_search to those accounts (`allowed_x_handles`: `@` stripped, deduped
+   case-insensitively, at most 20, a malformed handle fails the run before any request);
+   web_search stays open, and the run log records the handles used. A seat with no
+   handles (crypto-flows) searches X openly. The prompt carries the research-capture rules
    from the Hermes skill: distill, numbers as the source states them, no opinion,
    `authored_at` only when the source shows it, **zero grounded findings → `[]` is a
    successful sweep**.

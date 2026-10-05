@@ -2,7 +2,7 @@
 
 The process shape is the design's (docs/research/2026-09-16-grok-bots-macro-team.md §3):
 
-    timer → SeatXaiClient.sweep (grok, x_search + web_search, 1-day window)
+    timer → SeatXaiClient.sweep (grok, x_search [seat's handles, if any] + web_search, 1-day window)
           → parse_notes (pydantic)          → grounding gate  (cite a URL the tool layer returned)
           → dedupe gate (GET /research/notes, last 7 days)   → size gate (distill once, then drop)
           → cap (``seat_max_notes``)         → CaptureClient.submit_note (capture key ONLY)
@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -67,9 +68,36 @@ class SeatError(RuntimeError):
     """Configuration or protocol failure; the CLI prints it and exits 1."""
 
 
+#: x_search takes at most this many ``allowed_x_handles`` (docs.x.ai x-search tool;
+#: docs/research/2026-09-16-grok-bots-macro-team.md §1b).
+MAX_X_HANDLES = 20
+#: An X handle: 1-15 letters, digits or underscores (the leading ``@`` is stripped first).
+X_HANDLE = re.compile(r"^[A-Za-z0-9_]{1,15}$")
+
+
+def normalize_x_handles(handles: Iterable[str]) -> tuple[str, ...]:
+    """Handles as x_search wants them: ``@`` and whitespace stripped, deduped
+    case-insensitively (X handles are), first spelling kept. Raises SeatError on an
+    empty or malformed handle, or on more than ``MAX_X_HANDLES``."""
+    seen: dict[str, str] = {}
+    for raw in handles:
+        handle = str(raw).strip().removeprefix("@")
+        if not X_HANDLE.match(handle):
+            raise SeatError(f"invalid X handle {raw!r}: expected 1-15 letters, digits or _")
+        seen.setdefault(handle.casefold(), handle)
+    if len(seen) > MAX_X_HANDLES:
+        raise SeatError(f"{len(seen)} X handles given; x_search accepts at most {MAX_X_HANDLES}")
+    return tuple(seen.values())
+
+
 @dataclass(frozen=True)
 class Seat:
-    """A desk seat: prompt + scope. Mechanics live in the runner, not here."""
+    """A desk seat: prompt + scope. Mechanics live in the runner, not here.
+
+    ``x_handles`` restricts x_search to those accounts (``allowed_x_handles``); empty
+    leaves X search open. web_search is never restricted. Handles are normalized and
+    validated on construction, so a bad list fails before any request is made.
+    """
 
     name: str
     description: str
@@ -78,6 +106,10 @@ class Seat:
     symbols_allowed: tuple[str, ...]
     asset_classes: tuple[str, ...]
     tags: tuple[str, ...]
+    x_handles: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "x_handles", normalize_x_handles(self.x_handles))
 
 
 # --- model output --------------------------------------------------------------------
@@ -267,6 +299,9 @@ class SeatXaiClient:
             max_notes=max_notes,
             max_chars=max_chars,
         )
+        x_search: dict[str, Any] = {"type": "x_search", "from_date": from_date, "to_date": to_date}
+        if seat.x_handles:
+            x_search["allowed_x_handles"] = list(seat.x_handles)
         return await self._post(
             {
                 "model": self.model,
@@ -274,10 +309,7 @@ class SeatXaiClient:
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
                 ],
-                "tools": [
-                    {"type": "x_search", "from_date": from_date, "to_date": to_date},
-                    {"type": "web_search"},
-                ],
+                "tools": [x_search, {"type": "web_search"}],
                 "text": {
                     "format": {"type": "json_schema", "name": "seat_notes", "schema": NOTE_SCHEMA}
                 },
@@ -689,6 +721,7 @@ class SeatRunner:
             "seat": self.seat.name,
             "model": self.xai.model,
             "window": {"from": from_date, "to": to_date},
+            "x_handles": list(self.seat.x_handles),
             "candidates": len(candidates),
             "citations_returned": len(result.citations),
             "submitted": submitted,
@@ -702,6 +735,7 @@ class SeatRunner:
         log.info(
             "seat_run_complete",
             seat=self.seat.name,
+            x_handles=list(self.seat.x_handles),
             submitted=len(submitted),
             dropped=len(self.dropped),
             cost_usd=round(cost.total_usd, 6),

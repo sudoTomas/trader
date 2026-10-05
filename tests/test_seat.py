@@ -11,6 +11,7 @@ own cost written to an append-only local file.
 from __future__ import annotations
 
 import configparser
+import dataclasses
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -381,6 +382,119 @@ async def test_sweep_request_uses_responses_with_both_tools_and_a_one_day_window
     assert "ETF flows negative" in text  # already-filed titles reach the prompt
     assert "1400" in text and "3" in text
     assert "2026-09-28" in text
+
+
+async def test_crypto_flows_request_body_is_unchanged_by_x_handle_support() -> None:
+    """crypto-flows declares no handles, so its body is byte-for-byte the pre-#handles one:
+    x_search carries the window and nothing else, web_search is bare."""
+    assert CRYPTO_FLOWS.x_handles == ()
+    captured: list[dict] = []
+    xai = xai_client([responses_payload([], [])], captured)
+    await xai.sweep(
+        CRYPTO_FLOWS,
+        from_date="2026-09-28",
+        to_date="2026-09-29",
+        already_filed=[],
+        max_notes=3,
+        max_chars=1400,
+    )
+    assert captured[0] == {
+        "model": "grok-4.3",
+        "input": [
+            {
+                "role": "system",
+                "content": CRYPTO_FLOWS.system_prompt.format(
+                    max_notes=3, max_chars=1400, symbols=["ETH/USD", "BTC/USD"]
+                ),
+            },
+            {
+                "role": "user",
+                "content": CRYPTO_FLOWS.user_prompt.format(
+                    from_date="2026-09-28",
+                    to_date="2026-09-29",
+                    already_filed="- (nothing yet)",
+                    max_notes=3,
+                    max_chars=1400,
+                ),
+            },
+        ],
+        "tools": [
+            {"type": "x_search", "from_date": "2026-09-28", "to_date": "2026-09-29"},
+            {"type": "web_search"},
+        ],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "seat_notes",
+                "schema": seat_runner.NOTE_SCHEMA,
+            }
+        },
+        "store": False,
+    }
+
+
+async def test_sweep_restricts_x_search_to_the_seats_handles_and_leaves_web_open() -> None:
+    seat = dataclasses.replace(CRYPTO_FLOWS, x_handles=("@elonmusk", "Tesla"))
+    captured: list[dict] = []
+    xai = xai_client([responses_payload([], [])], captured)
+    await xai.sweep(
+        seat,
+        from_date="2026-09-28",
+        to_date="2026-09-29",
+        already_filed=[],
+        max_notes=3,
+        max_chars=1400,
+    )
+    tools = {t["type"]: t for t in captured[0]["tools"]}
+    assert tools["x_search"] == {
+        "type": "x_search",
+        "from_date": "2026-09-28",
+        "to_date": "2026-09-29",
+        "allowed_x_handles": ["elonmusk", "Tesla"],
+    }
+    assert "excluded_x_handles" not in tools["x_search"]  # mutually exclusive on xAI
+    assert tools["web_search"] == {"type": "web_search"}
+
+
+def test_normalize_x_handles_strips_at_and_dedupes_case_insensitively() -> None:
+    assert seat_runner.normalize_x_handles(
+        [" @elonmusk ", "Tesla", "ELONMUSK", "tesla", "Tesla_Optimus"]
+    ) == ("elonmusk", "Tesla", "Tesla_Optimus")
+    assert seat_runner.normalize_x_handles([]) == ()
+
+
+@pytest.mark.parametrize("bad", ["", "  ", "@", "bad-handle", "has space", "x" * 16, "a.b"])
+def test_normalize_x_handles_rejects_empty_and_malformed(bad: str) -> None:
+    with pytest.raises(seat_runner.SeatError, match="invalid X handle"):
+        seat_runner.normalize_x_handles(["elonmusk", bad])
+
+
+def test_x_handles_cap_at_twenty_after_dedupe() -> None:
+    twenty = [f"acct{i}" for i in range(20)]
+    assert len(seat_runner.normalize_x_handles(twenty + ["ACCT0", "@acct1"])) == 20
+    with pytest.raises(seat_runner.SeatError, match="at most 20"):
+        seat_runner.normalize_x_handles([*twenty, "acct20"])
+
+
+def test_seat_normalizes_and_validates_handles_on_construction() -> None:
+    seat = dataclasses.replace(CRYPTO_FLOWS, x_handles=["@SpaceX", "spacex", "Starlink"])
+    assert seat.x_handles == ("SpaceX", "Starlink")
+    with pytest.raises(seat_runner.SeatError):
+        dataclasses.replace(CRYPTO_FLOWS, x_handles=("@",))
+
+
+async def test_run_records_the_handles_it_searched(tmp_path: Path):
+    api = FakeApi()
+    captured: list[dict] = []
+    xai = xai_client([responses_payload([], [])], captured)
+    runner = make_runner(xai, api, tmp_path)
+    runner.seat = dataclasses.replace(CRYPTO_FLOWS, x_handles=("elonmusk", "xai"))
+    record = await runner.run()
+    assert record["x_handles"] == ["elonmusk", "xai"]
+    assert read_runs(tmp_path / "seat-runs.jsonl")[0]["x_handles"] == ["elonmusk", "xai"]
+
+    plain = await make_runner(xai_client([responses_payload([], [])], []), api, tmp_path).run()
+    assert plain["x_handles"] == []
 
 
 async def test_distill_request_sends_no_tools() -> None:
