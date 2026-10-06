@@ -8,26 +8,25 @@ committed file differs from the render, so CI catches a setting added without do
     uv run python scripts/gen_config_reference.py --check  # CI gate
 
 Field text lives on the `Settings` fields themselves (`setting(...)` in
-`src/trader/ops/config.py`); this script only lays it out. `Settings` is never
-instantiated here, so the operator's `.env` cannot leak into the output.
+`src/trader/ops/config.py`); the metadata derivation is `trader.ops.config_reference`,
+shared with `GET /config` so the two cannot drift; this script only lays it out.
+`Settings` is never instantiated here, so the operator's `.env` cannot leak into the output.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from pydantic import AliasChoices
-
-from trader.ops.config import CATEGORIES, GATE, SECTIONS, Settings
+from trader.ops import config_reference
+from trader.ops.config import CATEGORIES, GATE, SECTIONS
+from trader.ops.config_reference import FieldDoc
 
 ROOT = Path(__file__).resolve().parents[1]
 MARKDOWN_PATH = Path("docs") / "configuration.md"
 ENV_EXAMPLE_PATH = Path(".env.example")
-ENV_PREFIX = str(Settings.model_config.get("env_prefix", ""))
 
 CATEGORY_LEGEND = {
     "gate": (
@@ -87,53 +86,12 @@ ENV_EXAMPLE_ACTIVE = {
 ENV_EXAMPLE_HINTS = {"shadow_symbols": "SPY"}
 
 
-@dataclass(frozen=True)
-class FieldDoc:
-    name: str
-    env_names: tuple[str, ...]  # primary first, then accepted alternates
-    type_name: str
-    default: Any
-    description: str
-    category: str
-    section: str
-
-    @property
-    def env_name(self) -> str:
-        return self.env_names[0]
-
-
-def _env_names(name: str, alias: Any) -> tuple[str, ...]:
-    if isinstance(alias, AliasChoices):
-        return tuple(str(choice) for choice in alias.choices)
-    if alias is not None:
-        return (str(alias),)
-    return (f"{ENV_PREFIX}{name.upper()}",)
-
-
 def collect_fields() -> list[FieldDoc]:
-    docs: list[FieldDoc] = []
-    for name, info in Settings.model_fields.items():
-        extra = info.json_schema_extra if isinstance(info.json_schema_extra, dict) else {}
-        category = str(extra.get("category", ""))
-        section = str(extra.get("section", ""))
-        if category not in CATEGORIES or section not in SECTIONS:
-            raise SystemExit(f"{name}: declare it with setting(category=..., section=...)")
-        if not info.description:
-            raise SystemExit(f"{name}: needs a description")
-        annotation = info.annotation
-        type_name = getattr(annotation, "__name__", str(annotation))
-        docs.append(
-            FieldDoc(
-                name=name,
-                env_names=_env_names(name, info.validation_alias),
-                type_name=type_name,
-                default=info.default,
-                description=" ".join(info.description.split()),
-                category=category,
-                section=section,
-            )
-        )
-    return docs
+    """Field metadata, derived in `trader.ops.config_reference`."""
+    try:
+        return config_reference.collect_fields()
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def env_value(value: Any) -> str:
