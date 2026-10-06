@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from trader.core.symbols import AssetClass, Symbol
@@ -67,6 +67,11 @@ class TriggerConfig:
             AssetClass.COMMODITY_ETF: 1800,
         }
     )
+    # 0 = no cap. A large watchlist would otherwise wake every symbol on the same tick
+    # (startup, every cadence, every market open) and burst the data API's rate limit;
+    # with a cap, heartbeats beyond it wait for the next tick, most overdue first.
+    # Signal triggers (price move, vol spike, sentiment) are never capped.
+    max_heartbeats_per_tick: int = 0
     price_move_pct: float = 0.02  # over the trailing window
     price_window_seconds: int = 3600
     vol_spike_mult: float = 2.0  # vs the trailing mean of observed vols
@@ -102,7 +107,33 @@ class SignalScheduler:
             if symbol is None or not symbol.market_calendar.is_open(now):
                 continue  # calendar gating: a closed venue cannot be traded
             fired.extend(self._for_symbol(symbol, mark, now))
-        return [t for t in fired if not self._in_cooldown(t, now)]
+        return self._cap_heartbeats([t for t in fired if not self._in_cooldown(t, now)])
+
+    def _cap_heartbeats(self, fired: list[Trigger]) -> list[Trigger]:
+        """Keep at most ``max_heartbeats_per_tick`` heartbeats; the rest stay due.
+
+        A symbol already waking on a signal keeps its heartbeat for free (it costs no
+        extra wakeup). Among the others: never-run symbols first, then the longest since
+        their last heartbeat; ticker order breaks ties so a tick is deterministic.
+        """
+        cap = self._config.max_heartbeats_per_tick
+        signalled = {t.symbol for t in fired if t.type != HEARTBEAT}
+        queued = [t for t in fired if t.type == HEARTBEAT and t.symbol not in signalled]
+        if cap <= 0 or len(queued) <= cap:
+            return fired
+
+        def overdue(t: Trigger) -> tuple[int, datetime, str]:
+            last = self._last_heartbeat.get(t.symbol)
+            return (
+                (0, datetime.min.replace(tzinfo=UTC), t.symbol)
+                if last is None
+                else (1, last, t.symbol)
+            )
+
+        keep = {t.symbol for t in sorted(queued, key=overdue)[:cap]}
+        return [
+            t for t in fired if t.type != HEARTBEAT or t.symbol in signalled or t.symbol in keep
+        ]
 
     def mark_dispatched(self, triggers: list[Trigger], now: datetime) -> None:
         """Start cooldowns — called ONLY when a wakeup actually launches."""

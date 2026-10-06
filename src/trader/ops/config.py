@@ -139,6 +139,17 @@ class Settings(BaseSettings):
         section="Decide loop",
         description="Seconds between scheduler ticks (quote fetch, mark, trigger evaluation).",
     )
+    loop_max_heartbeats_per_tick: int = setting(
+        0,
+        category=TUNING,
+        section="Decide loop",
+        description=(
+            "Cap on heartbeat wakeups per tick (0 = no cap). Set it when the watchlist is "
+            "large: heartbeats beyond the cap wait for the next tick, most overdue first, so "
+            "startup, each cadence and each market open do not burst the data API's rate "
+            "limit. Price-move, vol-spike and sentiment triggers are never capped."
+        ),
+    )
     loop_symbols: str = setting(
         "BTC/USD,ETH/USD",
         category=TUNING,
