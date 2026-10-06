@@ -362,11 +362,21 @@ def estimate_cost(
 # --- gates ---------------------------------------------------------------------------------
 
 
+#: An X post is its status id: x_search returns ``x.com/i/status/<id>`` while the model cites
+#: ``x.com/<handle>/status/<id>`` for the same post, so both normalize to ``x.com/status/<id>``.
+X_STATUS = re.compile(r"^/(?:[^/]+/)?status(?:es)?/(\d+)")
+X_HOSTS = {"x.com", "twitter.com", "mobile.twitter.com", "mobile.x.com"}
+
+
 def normalize_url(url: str | None) -> str:
     if not url:
         return ""
     parts = urlsplit(url.strip())
     host = parts.netloc.lower().removeprefix("www.")
+    if host in X_HOSTS:
+        status = X_STATUS.match(parts.path)
+        if status:
+            return f"x.com/status/{status.group(1)}"
     path = parts.path.rstrip("/")
     query = f"?{parts.query}" if parts.query else ""
     return f"{host}{path}{query}"

@@ -832,3 +832,19 @@ def test_seat_timer_and_service_templates_parse() -> None:
     assert service["Service"]["Type"] == "oneshot"
     assert service["Service"]["WorkingDirectory"] == "%h/repos/trader"
     assert service["Service"]["ExecStart"].endswith("trader seat run crypto-flows")
+
+
+def test_x_post_urls_match_by_status_id():
+    """x_search returns x.com/i/status/<id>; the model cites x.com/<handle>/status/<id>."""
+    from trader.seats.runner import normalize_url
+
+    returned = "https://x.com/i/status/2106827233650147822"
+    for cited in (
+        "https://x.com/elonmusk/status/2106827233650147822",
+        "https://twitter.com/elonmusk/status/2106827233650147822?s=20",
+        "https://www.x.com/elonmusk/status/2106827233650147822/",
+    ):
+        assert normalize_url(cited) == normalize_url(returned)
+    assert normalize_url("https://x.com/i/status/1") != normalize_url(returned)
+    other_host = "https://example.com/a/status/2106827233650147822"
+    assert normalize_url(other_host) != normalize_url(returned)
