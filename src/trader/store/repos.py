@@ -68,9 +68,15 @@ class DecisionsRepo:
     async def get(self, decision_id: int) -> Row | None:
         return await self._db.fetch_one("SELECT * FROM decisions WHERE id = %s", (decision_id,))
 
-    async def recent(self, limit: int = 50) -> list[Row]:
+    async def recent(self, limit: int = 50, *, symbol: str | None = None) -> list[Row]:
+        if symbol is None:
+            return await self._db.fetch_all(
+                "SELECT * FROM decisions ORDER BY ts DESC, id DESC LIMIT %s", (limit,)
+            )
+        # decisions_symbol_ts_idx serves this.
         return await self._db.fetch_all(
-            "SELECT * FROM decisions ORDER BY ts DESC, id DESC LIMIT %s", (limit,)
+            "SELECT * FROM decisions WHERE symbol = %s ORDER BY ts DESC, id DESC LIMIT %s",
+            (symbol, limit),
         )
 
 

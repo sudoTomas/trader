@@ -529,9 +529,12 @@ class LoopRunner:
         trigger_label = ",".join(names)
         started = time.perf_counter()
 
-        # Equity-fallback rows are an outage audit, not decide context.
+        # This symbol's own history only: another symbol's holds are not evidence about
+        # this one. Equity-fallback rows are an outage audit, not decide context.
         recent = [
-            row for row in await self._journal.recent(8) if row.get("trigger") != EQUITY_FALLBACK
+            row
+            for row in await self._journal.recent(8, symbol=symbol.ticker)
+            if row.get("trigger") != EQUITY_FALLBACK
         ][:5]
         ctx = await self._context.build(
             symbol,

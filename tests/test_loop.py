@@ -422,6 +422,22 @@ async def test_prompt_history_says_hold_not_shadow_hold(db: Database):
     assert "-> shadow open" in history  # a shadowed open still says it never reached the broker
 
 
+async def test_recent_decisions_in_the_prompt_are_the_symbols_own(db: Database):
+    """The decide prompt's history is this symbol's, never another symbol's."""
+    eth = default_registry().get("ETH/USD")
+    await build_runner(db, [HOLD], symbols=[BTC]).tick(NOW)
+
+    eth_runner = build_runner(db, [HOLD, HOLD], symbols=[eth])
+    first = await eth_runner.tick(NOW)
+    row = await Journal(db).get(first[0].decision_id)
+    assert "Recent decisions" not in row["prompt"]  # BTC's hold is not ETH's history
+
+    later = await eth_runner.tick(NOW + timedelta(minutes=5), force=True)
+    row = await Journal(db).get(later[0].decision_id)
+    history = row["prompt"].split("Recent decisions (newest first):")[1]
+    assert history.count("\n  - ") == 1  # only ETH's own earlier hold
+
+
 # --- account equity (#13) ---------------------------------------------------
 
 
