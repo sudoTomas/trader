@@ -196,8 +196,10 @@ function describeAudit(a) {
       return { ico: 'pause', tone: 'warn', verb: 'Trading paused', rest: [lead(p.reason ? ` · ${p.reason}` : '')] };
     case 'resume':
       return { ico: 'play', verb: 'Trading resumed', rest: [] };
-    case 'resolve_approval':
-      return { ico: 'shield', verb: `Approval ${p.approved ? 'approved' : 'denied'}`, rest: [lead(a.subject ? ` · ${a.subject}` : '')] };
+    case 'resolve_approval': {
+      const line = resolveAuditLine(p);
+      return { ico: 'shield', verb: line.verb, rest: [lead(`${line.extra}${a.subject ? ` · ${a.subject}` : ''}`)] };
+    }
     default:
       return { ico: a.category === 'order' ? 'order' : 'gear', verb: words(a.action).replace(/^./, (c) => c.toUpperCase()), rest: [lead(` · ${words(a.category)}`)] };
   }
@@ -536,8 +538,9 @@ async function resolveApproval(a, approved) {
   const verb = approved ? 'Approve' : 'Deny';
   if (!(await ask(`${verb} this order?`, `#${a.id}: ${intentText(a.order_intent || {})}. ${a.reason}`, verb))) return;
   try {
-    await window.trader.post(`/risk/approvals/${a.id}/resolve?approved=${approved}&resolved_by=trader-desk`);
-    toast(`${approved ? 'Approved' : 'Denied'} #${a.id}`);
+    const body = await window.trader.post(`/risk/approvals/${a.id}/resolve?approved=${approved}&resolved_by=trader-desk`);
+    const outcome = approvalToast(body, approved, a.id);
+    toast(outcome.text, !outcome.ok);
   } catch (err) {
     toast(`${verb} failed: ${err.message}`, true);
   }

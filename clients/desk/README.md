@@ -1,18 +1,16 @@
 # Desk (Salamander)
 
-A desktop window for trader. Open it and it brings up the local backend if nothing is
-running, then shows what the agent is doing. It is a client of the API: it adds no
-trading logic, and RiskGuard still decides every order.
+A desktop window for trader. Open it and it attaches to the API already running on
+this machine, then shows what the agent is doing. It does not start a backend. It is
+a client of the API: it adds no trading logic, and RiskGuard still decides every order.
 
 ![Live](docs/screenshots/live.png)
 
 ## What it does
 
-- **On launch:** if nothing answers on the API port, it starts trader's Postgres container
-  (`docker compose -f infra/docker-compose.yml up -d --wait db`) and the API
-  (`uv run uvicorn trader.surfaces.api.app:app`). If an API is already running, it connects
-  to it and starts nothing.
-- **On close:** stops the API it started. The database container keeps running.
+- **On launch:** it connects to the API already listening on the desk port. If nothing
+  answers `/health`, the window says so and starts nothing — not Postgres, not uvicorn.
+- **On close:** the window quits. It does not stop trader-api.
 - **Live:** today's tiles (decisions, errors, average decision time, model cost, open
   positions, approvals waiting), a live line with a countdown to the next check, and a
   ledger of every decision and audit event grouped by day. Click a row for the model's
@@ -47,7 +45,7 @@ npm install                # also downloads the Electron binary
 npm start                  # or run it straight from a terminal
 ```
 
-Needs `docker`, `uv`, and `uv sync` run once in the checkout.
+Needs a trader API already listening on the desk port (`trader-api`, or uvicorn you started yourself).
 
 ## Settings
 
@@ -79,7 +77,8 @@ The desk carries the Salamander identity proposed for the project (see the namin
 
 ## Files
 
-- `main.js`: starts the backend, owns the window, forwards API calls with the POST allowlist
+- `main.js`: owns the window and forwards API calls. GET must stay on `127.0.0.1` and the desk port. POST is the three-route allowlist. Redirects are refused.
+- `desk_logic.js`: that route check, plus the approval toast and ledger wording
 - `preload.js`: the only bridge the page gets (`get`, `post`, `broker`, backend status)
 - `index.html`, `renderer.js`, `style.css`, `icons.js`: the dashboard
 - `install-desktop.sh`: launcher entry
