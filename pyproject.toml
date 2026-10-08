@@ -28,6 +28,7 @@ dependencies = [
     "mcp>=1.2",
     "numpy>=2.1",
     "cryptography>=43",
+    "anthropic>=1",
 ]
 
 [project.scripts]

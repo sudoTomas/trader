@@ -50,6 +50,8 @@ class Preset:
     kind: str
     base_url: str
     local: bool = False
+    #: Model a new Chain entry gets when none is named (None: one must be named).
+    default_model: str | None = None
 
     @property
     def needs_key(self) -> bool:
@@ -58,7 +60,7 @@ class Preset:
 
 PRESETS: dict[str, Preset] = {
     "openai": Preset(OPENAI_COMPAT, "https://api.openai.com/v1"),
-    "anthropic": Preset(ANTHROPIC, "https://api.anthropic.com/v1"),
+    "anthropic": Preset(ANTHROPIC, "https://api.anthropic.com/v1", default_model="claude-opus-5-5"),
     "gemini": Preset(OPENAI_COMPAT, "https://generativelanguage.googleapis.com/v1beta/openai"),
     "xai": Preset(XAI, "https://api.x.ai/v1"),
     "openrouter": Preset(OPENAI_COMPAT, "https://openrouter.ai/api/v1"),
@@ -117,10 +119,12 @@ class ProviderDesk:
         secrets_key: str,
         actor: str = "surface",
         http: httpx.AsyncClient | None = None,
+        anthropic_transport: Any | None = None,  # httpx2 transport, for tests
     ) -> None:
         self._db = db
         self._actor = actor
         self._http = http or httpx.AsyncClient(timeout=10.0)
+        self._anthropic_transport = anthropic_transport
         # name -> (fetched at, model ids); see models().
         self._models: dict[str, tuple[float, list[str]]] = {}
         # A bad master key refuses key operations with the reason; it never stops the API
@@ -258,10 +262,17 @@ class ProviderDesk:
                 "base_url": p.base_url,
                 "local": p.local,
                 "needs_key": p.needs_key,
+                "default_model": p.default_model,
             }
             for name, p in PRESETS.items()
         }
-        out[CUSTOM] = {"kind": OPENAI_COMPAT, "base_url": None, "local": None, "needs_key": False}
+        out[CUSTOM] = {
+            "kind": OPENAI_COMPAT,
+            "base_url": None,
+            "local": None,
+            "needs_key": False,
+            "default_model": None,
+        }
         return out
 
     async def models(self, name: str) -> list[str]:
@@ -275,16 +286,14 @@ class ProviderDesk:
         row = await self._row(name)
         if row["kind"] == JEV:
             return []  # Jev serves no model list; type the model id
-        if row["kind"] == ANTHROPIC:
-            raise ProviderError(
-                "listing Claude models arrives with the Anthropic adapter (#104); "
-                "type the model id meanwhile"
-            )
-        headers = {}
-        if row["api_key_enc"]:
-            headers["Authorization"] = f"Bearer {self._decrypt(row['api_key_enc'])}"
         try:
-            ids = await self._fetch_ids(row["preset"], row["base_url"], headers)
+            if row["kind"] == ANTHROPIC:
+                ids = await self._anthropic_ids(row)
+            else:
+                headers = {}
+                if row["api_key_enc"]:
+                    headers["Authorization"] = f"Bearer {self._decrypt(row['api_key_enc'])}"
+                ids = await self._fetch_ids(row["preset"], row["base_url"], headers)
         except ProviderError as exc:
             raise ProviderError(f"{name}: {exc}") from exc
         result = sorted(ids)
@@ -335,6 +344,18 @@ class ProviderDesk:
             return [m["id"] for m in payload["data"]]
         except (KeyError, TypeError, ValueError) as exc:
             raise ProviderError(f"malformed model list ({type(exc).__name__})") from exc
+
+    async def _anthropic_ids(self, row: dict[str, Any]) -> list[str]:
+        """Claude model ids from the Models API, through the SDK."""
+        from trader.llm.anthropic import list_models
+        from trader.llm.base import LLMError
+
+        try:
+            return await list_models(
+                self.api_key(row) or "", row["base_url"], self._anthropic_transport
+            )
+        except LLMError as exc:
+            raise ProviderError(str(exc).removeprefix("anthropic: ")) from exc
 
     async def _row(self, name: str) -> dict[str, Any]:
         row = await self._db.fetch_one("SELECT * FROM llm_providers WHERE name = %s", (name,))

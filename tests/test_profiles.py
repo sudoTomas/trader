@@ -140,17 +140,16 @@ async def test_roles_refuse_providers_that_cannot_serve_them(db: Database):
     server = ModelServer({})
     providers, profiles = await with_local(db, server)
     await providers.add(name="kev", preset="jev", api_key="kev-key-12345")
-    await providers.add(name="claude", preset="anthropic", api_key="sk-ant-12345")
     await profiles.create("trial")
 
     refusals = {
         "sentiment": ("spark", "x_search, which only xAI serves"),
         "confirm": ("spark", "Jev Provider only"),
         "decide": ("kev", "answers question sets only"),
-        "critic": ("claude", "Anthropic adapter lands (#104)"),
+        "brief": ("kev", "answers question sets only"),
     }
     for role, (provider, reason) in refusals.items():
-        with pytest.raises(ProfileError, match=reason.replace("(", r"\(").replace(")", r"\)")):
+        with pytest.raises(ProfileError, match=reason):
             await profiles.set_chain("trial", role, [{"provider": provider, "model": "m"}])
     assert server.calls == []  # refused before any Probe
     assert (await profiles.list())[0]["version"] == 1

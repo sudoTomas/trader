@@ -222,6 +222,7 @@ async def test_provider_capabilities_are_registered_once_for_every_surface(db: D
         "base_url": "http://localhost:11434/v1",
         "local": True,
         "needs_key": False,
+        "default_model": None,
     }
     assert presets["custom"]["needs_key"] is False
 
