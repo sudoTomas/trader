@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { deskRequestUrl, approvalToast, resolveAuditLine } = require('./desk_logic');
+const { deskRequestUrl, approvalToast, resolveAuditLine, criticPill, confirmPill } = require('./desk_logic');
 
 const BASE = 'http://127.0.0.1:8080';
 
@@ -63,4 +63,23 @@ test('the ledger uses status, not a missing approved flag', () => {
   });
   assert.equal(resolveAuditLine({ status: 'denied' }).verb, 'Approval denied');
   assert.equal(resolveAuditLine({ approved: true }).verb, 'Approval denied');
+});
+
+test('the critic pill shows its verdict and stays quiet on a hold', () => {
+  assert.equal(criticPill(null), null);
+  assert.equal(criticPill({ critic: { verdict: 'skipped' } }), null);
+  assert.deepEqual(criticPill({ critic: { verdict: 'veto', reason: 'thin' } }), { tone: 'bad', text: 'critic · veto', title: 'thin' });
+  assert.equal(criticPill({ critic: { verdict: 'pass_through' } }).text, 'critic · pass through');
+});
+
+test('the Kev pill reads the Confirm and its skips', () => {
+  assert.equal(confirmPill(null), null);
+  const draft = { action: 'open', side: 'buy' };
+  assert.deepEqual(confirmPill({ draft, skipped: 'HTTP 500' }), { tone: 'warn', text: 'Kev · skipped', title: 'HTTP 500' });
+  const doubt = confirmPill({ draft, p_same_action: 0.31, prefers: 'hold', verdict: 'journal_only', model: 'kev-latest' });
+  assert.equal(doubt.text, 'Kev · open 31% · prefers hold');
+  assert.equal(doubt.tone, 'warn');
+  const agree = confirmPill({ draft, p_same_action: 0.72, prefers: 'open' });
+  assert.deepEqual([agree.text, agree.tone], ['Kev · open 72%', 'ok']);
+  assert.equal(confirmPill({ draft, p_same_action: 0.6, prefers: 'other_side' }).text, 'Kev · open 60% · prefers other side');
 });

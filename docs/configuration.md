@@ -23,7 +23,6 @@ Gates at a glance (all default closed):
 - `TRADER_BRIEFS_ENABLED` = `false`
 - `TRADER_DESK_ENABLED` = `false`
 - `TRADER_SENTIMENT_TRIGGER_ENABLED` = `false`
-- `TRADER_JEV_RESEARCH_LED_OPEN` = `false`
 
 ## Surfaces / auth
 
@@ -120,12 +119,10 @@ Two roles, each any OpenAI-compatible `/v1`: **decide** (also the desk analysts)
 | `TRADER_DECIDE_EXTRA_BODY` | `str` | *(empty)* | tuning | JSON object merged into every chat-completions body for the decide client (e.g. `{"reasoning_effort": "low"}`). Must parse as an object. Ollama / llama.cpp ignore `chat_template_kwargs`; their no-thinking switch is `{"reasoning_effort": "none"}`. Without it a reasoning model burns the decide token budget thinking and returns empty content. |
 | `TRADER_DECIDE_PRICE_IN` | `float` | `0.0` | tuning | USD per 1M input tokens for the decide model. `0` reads the built-in PRICES table, else $0 (logged once); non-zero overrides the table. |
 | `TRADER_DECIDE_PRICE_OUT` | `float` | `0.0` | tuning | USD per 1M output tokens for the decide model; same rules as the input price. |
-| `TRADER_DECIDE_PROVIDER` | `str` | *(empty)* | endpoint | Empty: the decide role speaks OpenAI chat (`TRADER_DECIDE_BASE_URL`, else the Nemotron preset). `jev`: TypeSafe's Jev judgment model answers the decide role natively (`TRADER_JEV_*`); analysts and research roles never route to it. |
-| `TRADER_JEV_BASE_URL` | `str` | `https://api.typesafe.ai/v1/systemone` | endpoint | Jev's judgment endpoint (used only when `TRADER_DECIDE_PROVIDER=jev`). |
-| `TRADER_JEV_MODEL` | `str` | `jev-latest` | endpoint | Jev model id. Priced with `TRADER_DECIDE_PRICE_IN/OUT`. |
-| `TRADER_JEV_API_KEY` | `str` | *(empty)* | credential | TypeSafe API key for Jev; required when `TRADER_DECIDE_PROVIDER=jev`. Errors report the HTTP status only. |
-| `TRADER_JEV_NOTIONAL_USD` | `float` | `750.0` | tuning | Notional Jev requests on an open or close. Jev answers no size; RiskGuard clamps this like any other request (Kelly ignores conviction), and closes are sized from the broker's position. |
-| `TRADER_JEV_RESEARCH_LED_OPEN` | `bool` | `false` | gate | When nothing is held, the Macro View favors long and Jev sees at least a weak edge, open a long even though Jev's own action vote is hold. Shorts and closes still need Jev's vote. A decide change: replay before turning it on (docs/runbooks/decide-change-gate.md). |
+| `TRADER_CONFIRM_PROVIDER` | `str` | *(empty)* | endpoint | Empty: no Confirm. `jev`: TypeSafe's Jev judgment model is asked about every open or close Draft (`TRADER_CONFIRM_*`) and its answer is journaled in the decision's `confirm` column. Journal-only: it never changes an order. |
+| `TRADER_CONFIRM_BASE_URL` | `str` | `https://api.typesafe.ai/v1/systemone` | endpoint | Jev's judgment endpoint for the confirm role. |
+| `TRADER_CONFIRM_MODEL` | `str` | `jev-latest` | endpoint | Jev model id for the confirm role. |
+| `TRADER_CONFIRM_API_KEY` | `str` | *(empty)* | credential | TypeSafe API key for the confirm role; required when `TRADER_CONFIRM_PROVIDER=jev`. Errors report the HTTP status only. |
 | `TRADER_RESEARCH_BASE_URL` | `str` | *(empty)* | endpoint | Same shape as the decide endpoint, for the brief, compiler, critic and registry sentiment roles. Empty keeps xAI if configured, else the decide client. x_search stays xAI-only. |
 | `TRADER_RESEARCH_MODEL` | `str` | *(empty)* | endpoint | Model id at `TRADER_RESEARCH_BASE_URL`. |
 | `TRADER_RESEARCH_API_KEY` | `str` | *(empty)* | credential | Bearer key for `TRADER_RESEARCH_BASE_URL`. |

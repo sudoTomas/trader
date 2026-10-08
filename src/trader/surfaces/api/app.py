@@ -474,6 +474,7 @@ def build_runner(db: Database, settings: Settings, sentiment=None, desk=None, *,
     from trader.data.composite import build_market_data
     from trader.llm.registry import build_llm_registry
     from trader.llm.usage import UsageMeter
+    from trader.loop.confirm import Confirmer
     from trader.loop.executor import Executor
     from trader.loop.runner import LoopRunner
     from trader.loop.scheduler import SignalScheduler, TriggerConfig
@@ -494,10 +495,11 @@ def build_runner(db: Database, settings: Settings, sentiment=None, desk=None, *,
         broker = AlpacaBroker.from_settings(settings)
         executor = Executor(db, broker)
 
+    llm = build_llm_registry(settings, UsageMeter(UsageRepo(db)), xai_manager=xai_manager)
     return LoopRunner(
         db=db,
         market_data=build_market_data(settings),
-        llm=build_llm_registry(settings, UsageMeter(UsageRepo(db)), xai_manager=xai_manager),
+        llm=llm,
         guard=RiskGuard(
             db, limits_from_settings(settings), live_enabled=settings.alpaca_live_enabled
         ),
@@ -521,6 +523,7 @@ def build_runner(db: Database, settings: Settings, sentiment=None, desk=None, *,
         briefs_enabled=settings.briefs_enabled,
         exit_review_enabled=settings.exit_review_enabled,
         desk=desk if settings.desk_enabled else None,
+        confirm=Confirmer(llm) if settings.confirm_provider else None,
     )
 
 

@@ -31,11 +31,9 @@ from trader.core.symbols import default_registry
 from trader.data.base import MarketData, MarketDataError
 from trader.data.composite import build_market_data
 from trader.llm.base import LLMError
-from trader.llm.jev import JEV_PROVIDER
 from trader.llm.nemotron import PROVIDER as NEMOTRON
 from trader.llm.registry import LLMRegistry, build_llm_registry
 from trader.llm.xai_auth import XaiAuthError, build_manager
-from trader.loop.decider import DECISION_SCHEMA
 from trader.ops.config import Settings
 from trader.store.migrate import MIGRATIONS_DIR, _load_migrations
 
@@ -53,12 +51,6 @@ PROBE_SCHEMA: dict[str, Any] = {
 PROBE_MESSAGES = [
     {"role": "system", "content": "You answer with JSON only."},
     {"role": "user", "content": 'Reply with exactly {"ok": true}.'},
-]
-
-# Jev answers only the decide schema, so its probe is one flat decide (one real call).
-JEV_PROBE_MESSAGES = [
-    {"role": "system", "content": "Health probe. Prefer hold."},
-    {"role": "user", "content": "Symbol: PROBE (us_equity)\nOpen position: 0 units\n"},
 ]
 
 _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
@@ -206,19 +198,12 @@ def _redact(url: str) -> str:
 
 
 def _decide_env(settings: Settings) -> tuple[str, ...]:
-    if settings.decide_provider == JEV_PROVIDER:
-        return ("TRADER_DECIDE_PROVIDER", "TRADER_JEV_API_KEY", "TRADER_JEV_BASE_URL")
     if settings.decide_base_url.strip():
         return ("TRADER_DECIDE_BASE_URL", "TRADER_DECIDE_MODEL", "TRADER_DECIDE_API_KEY")
     return ("TRADER_NEMOTRON_BASE_URL",)
 
 
 def _decide_hint(settings: Settings) -> str:
-    if settings.decide_provider == JEV_PROVIDER:
-        return (
-            "Jev: check TRADER_JEV_API_KEY and TRADER_JEV_BASE_URL "
-            "(or unset TRADER_DECIDE_PROVIDER)"
-        )
     if settings.decide_base_url.strip():
         return (
             "any OpenAI-compatible /v1 works; check the URL, model id, and key "
@@ -245,18 +230,12 @@ async def check_decide(
     data: dict[str, Any] = {
         "provider": provider,
         "model": model,
-        "preset": "nemotron" if provider == NEMOTRON else provider,
+        "preset": "nemotron" if provider == NEMOTRON else "openai_compat",
     }
-    is_jev = provider == JEV_PROVIDER
     started = time.perf_counter()
     try:
         completion = await asyncio.wait_for(
-            registry.complete(
-                "decide",
-                JEV_PROBE_MESSAGES if is_jev else PROBE_MESSAGES,
-                schema=DECISION_SCHEMA if is_jev else PROBE_SCHEMA,
-                max_tokens=16,
-            ),
+            registry.complete("decide", PROBE_MESSAGES, schema=PROBE_SCHEMA, max_tokens=16),
             timeout=wait_seconds,
         )
     except LLMError as exc:
@@ -279,9 +258,8 @@ async def check_decide(
     label = f"{provider} {model} {latency_ms} ms"
     try:
         parsed = json.loads(completion.text)
-        expected = "action" if is_jev else "ok"
-        if not isinstance(parsed, dict) or expected not in parsed:
-            raise ValueError(f"missing {expected!r}")
+        if not isinstance(parsed, dict) or "ok" not in parsed:
+            raise ValueError("missing 'ok'")
     except (json.JSONDecodeError, ValueError):
         data["raw"] = completion.text[:120]
         return CheckResult(

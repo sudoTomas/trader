@@ -61,6 +61,19 @@ class CriticOutput(BaseModel):
 CRITIC_SCHEMA: dict[str, Any] = require_all_keys(CriticOutput.model_json_schema())
 
 
+def draft_under_review(ctx: DecisionContext, decision: Decision) -> str:
+    """The decide prompt plus the Draft as JSON: what the critic and the Confirm judge."""
+    assert decision.intent is not None, "only intents are reviewed; holds skip review"
+    draft = {
+        "action": decision.action.value,
+        "side": decision.intent.side.value,
+        "notional_usd": decision.intent.notional,
+        "conviction": decision.conviction,
+        "rationale": decision.rationale,
+    }
+    return f"{ctx.to_prompt()}\n\nDraft decision under review:\n{json.dumps(draft, indent=2)}"
+
+
 class Critic:
     """One completion per review; every failure degrades to a journaled pass-through."""
 
@@ -68,21 +81,9 @@ class Critic:
         self._llm = llm
 
     async def review(self, ctx: DecisionContext, decision: Decision) -> dict[str, Any]:
-        assert decision.intent is not None, "only intents are reviewed; holds skip the critic"
-        draft = {
-            "action": decision.action.value,
-            "side": decision.intent.side.value,
-            "notional_usd": decision.intent.notional,
-            "conviction": decision.conviction,
-            "rationale": decision.rationale,
-        }
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": f"{ctx.to_prompt()}\n\nDraft decision under review:\n"
-                f"{json.dumps(draft, indent=2)}",
-            },
+            {"role": "user", "content": draft_under_review(ctx, decision)},
         ]
         try:
             completion = await self._llm.complete(ROLE, messages, schema=CRITIC_SCHEMA)

@@ -77,7 +77,8 @@ src/trader/
 ## The money path (crypto slice = first vertical)
 
 ```
-SignalScheduler → ContextBuilder → Decider → RiskGuard → Executor → Journal
+SignalScheduler → ContextBuilder → (analyst desk) → Decider → (Confirm) → (critic)
+  → RiskGuard → Executor → Journal
 ```
 
 - **SignalScheduler** — event-driven wakeups: heartbeat, price-move, vol-spike, sentiment,
@@ -91,7 +92,19 @@ SignalScheduler → ContextBuilder → Decider → RiskGuard → Executor → Jo
 - **Decider** — one Nemotron completion, JSON-schema-validated, 1 retry with the validation
   errors fed back. Transient (infra) vs crash errors classified so infra blips don't arm
   backoff ([transient-vs-crash-backoff](lessons.md#transient-vs-crash-backoff)). Runs in
-  **shadow mode** first: journal the decision, submit nothing.
+  **shadow mode** first: journal the decision, submit nothing. Its output is the
+  **Draft**: action, side, notional, cited rationale (a hold is a Draft with no order).
+- **Confirm** (`confirm` role, `TRADER_CONFIRM_*`, absent unless configured) — Kev, a Jev
+  judgment model, answers typed questions about every open or close Draft: the action
+  (hold / open / close) and the side for the Draft's action, as probabilities. It always
+  judges the raw Draft, before the critic. **First stage (#99) is journal-only**: the
+  answer lands in the decision's `confirm` column (`verdict: journal_only`) and nothing
+  reads it back. Unreachable, slow, HTTP error or malformed answers journal a skip with
+  the status text, and the Draft proceeds. The margin that later lets a Confirm turn a
+  Draft into a hold is chosen from this column by replay, in a second change. A Confirm
+  can never open a trade the Draft did not propose or change its notional.
+- **Critic** (desk, `TRADER_DESK_ENABLED`) — a cross-model second opinion that can only
+  approve, shrink or veto the Draft; fails open to a journaled pass-through.
 - **RiskGuard** — ordered, fail-closed chain; each check returns allow / deny(reason) /
   clamp(size, reason): paper-gate → kill switches (trading paused, drift) → per-class policy
   (crypto long-only, equity shortability, session open) → sizing clamps (max position frac,
@@ -104,7 +117,8 @@ SignalScheduler → ContextBuilder → Decider → RiskGuard → Executor → Jo
   are best-effort + journaled ([closes-must-land](lessons.md#closes-must-land),
   [crypto-fees-from-asset](lessons.md#crypto-fees-from-asset)).
 - **Journal** — every wakeup (including suppressed/shadow) writes a row: trigger, full
-  prompt, raw output, risk verdicts, `macro_view_version`, cost, latency. Replay-ready.
+  prompt, raw output, risk verdicts, desk verdicts, the Confirm, `macro_view_version`,
+  cost, latency. Replay-ready.
 
 ### Universe
 
@@ -168,7 +182,9 @@ hand, never by the screener.
 
 - **Provider registry**: `{role → (provider, model, credential_source)}`. Roles: `decide`
   (`TRADER_DECIDE_*`, else the Nemotron preset), `brief` / `compiler` / `sentiment` (Grok,
-  else `TRADER_RESEARCH_*`), with per-role fallback.
+  else `TRADER_RESEARCH_*`), with per-role fallback. `confirm` is Jev alone
+  (`TRADER_CONFIRM_*`): Jev answers question sets, never a JSON schema, so it is never a
+  decide, analyst or research backstop.
 - **Nemotron preset** (`TRADER_NEMOTRON_BASE_URL`, default `http://localhost:8009/v1` — a
   vLLM you host): every request MUST send `chat_template_kwargs: {enable_thinking: false}`
   or throughput collapses to ~0.35 tok/s

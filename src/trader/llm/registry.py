@@ -3,7 +3,8 @@
 ``decide`` / ``analyst`` use ``TRADER_DECIDE_*`` (any OpenAI-compatible endpoint) or,
 when that base URL is empty, the Nemotron preset. ``brief`` / ``compiler`` /
 ``sentiment`` / ``critic`` use ``TRADER_RESEARCH_*`` the same way; unset, xAI fronts
-them when a credential exists and the decide client backstops. x_search sentiment
+them when a credential exists and the decide client backstops. ``confirm`` is Jev alone
+(``TRADER_CONFIRM_*``), absent unless configured, and nothing backstops it. x_search sentiment
 is not routed here — it stays xAI-only. Every completion served here is metered
 into ``usage_daily`` under its role — there is no unmetered path.
 """
@@ -26,7 +27,7 @@ from trader.ops.config import Settings
 
 log = structlog.get_logger(__name__)
 
-ROLES = ("decide", "brief", "compiler", "sentiment", "analyst", "critic")
+ROLES = ("decide", "brief", "compiler", "sentiment", "analyst", "critic", "confirm")
 RESEARCH_ROLES = ("brief", "compiler", "sentiment", "critic")
 #: Usage-meter provider for a configured OpenAI-compatible endpoint (not the Nemotron preset).
 GENERIC_PROVIDER = "openai_compat"
@@ -55,6 +56,7 @@ class LLMRegistry:
         temperature: float = 0.2,
     ) -> Completion:
         errors: list[str] = []
+        last: LLMError | None = None
         for client in self.chain_for(role):
             try:
                 completion = await client.complete(
@@ -62,6 +64,7 @@ class LLMRegistry:
                 )
             except LLMError as exc:
                 errors.append(str(exc))
+                last = exc
                 log.warning(
                     "llm_provider_failed",
                     role=role,
@@ -73,7 +76,8 @@ class LLMRegistry:
             if self._meter is not None:
                 await self._meter.record(role, completion)
             return completion
-        raise LLMError(f"all providers failed for role '{role}': {errors}")
+        # Chained to the last provider's error so a caller can report that one cause.
+        raise LLMError(f"all providers failed for role '{role}': {errors}") from last
 
 
 def _same_endpoint(left: str, right: str) -> bool:
@@ -107,36 +111,33 @@ def _generic_client(
     )
 
 
-def build_jev_client(settings: Settings, *, client: httpx.AsyncClient | None = None) -> JevClient:
-    """The decide role on TypeSafe's Jev (``TRADER_DECIDE_PROVIDER=jev``)."""
-    key = settings.jev_api_key.strip()
+def build_confirm_client(
+    settings: Settings, *, client: httpx.AsyncClient | None = None
+) -> JevClient | None:
+    """The confirm role on TypeSafe's Jev, or None when ``TRADER_CONFIRM_PROVIDER`` is empty."""
+    if settings.confirm_provider != JEV_PROVIDER:
+        return None
+    key = settings.confirm_api_key.strip()
     if not key:
-        raise LLMError("TRADER_JEV_API_KEY is required when TRADER_DECIDE_PROVIDER=jev")
+        raise LLMError("TRADER_CONFIRM_API_KEY is required when TRADER_CONFIRM_PROVIDER=jev")
     return JevClient(
         api_key=key,
-        base_url=settings.jev_base_url.strip(),
-        model=settings.jev_model.strip(),
-        notional_usd=settings.jev_notional_usd,
-        research_led_open=settings.jev_research_led_open,
+        base_url=settings.confirm_base_url.strip(),
+        model=settings.confirm_model.strip(),
         client=client,
-        price_in=settings.decide_price_in,
-        price_out=settings.decide_price_out,
     )
 
 
 def build_decide_client(
     settings: Settings, *, client: httpx.AsyncClient | None = None
 ) -> LLMClient:
-    """The money-path client: Jev when selected, else a generic endpoint, else the
-    Nemotron preset.
+    """The money-path client: a generic endpoint, else the Nemotron preset.
 
     A generic URL equal to ``TRADER_NEMOTRON_BASE_URL`` still gets the thinking
     guard and the untouched wire schema. Any other host gets neither: OpenAI rejects
     ``chat_template_kwargs``, and Ollama / llama.cpp reject a schema bound of 2000
     (see ``grammar_safe_schema``).
     """
-    if settings.decide_provider == JEV_PROVIDER:
-        return build_jev_client(settings, client=client)
     base_url = settings.decide_base_url.strip()
     if not base_url:
         return nemotron_client(settings, client=client)
@@ -205,12 +206,15 @@ def build_llm_registry(
     they are not routed at xAI on their own).
     """
     decide = build_decide_client(settings)
-    # Jev answers only the decide schema, so it is never an analyst or a research
-    # backstop; those roles keep whatever else is configured.
-    backstop: list[LLMClient] = [] if decide.name == JEV_PROVIDER else [decide]
+    backstop: list[LLMClient] = [decide]
     # Analysts run on every wakeup. On the Nemotron preset that is free; a paid
     # decide endpoint bills them too. Desk stays dark unless TRADER_DESK_ENABLED.
     routes: dict[str, list[LLMClient]] = {"decide": [decide], "analyst": backstop}
+    # Jev answers question sets only, so it is the confirm role and nothing else: never
+    # a decide, analyst or research backstop.
+    confirm = build_confirm_client(settings)
+    if confirm is not None:
+        routes["confirm"] = [confirm]
     research = build_research_client(settings)
     if research is not None:
         for role in RESEARCH_ROLES:

@@ -110,9 +110,10 @@ function table(columns, rows, { key, detail } = {}) {
 }
 
 // ---------- reading a decision in plain words ----------
-// Jev writes its judgments into the rationale ("Jev judged hold at 98% (open 2%, ...).
-// Edge: weak at 70% ..."). These pull out what a person wants on a hold: how close it
-// came to buying, and how strong the setup looked. Null for other models' rationales.
+// While Jev held the decide seat (before #99) it wrote its judgments into the rationale
+// ("Jev judged hold at 98% (open 2%, ...). Edge: weak at 70% ..."). These pull out what a
+// person wants on a hold: how close it came to buying, and how strong the setup looked.
+// Null for other models' rationales.
 function jevRead(d) {
   const r = d.decision?.rationale || '';
   if (!r.startsWith('Jev judged')) return null;
@@ -169,6 +170,13 @@ function decisionDetail(d) {
         const tone = v.action === 'deny' ? 'bad' : v.action === 'clamp' ? 'warn' : 'ok';
         return el('span', { className: `pill ${tone}`, title: v.reason || '', textContent: `${words(v.check)} · ${v.action}` });
       })),
+    );
+  }
+  const opinions = [confirmPill(d.confirm), criticPill(d.desk_verdicts)].filter(Boolean);
+  if (opinions.length) {
+    parts.push(
+      el('div', { className: 'k', textContent: 'Second opinions' }),
+      el('div', { className: 'verdicts' }, ...opinions.map((p) => el('span', { className: `pill ${p.tone}`, title: p.title, textContent: p.text }))),
     );
   }
   if (!dec.rationale && d.raw_output) parts.push(el('div', { className: 'k', textContent: 'Model output' }), el('pre', { textContent: d.raw_output }));

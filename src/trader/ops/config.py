@@ -475,57 +475,35 @@ class Settings(BaseSettings):
         section="LLM endpoints",
         description="USD per 1M output tokens for the decide model; same rules as the input price.",
     )
-    decide_provider: str = setting(
+    confirm_provider: str = setting(
         "",
         category=ENDPOINT,
         section="LLM endpoints",
         description=(
-            "Empty: the decide role speaks OpenAI chat (`TRADER_DECIDE_BASE_URL`, else the "
-            "Nemotron preset). `jev`: TypeSafe's Jev judgment model answers the decide role "
-            "natively (`TRADER_JEV_*`); analysts and research roles never route to it."
+            "Empty: no Confirm. `jev`: TypeSafe's Jev judgment model is asked about every "
+            "open or close Draft (`TRADER_CONFIRM_*`) and its answer is journaled in the "
+            "decision's `confirm` column. Journal-only: it never changes an order."
         ),
     )
-    jev_base_url: str = setting(
+    confirm_base_url: str = setting(
         "https://api.typesafe.ai/v1/systemone",
         category=ENDPOINT,
         section="LLM endpoints",
-        description="Jev's judgment endpoint (used only when `TRADER_DECIDE_PROVIDER=jev`).",
+        description="Jev's judgment endpoint for the confirm role.",
     )
-    jev_model: str = setting(
+    confirm_model: str = setting(
         "jev-latest",
         category=ENDPOINT,
         section="LLM endpoints",
-        description="Jev model id. Priced with `TRADER_DECIDE_PRICE_IN/OUT`.",
+        description="Jev model id for the confirm role.",
     )
-    jev_api_key: str = setting(
+    confirm_api_key: str = setting(
         "",
         category=CREDENTIAL,
         section="LLM endpoints",
         description=(
-            "TypeSafe API key for Jev; required when `TRADER_DECIDE_PROVIDER=jev`. Errors "
-            "report the HTTP status only."
-        ),
-    )
-    jev_notional_usd: float = setting(
-        750.0,
-        category=TUNING,
-        section="LLM endpoints",
-        description=(
-            "Notional Jev requests on an open or close. Jev answers no size; RiskGuard clamps "
-            "this like any other request (Kelly ignores conviction), and closes are sized from "
-            "the broker's position."
-        ),
-        gt=0,
-    )
-    jev_research_led_open: bool = setting(
-        False,
-        category=GATE,
-        section="LLM endpoints",
-        description=(
-            "When nothing is held, the Macro View favors long and Jev sees at least a weak "
-            "edge, open a long even though Jev's own action vote is hold. Shorts and closes "
-            "still need Jev's vote. A decide change: replay before turning it on "
-            "(docs/runbooks/decide-change-gate.md)."
+            "TypeSafe API key for the confirm role; required when `TRADER_CONFIRM_PROVIDER=jev`. "
+            "Errors report the HTTP status only."
         ),
     )
     research_base_url: str = setting(
@@ -613,9 +591,9 @@ class Settings(BaseSettings):
         description="Encrypted SuperGrok OAuth token store path.",
     )
 
-    @field_validator("decide_provider")
+    @field_validator("confirm_provider")
     @classmethod
-    def decide_provider_known(cls, value: str) -> str:
+    def confirm_provider_known(cls, value: str) -> str:
         text = value.strip().lower()
         if text not in ("", "jev"):
             raise ValueError("must be empty or 'jev'")

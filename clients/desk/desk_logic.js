@@ -53,6 +53,29 @@ function resolveAuditLine(payload) {
   return { verb: `Approval ${status}`, extra };
 }
 
+// Decision detail pills for the second opinions on a Draft. Null when there is none.
+const pctText = (v) => `${Math.round(Number(v) * 100)}%`;
+
+function criticPill(deskVerdicts) {
+  const c = deskVerdicts && deskVerdicts.critic;
+  if (!c || !c.verdict || c.verdict === 'skipped') return null;
+  const tone = c.verdict === 'veto' ? 'bad' : c.verdict === 'shrink' ? 'warn' : 'ok';
+  return { tone, text: `critic · ${c.verdict.replace(/_/g, ' ')}`, title: c.reason || '' };
+}
+
+// Kev's Confirm (journal-only for now): how likely it found the Draft's own action.
+function confirmPill(confirm) {
+  if (!confirm || !confirm.draft) return null;
+  if (confirm.skipped) return { tone: 'warn', text: 'Kev · skipped', title: confirm.skipped };
+  const agrees = confirm.prefers === confirm.draft.action;
+  const prefers = String(confirm.prefers).replace(/_/g, ' ');
+  return {
+    tone: agrees ? 'ok' : 'warn',
+    text: `Kev · ${confirm.draft.action} ${pctText(confirm.p_same_action)}${agrees ? '' : ` · prefers ${prefers}`}`,
+    title: `${confirm.verdict || ''} · ${confirm.model || ''}`,
+  };
+}
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { ALLOWED_POSTS, deskRequestUrl, approvalToast, resolveAuditLine };
+  module.exports = { ALLOWED_POSTS, deskRequestUrl, approvalToast, resolveAuditLine, criticPill, confirmPill };
 }
