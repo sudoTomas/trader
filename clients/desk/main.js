@@ -28,8 +28,11 @@ function readEnvFile() {
   }
   return out;
 }
+// Where the API is. Default: this machine, on the desk port. TRADER_DESK_URL points the
+// desk at an API on another box (plain HTTP, so LAN or a tunnel only); every request is
+// then pinned to that origin by deskRequestUrl, so the page still can't aim the key elsewhere.
 const PORT = Number(process.env.TRADER_DESK_PORT || 8080);
-const BASE = `http://127.0.0.1:${PORT}`;
+const BASE = (process.env.TRADER_DESK_URL || `http://127.0.0.1:${PORT}`).replace(/\/+$/, '');
 
 let win = null;
 let lastStatus = { text: 'Starting…', error: false };
@@ -66,8 +69,8 @@ async function healthy() {
 }
 
 async function ensureBackend() {
-  if (await healthy()) return status(`Connected to running API on :${PORT}`);
-  status(`No API on :${PORT}. Start trader-api; this window will not start one.`, true);
+  if (await healthy()) return status(`Connected to running API at ${BASE}`);
+  status(`No API at ${BASE}. Start trader-api; this window will not start one.`, true);
 }
 
 ipcMain.handle('backend-status', () => lastStatus);
@@ -99,9 +102,9 @@ ipcMain.handle('api', async (_event, method, route, body) => {
     init.body = JSON.stringify(body);
   }
   const r = await fetch(url, init);
-  const body = await r.json().catch(() => null);
-  if (!r.ok) throw new Error(body?.detail ? JSON.stringify(body.detail) : `${r.status} ${r.statusText}`);
-  return body;
+  const out = await r.json().catch(() => null);
+  if (!r.ok) throw new Error(out?.detail ? JSON.stringify(out.detail) : `${r.status} ${r.statusText}`);
+  return out;
 });
 
 app.whenReady().then(() => {

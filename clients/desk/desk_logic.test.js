@@ -124,6 +124,15 @@ test('an API refusal reads as its own words', () => {
   assert.equal(errorText(new Error('blocked: POST /loop/wake')), 'blocked: POST /loop/wake');
 });
 
+test('a remote base keeps the same-origin rule', () => {
+  const remote = 'http://192.168.1.20:8080';
+  assert.equal(deskRequestUrl(remote, 'GET', '/health').href, `${remote}/health`);
+  assert.equal(deskRequestUrl(remote, 'POST', '/risk/pause').hostname, '192.168.1.20');
+  // Loopback is another host now, so a route aimed back at it is blocked too.
+  assert.throws(() => deskRequestUrl(remote, 'GET', 'http://127.0.0.1:8080/health'), /blocked/);
+  assert.throws(() => deskRequestUrl(remote, 'GET', 'http://192.168.1.20:9090/health'), /blocked/);
+});
+
 test('path tricks do not become an allowed POST', () => {
   assert.throws(() => deskRequestUrl(BASE, 'POST', '/risk/pause/../../broker/flatten-all'), /blocked/);
   assert.throws(() => deskRequestUrl(BASE, 'POST', '/broker/flatten-all'), /blocked/);
@@ -179,4 +188,14 @@ test('the Kev pill reads the Confirm and its skips', () => {
   const agree = confirmPill({ draft, p_same_action: 0.72, prefers: 'open' });
   assert.deepEqual([agree.text, agree.tone], ['Kev · open 72%', 'ok']);
   assert.equal(confirmPill({ draft, p_same_action: 0.6, prefers: 'other_side' }).text, 'Kev · open 60% · prefers other side');
+});
+
+test('every desk script compiles', () => {
+  // Only the page runs in Playwright; this catches a syntax error in the main process too.
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const vm = require('node:vm');
+  for (const f of fs.readdirSync(__dirname).filter((n) => n.endsWith('.js'))) {
+    assert.doesNotThrow(() => new vm.Script(fs.readFileSync(path.join(__dirname, f), 'utf8'), { filename: f }), f);
+  }
 });
