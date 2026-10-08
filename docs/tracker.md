@@ -65,8 +65,8 @@ embry0 stays on GitHub (`sudoTomas/embry0`).
 
 ## Filed 2026-10-08 (model picker)
 
-PRD [#102](https://github.com/sudoTomas/trader/issues/102); glossary `CONTEXT.md` ("Models"); ADRs `docs/adr/0001`, `0002`.
-Not yet deployed to the Spark: needs `TRADER_SECRETS_KEY` in its `.env` (migrations run at boot).
+PRD [#102](https://github.com/sudoTomas/trader/issues/102) **closed 2026-10-08**; glossary `CONTEXT.md` ("Models"); ADRs `docs/adr/0001`, `0002`.
+Deployed to the Spark 2026-10-08 with `TRADER_SECRETS_KEY` in its `.env`; no Providers or Profiles yet, so every Role serves from `.env`.
 
 | GitHub | Slice | Blocked by |
 |---|---|---|
@@ -75,7 +75,7 @@ Not yet deployed to the Spark: needs `TRADER_SECRETS_KEY` in its `.env` (migrati
 | [#104](https://github.com/sudoTomas/trader/issues/104) **closed 2026-10-08 (PR #112; live Probe pending a Console key)** | 3/6 Native Anthropic adapter | #103 |
 | [#105](https://github.com/sudoTomas/trader/issues/105) **closed 2026-10-08 (PR #113)** | 4/6 Live layered pricing (local models are free) | #103 |
 | [#108](https://github.com/sudoTomas/trader/issues/108) **closed 2026-10-08 (PR #114)** | 5/6 Per-Role daily Spend caps | #107, #105 |
-| [#106](https://github.com/sudoTomas/trader/issues/106) **closed 2026-10-08** | 6/6 Desk Models page | #107, #108 |
+| [#106](https://github.com/sudoTomas/trader/issues/106) **closed 2026-10-08 (PR #115; main-process fix in PR #100)** | 6/6 Desk Models page | #107, #108 |
 
 Batch one (2026-09-29) merged as PRs #36 (D), #39 (B), #38 (C), #37 (E), #40 (A); report in
 `docs/reports/2026-09-29-batch-one.md`. Deployed only after the operator restarts `trader-api`.
