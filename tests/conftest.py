@@ -39,6 +39,7 @@ os.environ["TRADER_SHADOW_SYMBOLS"] = ""
 # operator's real keys must never leak in (they also make local runs diverge from CI,
 # which has none — that divergence shipped a CI-red commit once, 2026-08-26).
 os.environ["TRADER_XAI_TOKEN_KEY"] = ""
+os.environ["TRADER_SECRETS_KEY"] = ""
 os.environ["XAI_API_KEY"] = ""
 os.environ["ALPACA_API_KEY_ID"] = ""
 os.environ["ALPACA_API_SECRET"] = ""
@@ -93,6 +94,7 @@ ALL_TABLES = (
     "sentiment_scores",
     "bars",
     "usage_daily",
+    "llm_providers",
 )
 
 # risk_state is a singleton row, not a collection: restore it to the migration's

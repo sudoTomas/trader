@@ -48,6 +48,10 @@ def _post(path: str, params: dict | None = None, json_body: dict | None = None) 
     return _request("POST", path, params, json_body)
 
 
+def _delete(path: str) -> object:
+    return _request("DELETE", path)
+
+
 @app.callback()
 def _root() -> None:
     """trader — agentic-first trading agent."""
@@ -282,6 +286,97 @@ def note_list(
 def note_retire(note_id: int = typer.Argument(..., help="Note id to retire.")) -> None:
     """Explicitly retire a note (auto-stale never does this for you)."""
     typer.echo(json.dumps(_post(f"/research/notes/{note_id}/retire"), indent=2))
+
+
+provider_app = typer.Typer(
+    help="Model Providers (hosted and local). Keys are stored encrypted and never shown."
+)
+app.add_typer(provider_app, name="provider")
+
+
+def _echo_masked(value: object) -> None:
+    """JSON with the key mask readable (••••1234), not escaped to \\u2022."""
+    typer.echo(json.dumps(value, indent=2, ensure_ascii=False))
+
+
+def _read_key(key_stdin: bool) -> str:
+    """A key from stdin or a hidden prompt; never from argv, where shell history keeps it."""
+    import sys
+
+    if key_stdin:
+        return sys.stdin.readline().strip()
+    return typer.prompt("API key", hide_input=True)
+
+
+@provider_app.command("list")
+def provider_list() -> None:
+    """List Providers; keys show as ••••last4."""
+    _echo_masked(_get("/providers"))
+
+
+@provider_app.command("presets")
+def provider_presets() -> None:
+    """Presets a Provider can be added from."""
+    _echo_masked(_get("/providers/presets"))
+
+
+@provider_app.command("discover")
+def provider_discover() -> None:
+    """Local model servers answering on the API's host. Adds nothing."""
+    _echo_masked(_get("/providers/discover"))
+
+
+@provider_app.command("models")
+def provider_models(name: str = typer.Argument(..., help="Provider name.")) -> None:
+    """Model ids the Provider serves now."""
+    _echo_masked(_get(f"/providers/{name}/models"))
+
+
+@provider_app.command("add")
+def provider_add(
+    name: str = typer.Argument(..., help="Name for this Provider (a-z, 0-9, '-', '_')."),
+    preset: str = typer.Option(..., help="Preset (see `trader provider presets`)."),
+    base_url: str = typer.Option(None, help="Override the preset's address (required: custom)."),
+    key_stdin: bool = typer.Option(
+        False, "--key-stdin", help="Read the API key from stdin instead of a hidden prompt."
+    ),
+) -> None:
+    """Add a Provider. A hosted preset asks for its key without echoing it."""
+    presets = _get("/providers/presets")
+    spec = presets.get(preset) if isinstance(presets, dict) else None
+    api_key = None
+    if key_stdin or (spec is not None and spec["needs_key"]):
+        api_key = _read_key(key_stdin)
+    payload = {"name": name, "preset": preset, "api_key": api_key, "base_url": base_url}
+    _echo_masked(_post("/providers", json_body=payload))
+
+
+@provider_app.command("set-key")
+def provider_set_key(
+    name: str = typer.Argument(..., help="Provider name."),
+    key_stdin: bool = typer.Option(
+        False, "--key-stdin", help="Read the API key from stdin instead of a hidden prompt."
+    ),
+) -> None:
+    """Replace a Provider's key."""
+    body = {"api_key": _read_key(key_stdin)}
+    _echo_masked(_post(f"/providers/{name}/key", json_body=body))
+
+
+@provider_app.command("rename")
+def provider_rename(
+    name: str = typer.Argument(..., help="Current name."),
+    new_name: str = typer.Argument(..., help="New name."),
+) -> None:
+    """Rename a Provider."""
+    body = {"new_name": new_name}
+    _echo_masked(_post(f"/providers/{name}/rename", json_body=body))
+
+
+@provider_app.command("remove")
+def provider_remove(name: str = typer.Argument(..., help="Provider name.")) -> None:
+    """Remove a Provider and its key."""
+    _echo_masked(_delete(f"/providers/{name}"))
 
 
 eval_app = typer.Typer(help="Replay eval — offline decide reruns; the decide-change gate.")

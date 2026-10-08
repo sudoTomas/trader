@@ -85,6 +85,7 @@ def build_registry(
     briefs: Any | None = None,
     xai_http: Any | None = None,
     screener: Any | None = None,
+    providers: Any | None = None,
 ) -> ServiceRegistry:
     """Construct the registry with the capabilities available in this build.
 
@@ -96,7 +97,8 @@ def build_registry(
     service's authenticated api.x.ai client (``llm.xai.xai_http_client``), None without
     an xAI credential path; only the operator diagnostics use it. ``screener`` is a
     multi-symbol daily-bars provider (``get_daily_bars_multi``), absent without
-    market-data credentials.
+    market-data credentials. ``providers`` is the model picker's Provider store
+    (``llm.providers.ProviderDesk``), absent in store-less builds.
     """
     reg = ServiceRegistry()
 
@@ -902,6 +904,69 @@ def build_registry(
             limit=limit,
         )
         return {**result.as_dict(), "lookback_days": settings.screener_lookback_days}
+
+    # --- model picker: Providers (#103) -------------------------------------
+    # Keys go in, never come out: every read shows ••••last4. ProviderDesk audits each
+    # change itself, without the value.
+
+    if providers is not None:
+
+        @reg.register("providers", kind="query", summary="Model Providers, keys masked.")
+        async def list_providers() -> list[dict[str, Any]]:
+            return await providers.list()
+
+        @reg.register(
+            "provider_presets",
+            kind="query",
+            summary="Presets a Provider can be added from (hosted and local).",
+        )
+        async def provider_presets() -> dict[str, Any]:
+            return providers.presets()
+
+        @reg.register(
+            "provider_models",
+            kind="query",
+            summary="Model ids a Provider serves now (live, cached briefly).",
+        )
+        async def provider_models(name: str) -> list[str]:
+            return await providers.models(name)
+
+        @reg.register(
+            "discover_providers",
+            kind="query",
+            summary="Local model servers answering on this host. Adds nothing.",
+        )
+        async def discover_providers() -> list[dict[str, Any]]:
+            return await providers.discover()
+
+        @reg.register(
+            "add_provider",
+            kind="command",
+            summary="Add a model Provider from a preset; a hosted one needs api_key (stored"
+            " encrypted, never returned).",
+        )
+        async def add_provider(
+            name: str, preset: str, api_key: str | None = None, base_url: str | None = None
+        ) -> dict[str, Any]:
+            return await providers.add(name=name, preset=preset, api_key=api_key, base_url=base_url)
+
+        @reg.register(
+            "set_provider_key",
+            kind="command",
+            summary="Replace a Provider's API key (stored encrypted, never returned).",
+        )
+        async def set_provider_key(name: str, api_key: str) -> dict[str, Any]:
+            return await providers.set_key(name, api_key)
+
+        @reg.register("rename_provider", kind="command", summary="Rename a model Provider.")
+        async def rename_provider(name: str, new_name: str) -> dict[str, Any]:
+            return await providers.rename(name, new_name)
+
+        @reg.register(
+            "remove_provider", kind="command", summary="Remove a model Provider and its key."
+        )
+        async def remove_provider(name: str) -> dict[str, Any]:
+            return await providers.remove(name)
 
     async def _audit_command(action: str, payload: dict[str, Any]) -> None:
         """Commands are state-changing: every one leaves an append-only trace."""
