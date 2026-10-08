@@ -1017,6 +1017,15 @@ def build_registry(
             return await profiles.routes()
 
         @reg.register(
+            "probe_role",
+            kind="command",
+            summary="Probe the active Profile's Chain for one Role: each entry's health and"
+            " latency. Saves nothing; each entry costs one small model call.",
+        )
+        async def probe_role(role: str) -> dict[str, Any]:
+            return await profiles.probe_role(role)
+
+        @reg.register(
             "create_profile",
             kind="command",
             summary="Create an empty Profile (every Role on .env); the first one is active.",

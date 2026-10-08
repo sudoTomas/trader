@@ -847,6 +847,12 @@ def profile_routes() -> None:
     _echo_masked(_get("/roles"))
 
 
+@profile_app.command("probe")
+def profile_probe(role: str = typer.Argument(..., help="Role to Probe.")) -> None:
+    """Probe the active Profile's Chain for a Role: each entry's health and latency."""
+    _echo_masked(_post(f"/roles/{role}/probe"))
+
+
 @profile_app.command("create")
 def profile_create(name: str = typer.Argument(..., help="Name (a-z, 0-9, '-', '_').")) -> None:
     """Create an empty Profile; the first one is active."""

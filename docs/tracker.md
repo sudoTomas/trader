@@ -74,8 +74,8 @@ Not yet deployed to the Spark: needs `TRADER_SECRETS_KEY` in its `.env` (migrati
 | [#107](https://github.com/sudoTomas/trader/issues/107) **closed 2026-10-08 (PR #111)** | 2/6 Profiles, Role Chains and the Probe in a shared registry | #103 |
 | [#104](https://github.com/sudoTomas/trader/issues/104) **closed 2026-10-08 (PR #112; live Probe pending a Console key)** | 3/6 Native Anthropic adapter | #103 |
 | [#105](https://github.com/sudoTomas/trader/issues/105) **closed 2026-10-08 (PR #113)** | 4/6 Live layered pricing (local models are free) | #103 |
-| [#108](https://github.com/sudoTomas/trader/issues/108) | 5/6 Per-Role daily Spend caps | #107, #105 |
-| [#106](https://github.com/sudoTomas/trader/issues/106) | 6/6 Desk Models page | #107, #108 |
+| [#108](https://github.com/sudoTomas/trader/issues/108) **closed 2026-10-08 (PR #114)** | 5/6 Per-Role daily Spend caps | #107, #105 |
+| [#106](https://github.com/sudoTomas/trader/issues/106) **closed 2026-10-08** | 6/6 Desk Models page | #107, #108 |
 
 Batch one (2026-09-29) merged as PRs #36 (D), #39 (B), #38 (C), #37 (E), #40 (A); report in
 `docs/reports/2026-09-29-batch-one.md`. Deployed only after the operator restarts `trader-api`.

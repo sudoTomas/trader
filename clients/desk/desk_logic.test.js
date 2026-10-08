@@ -1,6 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { deskRequestUrl, approvalToast, resolveAuditLine, criticPill, confirmPill } = require('./desk_logic');
+const {
+  deskRequestUrl, approvalToast, resolveAuditLine, criticPill, confirmPill,
+  modelChip, priceText, capText, probeText, servedText, errorText,
+} = require('./desk_logic');
 
 const BASE = 'http://127.0.0.1:8080';
 
@@ -25,6 +28,100 @@ test('a route cannot carry the API key off box', () => {
   const local = deskRequestUrl(BASE, 'GET', '@evil.example/steal');
   assert.equal(local.hostname, '127.0.0.1');
   assert.equal(local.port, '8080');
+});
+
+// The Models page (#106): every model-picker write, each with its own method, and nothing else.
+const MODEL_WRITES = [
+  ['POST', '/providers'],
+  ['POST', '/providers/openrouter/key'],
+  ['POST', '/providers/openrouter/rename'],
+  ['POST', '/providers/openrouter/prices'],
+  ['POST', '/providers/openrouter/prices/clear'],
+  ['DELETE', '/providers/openrouter'],
+  ['POST', '/profiles'],
+  ['POST', '/profiles/everyday/rename'],
+  ['POST', '/profiles/everyday/duplicate'],
+  ['PUT', '/profiles/everyday/roles/decide'],
+  ['DELETE', '/profiles/everyday/roles/decide'],
+  ['POST', '/profiles/everyday/activate'],
+  ['POST', '/profiles/everyday/revert'],
+  ['POST', '/roles/decide/probe'],
+  ['PUT', '/caps/critic'],
+  ['DELETE', '/caps/critic'],
+];
+
+test('every model-picker write is allowed with its own method', () => {
+  for (const [method, route] of MODEL_WRITES) {
+    assert.equal(deskRequestUrl(BASE, method, route).pathname, route, `${method} ${route}`);
+  }
+});
+
+test('nothing else became writable', () => {
+  for (const [method, route] of [
+    ['POST', '/broker/flatten-all?confirm=FLATTEN'],
+    ['POST', '/broker/reconcile'],
+    ['POST', '/broker/adopt?confirm=ADOPT'],
+    ['POST', '/loop/wake'],
+    ['POST', '/research/notes'],
+    ['POST', '/xai/probe'],
+    ['DELETE', '/risk/pause'],
+    ['PUT', '/risk/resume'],
+    ['PATCH', '/providers/openrouter'],
+    // the right route under the wrong method
+    ['PUT', '/providers'],
+    ['POST', '/caps/critic'],
+    ['DELETE', '/profiles/everyday'],
+    ['PUT', '/roles/decide/probe'],
+    // a query string or an extra segment rides along on nothing new
+    ['POST', '/profiles/everyday/activate?then=/broker/flatten-all'],
+    ['POST', '/providers/openrouter/key/extra'],
+    ['DELETE', '/providers/a%2F..%2Fbroker'],
+    ['POST', '/providers/../broker/flatten-all'],
+    ['PUT', '/profiles/everyday/roles/../../../broker/flatten-all'],
+  ]) {
+    assert.throws(() => deskRequestUrl(BASE, method, route), /blocked/, `${method} ${route}`);
+  }
+});
+
+test('the header chip names the decide model, or .env', () => {
+  assert.equal(modelChip(null), 'decide: —');
+  assert.equal(modelChip({ decide: { source: '.env' } }), 'decide: .env');
+  const roles = { decide: { source: 'profile', chain: [{ provider: 'spark', model: 'qwen3:8b' }, { provider: 'claude', model: 'claude-opus-5-5' }] } };
+  assert.equal(modelChip(roles), 'decide: spark:qwen3:8b');
+  assert.equal(modelChip({ decide: { source: 'profile', chain: [] } }), 'decide: off');
+});
+
+test('a price reads per 1M tokens with its source; local is free, unknown says so', () => {
+  assert.equal(priceText({ price_in: 3, price_out: 15, source: 'catalog' }), '$3.00 / $15.00 per 1M · catalog');
+  assert.equal(priceText({ price_in: 0.1, price_out: 0.32, source: 'provider' }), '$0.10 / $0.32 per 1M · provider');
+  assert.equal(priceText({ price_in: 0, price_out: 0, source: 'local' }), 'free · local');
+  assert.equal(priceText({ price_in: 0, price_out: 0, source: 'unknown' }), 'price unknown');
+  assert.equal(priceText(null), 'price unknown');
+});
+
+test('spend reads against the cap and says where the cap comes from', () => {
+  assert.equal(capText({ cap_usd: 1.5, source: 'default', spent_today: 0.4213 }), '$0.42 of $1.50 today · default cap');
+  assert.equal(capText({ cap_usd: 2, source: 'set', spent_today: 2.5 }), '$2.50 of $2.00 today · at cap');
+  assert.equal(capText({ cap_usd: null, source: null, spent_today: 0 }), '$0.00 today · no cap');
+  assert.equal(capText(undefined), '—');
+});
+
+test('a Probe result reads as health and latency, or its error', () => {
+  assert.deepEqual(probeText({ ok: true, latency_ms: 1240, error: null }), { ok: true, text: 'ok · 1.2s' });
+  assert.deepEqual(probeText({ ok: false, latency_ms: 30, error: 'HTTP 503' }), { ok: false, text: 'failed · HTTP 503' });
+});
+
+test('a decision names the model that served it and the Profile version', () => {
+  assert.equal(servedText({ served_by: 'spark:qwen3:8b', profile_version: 3 }), 'served by spark:qwen3:8b · Profile v3');
+  assert.equal(servedText({ served_by: 'nemotron:nemotron-super', profile_version: null }), 'served by nemotron:nemotron-super · .env');
+  assert.equal(servedText({}), null);
+});
+
+test('an API refusal reads as its own words', () => {
+  const ipc = (m) => new Error(`Error invoking remote method 'api': Error: ${m}`);
+  assert.equal(errorText(ipc('"spark:qwen3:8b failed its decide Probe: HTTP 503; nothing was saved"')), 'spark:qwen3:8b failed its decide Probe: HTTP 503; nothing was saved');
+  assert.equal(errorText(ipc('403 Forbidden')), '403 Forbidden');
+  assert.equal(errorText(new Error('blocked: POST /loop/wake')), 'blocked: POST /loop/wake');
 });
 
 test('path tricks do not become an allowed POST', () => {

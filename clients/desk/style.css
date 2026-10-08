@@ -388,3 +388,22 @@ dialog .actions { display: flex; justify-content: flex-end; gap: 10px; padding: 
 @media (max-width: 1000px) {
   .minor { display: none; }
 }
+
+/* ---------- Models page ---------- */
+.role { padding: 12px 0; border-bottom: 1px solid var(--border); min-width: 0; }
+.role:last-of-type { border-bottom: 0; }
+.rolehead { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.rolehead .rolename { font-size: 15px; min-width: 84px; }
+.rolehead .spacer { flex: 1; }
+.chain { display: grid; gap: 6px; margin: 8px 0 0 96px; }
+.chainline { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.editor { display: grid; gap: 10px; margin: 12px 0 4px 96px; padding: 12px 14px; background: var(--overlay); border-radius: var(--radius); }
+.editor.addform { margin: 14px 0 0; }
+.editrow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+.editor .actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.refusal { color: var(--red); font-size: 14px; }
+input, select { background: var(--base); color: var(--text); border: 1px solid var(--border-strong); border-radius: 8px; padding: 7px 10px; font: 14px var(--font); min-width: 0; }
+input:focus-visible, select:focus-visible { outline: 2px solid var(--live); outline-offset: 1px; }
+.editrow input:not([type=number]) { flex: 1 1 200px; }
+.editrow input[type=number] { width: 110px; }
+@media (max-width: 760px) { .chain, .editor { margin-left: 0; } }

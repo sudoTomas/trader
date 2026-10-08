@@ -5,7 +5,7 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
-const { deskRequestUrl, ALLOWED_POSTS } = require('./desk_logic');
+const { deskRequestUrl, ALLOWED_WRITES } = require('./desk_logic');
 
 // The desk lives in clients/desk of a trader checkout, so by default it reads that checkout's .env.
 const TRADER_DIR = process.env.TRADER_DIR || path.resolve(__dirname, '..', '..');
@@ -87,10 +87,18 @@ ipcMain.handle('broker', async (_event, view) => {
   return r.json();
 });
 
-ipcMain.handle('api', async (_event, method, route) => {
-  const url = deskRequestUrl(BASE, method, route, ALLOWED_POSTS);
+ipcMain.handle('api', async (_event, method, route, body) => {
+  const url = deskRequestUrl(BASE, method, route, ALLOWED_WRITES);
   const key = apiKey();
-  const r = await fetch(url, { method, redirect: 'error', headers: key ? { 'X-API-Key': key } : {} });
+  // The audit trail names the desk as the surface behind each change.
+  const headers = { 'X-Trader-Surface': 'desk', ...(key ? { 'X-API-Key': key } : {}) };
+  const init = { method, redirect: 'error', headers };
+  // A JSON body goes only with a write (a Provider's key travels here, once).
+  if (body !== undefined && method !== 'GET') {
+    headers['Content-Type'] = 'application/json';
+    init.body = JSON.stringify(body);
+  }
+  const r = await fetch(url, init);
   const body = await r.json().catch(() => null);
   if (!r.ok) throw new Error(body?.detail ? JSON.stringify(body.detail) : `${r.status} ${r.statusText}`);
   return body;
