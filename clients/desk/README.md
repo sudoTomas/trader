@@ -19,14 +19,22 @@ a client of the API: it adds no trading logic, and RiskGuard still decides every
 - **Decisions:** every call in a table.
 - **Research:** the Macro View with its note citations, and the research notes.
 - **Risk:** risk state, limits and model usage.
+- **Models:** each Role's Chain with prices, today's spend against its cap, and an
+  on-demand Probe; Providers (add, test, replace key, remove, find local servers);
+  Profiles (switch, rename, duplicate, history and revert). The header chip names the
+  decide model, and a decision's detail names the model and Profile version that served it.
+
+![Models](docs/screenshots/models.png)
 
 ## What it can change
 
-Pause and resume trading, and approve or deny a pending approval. Both ask for
-confirmation. The main process allows exactly three POST routes
-(`/risk/pause`, `/risk/resume`, `/risk/approvals/{id}/resolve`) and refuses every other
-one, so flatten-all, reconcile, adopt and wake can't be triggered from the window. Use the
-CLI for those.
+Pause and resume trading, approve or deny a pending approval, and everything on the
+Models page. The main process allows each write by method and exact path
+(`ALLOWED_WRITES` in `desk_logic.js`): the three risk POSTs, plus the model-picker routes
+under `/providers`, `/profiles`, `/roles/{role}/probe` and `/caps`. Every other write is
+refused, so flatten-all, reconcile, adopt and wake can't be triggered from the window. Use
+the CLI for those. A Provider key is typed into a password field, sent once in the request
+body, and never returned by the API. Changes are audited with the surface `desk`.
 
 ## Broker reads
 
@@ -77,8 +85,9 @@ The desk carries the Salamander identity proposed for the project (see the namin
 
 ## Files
 
-- `main.js`: owns the window and forwards API calls. GET must stay on `127.0.0.1` and the desk port. POST is the three-route allowlist. Redirects are refused.
+- `main.js`: owns the window and forwards API calls. GET must stay on `127.0.0.1` and the desk port. Writes (POST, PUT, DELETE) are the method-and-path allowlist. Redirects are refused.
 - `desk_logic.js`: that route check, plus the approval toast and ledger wording
-- `preload.js`: the only bridge the page gets (`get`, `post`, `broker`, backend status)
+- `preload.js`: the only bridge the page gets (`get`, `post`, `put`, `del`, `broker`, backend status)
+- `models.js`: the Models page
 - `index.html`, `renderer.js`, `style.css`, `icons.js`: the dashboard
 - `install-desktop.sh`: launcher entry

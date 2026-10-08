@@ -165,6 +165,25 @@ class ProfileDesk:
                 out[role] = {"source": ".env"}
         return out
 
+    async def probe_role(self, role: str) -> dict[str, Any]:
+        """Probe every entry of the active Profile's Chain for ``role``. Saves nothing."""
+        self._check_role(role)
+        active = await self._db.fetch_one(ACTIVE_VERSION)
+        if active is None or role not in active["roles"]:
+            raise ProfileError(f"{role} serves from .env; trader doctor checks that client")
+        rows = {r["id"]: r for r in await self._db.fetch_all("SELECT * FROM llm_providers")}
+        entries = [
+            {**rows[e["provider_id"]], "model": e["model"]}
+            for e in active["roles"][role]
+            if e["provider_id"] in rows
+        ]
+        return {
+            "role": role,
+            "profile": active["name"],
+            "version": active["version"],
+            "probe": await self._probe_each(role, entries),
+        }
+
     # --- writes -----------------------------------------------------------------------
 
     async def create(self, name: str) -> dict[str, Any]:
@@ -416,9 +435,7 @@ class ProfileDesk:
     async def _probe(
         self, role: str, entries: list[dict[str, Any]]
     ) -> tuple[list[dict[str, Any]], list[str]]:
-        results = list(await asyncio.gather(*(probe(role, self._client(role, e)) for e in entries)))
-        for entry, result in zip(entries, results, strict=True):
-            result.update(provider=entry["name"], model=entry["model"])
+        results = await self._probe_each(role, entries)
         if results and not results[0]["ok"]:
             first = results[0]
             raise ProfileError(
@@ -431,6 +448,12 @@ class ProfileDesk:
             if not r["ok"]
         ]
         return results, warnings
+
+    async def _probe_each(self, role: str, entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        results = list(await asyncio.gather(*(probe(role, self._client(role, e)) for e in entries)))
+        for entry, result in zip(entries, results, strict=True):
+            result.update(provider=entry["name"], model=entry["model"])
+        return results
 
     async def _probe_roles(
         self, roles: dict[str, list[dict[str, Any]]]

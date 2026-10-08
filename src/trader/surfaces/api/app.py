@@ -348,6 +348,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def role_routes() -> dict:
         return await registry.get("role_routes").handler()
 
+    @app.post("/roles/{role}/probe")
+    async def probe_role(role: str) -> dict:
+        return await registry.get("probe_role").handler(role=role)
+
     @app.get("/profiles/{name}")
     async def profile(name: str) -> dict:
         return await registry.get("profile").handler(name=name)

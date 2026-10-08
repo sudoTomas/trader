@@ -1,13 +1,31 @@
 // Shared by the Electron main process (require) and the page (classic script).
 // The page must not be able to aim the operator API key at another host.
 
-const ALLOWED_POSTS = [
-  /^\/risk\/pause(\?|$)/,
-  /^\/risk\/resume$/,
-  /^\/risk\/approvals\/\d+\/resolve\?/,
+// Provider and Profile names: a-z, 0-9, '-', '_' (the API enforces the same). Roles: a-z.
+const NAME = '[a-z0-9][a-z0-9_-]{0,39}';
+const ROLE = '[a-z]+';
+const exact = (path) => new RegExp(`^${path}$`);
+
+// [method, pattern] pairs, matched against the normalized path and query. Every other write
+// (flatten-all, reconcile, adopt, wake, notes) stays CLI-only.
+const ALLOWED_WRITES = [
+  ['POST', /^\/risk\/pause(\?|$)/],
+  ['POST', /^\/risk\/resume$/],
+  ['POST', /^\/risk\/approvals\/\d+\/resolve\?/],
+  // The Models page (#106). Keys travel in the body, once; nothing returns them.
+  ['POST', exact('/providers')],
+  ['POST', exact(`/providers/${NAME}/(key|rename|prices|prices/clear)`)],
+  ['DELETE', exact(`/providers/${NAME}`)],
+  ['POST', exact('/profiles')],
+  ['POST', exact(`/profiles/${NAME}/(rename|duplicate|activate|revert)`)],
+  ['PUT', exact(`/profiles/${NAME}/roles/${ROLE}`)],
+  ['DELETE', exact(`/profiles/${NAME}/roles/${ROLE}`)],
+  ['POST', exact(`/roles/${ROLE}/probe`)],
+  ['PUT', exact(`/caps/${ROLE}`)],
+  ['DELETE', exact(`/caps/${ROLE}`)],
 ];
 
-function deskRequestUrl(base, method, route, allowedPosts = ALLOWED_POSTS) {
+function deskRequestUrl(base, method, route, allowedWrites = ALLOWED_WRITES) {
   const baseUrl = new URL(base.endsWith('/') ? base : `${base}/`);
   let url;
   try {
@@ -26,7 +44,7 @@ function deskRequestUrl(base, method, route, allowedPosts = ALLOWED_POSTS) {
   }
   const pathAndQuery = `${url.pathname}${url.search}`;
   if (method === 'GET') return url;
-  if (method === 'POST' && allowedPosts.some((re) => re.test(pathAndQuery))) return url;
+  if (allowedWrites.some(([m, re]) => m === method && re.test(pathAndQuery))) return url;
   throw new Error(`blocked: ${method} ${route}`);
 }
 
@@ -76,6 +94,58 @@ function confirmPill(confirm) {
   };
 }
 
+// ---------- Models page (#106) ----------
+const dollars = (v) => `$${Number(v || 0).toFixed(2)}`;
+
+// Header chip: the model the next decide call goes to first.
+function modelChip(roles) {
+  const decide = roles && roles.decide;
+  if (!decide) return 'decide: —';
+  if (decide.source !== 'profile') return 'decide: .env';
+  const first = (decide.chain || [])[0];
+  return first ? `decide: ${first.provider}:${first.model}` : 'decide: off';
+}
+
+// USD per 1M tokens (in / out) and where the number came from.
+function priceText(price) {
+  if (!price || price.source === 'unknown') return 'price unknown';
+  if (price.source === 'local') return 'free · local';
+  return `${dollars(price.price_in)} / ${dollars(price.price_out)} per 1M · ${price.source}`;
+}
+
+function capText(cap) {
+  if (!cap) return '—';
+  const spent = dollars(cap.spent_today);
+  if (cap.cap_usd == null) return `${spent} today · no cap`;
+  const where = cap.spent_today >= cap.cap_usd ? 'at cap' : cap.source === 'default' ? 'default cap' : 'cap';
+  return `${spent} of ${dollars(cap.cap_usd)} today · ${where}`;
+}
+
+function probeText(result) {
+  if (result.ok) return { ok: true, text: `ok · ${(result.latency_ms / 1000).toFixed(1)}s` };
+  return { ok: false, text: `failed · ${result.error}` };
+}
+
+// Decision detail: which model served it, and from which Profile version (.env when none).
+function servedText(d) {
+  if (!d || !d.served_by) return null;
+  return `served by ${d.served_by} · ${d.profile_version != null ? `Profile v${d.profile_version}` : '.env'}`;
+}
+
+// The words of an API refusal: Electron's IPC prefix off, the JSON-quoted detail unquoted.
+function errorText(err) {
+  const m = String(err && err.message ? err.message : err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+  try {
+    const parsed = JSON.parse(m);
+    return typeof parsed === 'string' ? parsed : m;
+  } catch {
+    return m;
+  }
+}
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { ALLOWED_POSTS, deskRequestUrl, approvalToast, resolveAuditLine, criticPill, confirmPill };
+  module.exports = {
+    ALLOWED_WRITES, deskRequestUrl, approvalToast, resolveAuditLine, criticPill, confirmPill,
+    modelChip, priceText, capText, probeText, servedText, errorText,
+  };
 }

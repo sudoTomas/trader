@@ -183,6 +183,8 @@ function decisionDetail(d) {
   const meta = [`Trigger: ${words(d.trigger)}`, `decided in ${secs(d.latency_ms)}`];
   if (d.cost_usd != null) meta.push(`cost ${usd(d.cost_usd, 4)}`);
   if (d.macro_view_version) meta.push(`Macro View v${d.macro_view_version}`);
+  const served = servedText(d);
+  if (served) meta.push(served);
   parts.push(el('div', { className: 'sub', textContent: meta.join(' · ') }));
   return el('div', { className: 'detail' }, ...parts);
 }
@@ -646,6 +648,7 @@ const NAV = [
   { id: 'decisions', label: 'Decisions', ico: 'scale' },
   { id: 'research', label: 'Research', ico: 'book' },
   { id: 'risk', label: 'Risk', ico: 'shield' },
+  { id: 'models', label: 'Models', ico: 'chip' },
 ];
 
 function currentView() {
@@ -712,6 +715,7 @@ function renderAll() {
   renderResearch();
   renderRisk();
   renderBrief();
+  renderModels();
 }
 
 async function refresh() {
@@ -739,6 +743,7 @@ async function refresh() {
     load('/decisions?limit=150', 'decisions', []),
     load('/audit?limit=60', 'audit', []),
     load('/usage?days=7', 'usage'),
+    refreshModels(),
   ]);
   renderAll();
   $('updated').textContent = `Updated ${new Date().toLocaleTimeString()}`;
