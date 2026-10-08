@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field
 
+from trader.llm.profiles import ProfileError, ProfileNotFound
 from trader.llm.providers import ProviderError, ProviderNotFound
 from trader.ops.config import Settings, get_settings
 from trader.store.db import Database
@@ -59,6 +60,29 @@ class ProviderRenameIn(BaseModel):
     new_name: str
 
 
+class ProfileIn(BaseModel):
+    name: str
+
+
+class ProfileNameIn(BaseModel):
+    new_name: str
+
+
+class ChainEntryIn(BaseModel):
+    provider: str
+    model: str
+
+
+class ChainIn(BaseModel):
+    """A Role's Chain, first entry serves; empty turns the confirm Role off."""
+
+    chain: list[ChainEntryIn]
+
+
+class RevertIn(BaseModel):
+    version: int
+
+
 class XaiProbeIn(BaseModel):
     """``POST /xai/probe`` body. Every field optional: the service fills the #7 matrix
     defaults (models × both endpoints × none/x_search/web_search, credential auto)."""
@@ -79,17 +103,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # api.x.ai shares it, so a single lock spends the single-use rotating refresh token
     # (#63, docs/lessons.md#oauth-refresh-margin). None without TRADER_XAI_TOKEN_KEY.
     xai_manager = build_xai_manager(settings)
-    sentiment = build_sentiment(db, settings, xai_manager=xai_manager)
-    desk = build_desk(db, settings, xai_manager=xai_manager)
-    runner = (
-        build_runner(db, settings, sentiment, desk, xai_manager=xai_manager)
-        if settings.loop_enabled
-        else None
-    )
+    providers = build_providers(db, settings)
+    profiles = build_profiles(db, settings, providers)
+    # ONE registry per process (#107): it reads the active Profile per call, so a switch
+    # reaches the loop, the desk, the compiler, the briefs and replays on their next call.
+    llm = build_llm(db, settings, profiles, xai_manager=xai_manager)
+    sentiment = build_sentiment(db, settings, xai_manager=xai_manager, profiles=profiles)
+    desk = build_desk(db, settings, llm=llm)
+    runner = build_runner(db, settings, sentiment, desk, llm=llm) if settings.loop_enabled else None
     mirror = build_mirror(db, settings)
-    compiler = build_compiler(db, settings, mirror, xai_manager=xai_manager)
-    briefs = build_briefs(db, settings, xai_manager=xai_manager)
-    evaluator = build_evaluator(db, settings, desk, xai_manager=xai_manager)
+    compiler = build_compiler(db, settings, mirror, llm=llm)
+    briefs = build_briefs(db, settings, llm=llm)
+    evaluator = build_evaluator(db, settings, desk, llm=llm)
     xai_http = build_xai_http(settings, xai_manager=xai_manager)
     registry = build_registry(
         db,
@@ -101,7 +126,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         briefs,
         xai_http=xai_http,
         screener=build_screener_data(db, settings),
-        providers=build_providers(db, settings),
+        providers=providers,
+        profiles=profiles,
     )
     mcp = build_mcp(registry)
     capture_mcp = build_mcp(registry, only=CAPTURE_CAPABILITIES, name="trader-capture")
@@ -263,6 +289,55 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def remove_provider(name: str) -> dict:
         return await registry.get("remove_provider").handler(name=name)
 
+    @app.exception_handler(ProfileNotFound)
+    async def profile_not_found(_: Request, exc: ProfileNotFound) -> JSONResponse:
+        return JSONResponse({"detail": f"no Profile {exc.args[0]!r}"}, status_code=404)
+
+    @app.exception_handler(ProfileError)
+    async def profile_refused(_: Request, exc: ProfileError) -> JSONResponse:
+        return JSONResponse({"detail": str(exc)}, status_code=422)
+
+    @app.get("/profiles")
+    async def profiles() -> list[dict]:
+        return await registry.get("profiles").handler()
+
+    @app.get("/roles")
+    async def role_routes() -> dict:
+        return await registry.get("role_routes").handler()
+
+    @app.get("/profiles/{name}")
+    async def profile(name: str) -> dict:
+        return await registry.get("profile").handler(name=name)
+
+    @app.post("/profiles")
+    async def create_profile(body: ProfileIn) -> dict:
+        return await registry.get("create_profile").handler(name=body.name)
+
+    @app.post("/profiles/{name}/rename")
+    async def rename_profile(name: str, body: ProfileNameIn) -> dict:
+        return await registry.get("rename_profile").handler(name=name, new_name=body.new_name)
+
+    @app.post("/profiles/{name}/duplicate")
+    async def duplicate_profile(name: str, body: ProfileNameIn) -> dict:
+        return await registry.get("duplicate_profile").handler(name=name, new_name=body.new_name)
+
+    @app.put("/profiles/{name}/roles/{role}")
+    async def set_role_chain(name: str, role: str, body: ChainIn) -> dict:
+        chain = [entry.model_dump() for entry in body.chain]
+        return await registry.get("set_role_chain").handler(name=name, role=role, chain=chain)
+
+    @app.delete("/profiles/{name}/roles/{role}")
+    async def reset_role(name: str, role: str) -> dict:
+        return await registry.get("reset_role").handler(name=name, role=role)
+
+    @app.post("/profiles/{name}/activate")
+    async def activate_profile(name: str) -> dict:
+        return await registry.get("activate_profile").handler(name=name)
+
+    @app.post("/profiles/{name}/revert")
+    async def revert_profile(name: str, body: RevertIn) -> dict:
+        return await registry.get("revert_profile").handler(name=name, version=body.version)
+
     @app.post("/broker/flatten-all")
     async def flatten_all(confirm: str = Query(default="")) -> dict:
         return await registry.get("flatten_all").handler(confirm=confirm)
@@ -423,30 +498,49 @@ def build_xai_manager(settings: Settings):
     return build_manager(settings)
 
 
-def build_sentiment(db: Database, settings: Settings, *, xai_manager=None):
-    """X sentiment service — None without an xAI credential path (x_search is xAI-only).
-    Rides the roles' authenticated client (OAuth-then-key) over the shared manager."""
+def build_sentiment(db: Database, settings: Settings, *, xai_manager=None, profiles=None):
+    """X sentiment service (x_search is xAI-only). Its ``.env`` client rides the roles'
+    authenticated client (OAuth-then-key) over the shared manager; the active Profile's
+    sentiment Chain overrides it per poll. None only when neither can ever exist."""
     from trader.llm.xai import xai_http_client
     from trader.research.sentiment import SentimentService, XSentimentClient
 
     http = xai_http_client(settings, manager=xai_manager)
-    if http is None:
+    if http is None and profiles is None:
         return None
-    handles = [h.strip() for h in settings.sentiment_x_handles.split(",") if h.strip()]
-    client = XSentimentClient(http, model=settings.xai_model, allowed_x_handles=handles)
-    return SentimentService(db, client, daily_call_cap=settings.sentiment_daily_call_cap)
+    client = None
+    if http is not None:
+        client = XSentimentClient(
+            http, model=settings.xai_model, allowed_x_handles=sentiment_handles(settings)
+        )
+    return SentimentService(
+        db, client, daily_call_cap=settings.sentiment_daily_call_cap, profiles=profiles
+    )
 
 
-def build_evaluator(db: Database, settings: Settings, desk=None, *, xai_manager=None):
+def sentiment_handles(settings: Settings) -> list[str]:
+    return [h.strip() for h in settings.sentiment_x_handles.split(",") if h.strip()]
+
+
+def build_llm(db: Database, settings: Settings, profiles=None, *, xai_manager=None):
+    """The process's one metered LLM registry: ``.env`` chains, overridden per Role by the
+    active Profile when ``profiles`` is given."""
+    from trader.llm.registry import build_llm_registry
+    from trader.llm.usage import UsageMeter
+    from trader.store.repos import UsageRepo
+
+    return build_llm_registry(
+        settings, UsageMeter(UsageRepo(db)), xai_manager=xai_manager, profiles=profiles
+    )
+
+
+def build_evaluator(db: Database, settings: Settings, desk=None, *, llm=None, xai_manager=None):
     """The replay eval harness (offline; Nemotron decide role by default — free).
     None without market-data credentials — every builder here must degrade gracefully,
     because ``app = create_app()`` runs at import time (uvicorn's entrypoint). The desk
     is wired in every build so desk-on replays work while the live desk stays dark."""
     from trader.data.composite import build_market_data
     from trader.eval.replay import ReplayHarness
-    from trader.llm.registry import build_llm_registry
-    from trader.llm.usage import UsageMeter
-    from trader.store.repos import UsageRepo
 
     try:
         provider = build_market_data(settings)
@@ -454,7 +548,7 @@ def build_evaluator(db: Database, settings: Settings, desk=None, *, xai_manager=
         return None
     return ReplayHarness(
         db,
-        build_llm_registry(settings, UsageMeter(UsageRepo(db)), xai_manager=xai_manager),
+        llm or build_llm(db, settings, xai_manager=xai_manager),
         provider,
         desk=desk,
         exit_review_enabled=settings.exit_review_enabled,
@@ -469,6 +563,18 @@ def build_providers(db: Database, settings: Settings):
     return ProviderDesk(db, secrets_key=settings.secrets_key)
 
 
+def build_profiles(db: Database, settings: Settings, providers):
+    """The model picker's Profiles (#107): the active one serves every Role it names."""
+    from trader.llm.profiles import ProfileDesk
+
+    return ProfileDesk(
+        db,
+        providers,
+        nemotron_base_url=settings.nemotron_base_url,
+        sentiment_handles=sentiment_handles(settings),
+    )
+
+
 def build_screener_data(db: Database, settings: Settings):
     """The screener's multi-symbol daily-bars provider (Alpaca free tier, sip + delayed
     end). None without Alpaca keys — the query then answers honestly with an empty
@@ -481,16 +587,14 @@ def build_screener_data(db: Database, settings: Settings):
     return AlpacaData(settings.alpaca_api_key_id, settings.alpaca_api_secret)
 
 
-def build_desk(db: Database, settings: Settings, *, xai_manager=None):
+def build_desk(db: Database, settings: Settings, *, llm=None, xai_manager=None):
     """The decision desk — built in every store-backed build (replay needs it); the LIVE
     loop only receives it when TRADER_DESK_ENABLED=true (see create_app)."""
     from trader.desk.desk import Desk
-    from trader.llm.registry import build_llm_registry
-    from trader.llm.usage import UsageMeter
     from trader.store.repos import UsageRepo
 
     return Desk(
-        build_llm_registry(settings, UsageMeter(UsageRepo(db)), xai_manager=xai_manager),
+        llm or build_llm(db, settings, xai_manager=xai_manager),
         usage=UsageRepo(db),
         critic_daily_usd=settings.desk_critic_daily_usd,
     )
@@ -505,51 +609,44 @@ def build_mirror(db: Database, settings: Settings):
     return MarkdownMirror(db, settings.research_mirror_dir)
 
 
-def build_compiler(db: Database, settings: Settings, mirror=None, *, xai_manager=None):
+def build_compiler(db: Database, settings: Settings, mirror=None, *, llm=None, xai_manager=None):
     """The Macro View compiler — present in every store-backed build, loop or not."""
-    from trader.llm.registry import build_llm_registry
-    from trader.llm.usage import UsageMeter
     from trader.research.compiler import MacroViewCompiler
-    from trader.store.repos import UsageRepo
 
     return MacroViewCompiler(
         db,
-        build_llm_registry(settings, UsageMeter(UsageRepo(db)), xai_manager=xai_manager),
+        llm or build_llm(db, settings, xai_manager=xai_manager),
         debounce_seconds=settings.research_compile_debounce_seconds,
         on_compiled=mirror.export_quietly if mirror is not None else None,
     )
 
 
-def build_briefs(db: Database, settings: Settings, *, xai_manager=None):
+def build_briefs(db: Database, settings: Settings, *, llm=None, xai_manager=None):
     """The per-candidate brief compiler — present in every store-backed build. The lane
     into the decide prompt is gated separately (TRADER_BRIEFS_ENABLED, see build_runner)."""
-    from trader.llm.registry import build_llm_registry
-    from trader.llm.usage import UsageMeter
     from trader.research.briefs import BriefCompiler
-    from trader.store.repos import UsageRepo
 
     return BriefCompiler(
         db,
-        build_llm_registry(settings, UsageMeter(UsageRepo(db)), xai_manager=xai_manager),
+        llm or build_llm(db, settings, xai_manager=xai_manager),
         symbols=[t.strip() for t in settings.loop_symbols.split(",") if t.strip()],
         debounce_seconds=settings.research_compile_debounce_seconds,
     )
 
 
-def build_runner(db: Database, settings: Settings, sentiment=None, desk=None, *, xai_manager=None):
+def build_runner(
+    db: Database, settings: Settings, sentiment=None, desk=None, *, llm=None, xai_manager=None
+):
     """Assemble the decide loop from configured providers (opt-in via TRADER_LOOP_ENABLED)."""
     from trader.brokers.alpaca import AlpacaBroker
     from trader.core.symbols import default_registry
     from trader.data.composite import build_market_data
-    from trader.llm.registry import build_llm_registry
-    from trader.llm.usage import UsageMeter
     from trader.loop.confirm import Confirmer
     from trader.loop.executor import Executor
     from trader.loop.runner import LoopRunner
     from trader.loop.scheduler import SignalScheduler, TriggerConfig
     from trader.risk.guard import RiskGuard
     from trader.risk.limits import limits_from_settings
-    from trader.store.repos import UsageRepo
 
     symbols_registry = default_registry()
     tickers = [t.strip() for t in settings.loop_symbols.split(",") if t.strip()]
@@ -564,7 +661,7 @@ def build_runner(db: Database, settings: Settings, sentiment=None, desk=None, *,
         broker = AlpacaBroker.from_settings(settings)
         executor = Executor(db, broker)
 
-    llm = build_llm_registry(settings, UsageMeter(UsageRepo(db)), xai_manager=xai_manager)
+    llm = llm or build_llm(db, settings, xai_manager=xai_manager)
     return LoopRunner(
         db=db,
         market_data=build_market_data(settings),
@@ -592,7 +689,9 @@ def build_runner(db: Database, settings: Settings, sentiment=None, desk=None, *,
         briefs_enabled=settings.briefs_enabled,
         exit_review_enabled=settings.exit_review_enabled,
         desk=desk if settings.desk_enabled else None,
-        confirm=Confirmer(llm) if settings.confirm_provider else None,
+        # Always present: with nothing serving the confirm Role (no .env Jev, no Profile
+        # Chain, or switched off) it returns no record and the column stays NULL.
+        confirm=Confirmer(llm),
     )
 
 

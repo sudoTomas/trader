@@ -37,6 +37,7 @@ import structlog
 from trader.brokers.base import BrokerError
 from trader.core.symbols import Symbol
 from trader.data.base import MarketData, MarketDataError
+from trader.llm.base import Completion
 from trader.llm.registry import LLMRegistry
 from trader.loop.confirm import skipped
 from trader.loop.context import (
@@ -143,6 +144,15 @@ class WakeupResult:
             "action": self.action,
             "reason": self.reason,
         }
+
+
+def served(completion: Completion) -> dict[str, Any]:
+    """Journal attribution for a decide: the Profile version that routed it (None on
+    ``.env``) and the model that actually answered, fallback included (#107)."""
+    return {
+        "profile_version": completion.profile_version,
+        "served_by": f"{completion.provider}:{completion.model}",
+    }
 
 
 @dataclass
@@ -650,6 +660,7 @@ class LoopRunner:
                     brief_version=brief_version,
                     cost_usd=result.completion.cost_usd,
                     latency_ms=int((time.perf_counter() - started) * 1000),
+                    **served(result.completion),
                 )
                 execution = await self.executor.execute(
                     outcome, symbol, price=ctx.price, decision_id=decision_id
@@ -682,6 +693,7 @@ class LoopRunner:
             brief_version=brief_version,
             cost_usd=result.completion.cost_usd,
             latency_ms=int((time.perf_counter() - started) * 1000),
+            **served(result.completion),
         )
         self.stats.decisions += 1
         return WakeupResult(

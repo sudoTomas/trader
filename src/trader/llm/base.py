@@ -29,6 +29,8 @@ class Completion:
     cost_usd: float
     provider: str
     model: str
+    #: The Profile version whose Chain served this call (#107); None when .env served it.
+    profile_version: int | None = None
 
 
 @runtime_checkable

@@ -58,6 +58,8 @@ class Journal:
         brief_version: int | None = None,
         cost_usd: float | None = None,
         latency_ms: int | None = None,
+        profile_version: int | None = None,
+        served_by: str | None = None,
     ) -> int:
         decision_id = await self._repo.insert(
             trigger=trigger,
@@ -74,6 +76,8 @@ class Journal:
             brief_version=brief_version,
             cost_usd=cost_usd,
             latency_ms=latency_ms,
+            profile_version=profile_version,
+            served_by=served_by,
         )
         log.info(
             "decision_journaled",

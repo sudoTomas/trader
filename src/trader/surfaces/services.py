@@ -86,6 +86,7 @@ def build_registry(
     xai_http: Any | None = None,
     screener: Any | None = None,
     providers: Any | None = None,
+    profiles: Any | None = None,
 ) -> ServiceRegistry:
     """Construct the registry with the capabilities available in this build.
 
@@ -98,7 +99,8 @@ def build_registry(
     an xAI credential path; only the operator diagnostics use it. ``screener`` is a
     multi-symbol daily-bars provider (``get_daily_bars_multi``), absent without
     market-data credentials. ``providers`` is the model picker's Provider store
-    (``llm.providers.ProviderDesk``), absent in store-less builds.
+    (``llm.providers.ProviderDesk``) and ``profiles`` its Profile store
+    (``llm.profiles.ProfileDesk``), both absent in store-less builds.
     """
     reg = ServiceRegistry()
 
@@ -967,6 +969,85 @@ def build_registry(
         )
         async def remove_provider(name: str) -> dict[str, Any]:
             return await providers.remove(name)
+
+    # --- model picker: Profiles, Chains and the Probe (#107) -------------------
+    # A saved Chain serves from the next call, after its Probe. ProfileDesk audits each
+    # change itself, with the caller and surface.
+
+    if profiles is not None:
+
+        @reg.register(
+            "profiles", kind="query", summary="Model Profiles: which is active, and its Chains."
+        )
+        async def list_profiles() -> list[dict[str, Any]]:
+            return await profiles.list()
+
+        @reg.register("profile", kind="query", summary="One Profile with every version.")
+        async def get_profile(name: str) -> dict[str, Any]:
+            return await profiles.get(name)
+
+        @reg.register(
+            "role_routes",
+            kind="query",
+            summary="Where each Role is served from now: the active Profile, or .env.",
+        )
+        async def role_routes() -> dict[str, Any]:
+            return await profiles.routes()
+
+        @reg.register(
+            "create_profile",
+            kind="command",
+            summary="Create an empty Profile (every Role on .env); the first one is active.",
+        )
+        async def create_profile(name: str) -> dict[str, Any]:
+            return await profiles.create(name)
+
+        @reg.register("rename_profile", kind="command", summary="Rename a Profile.")
+        async def rename_profile(name: str, new_name: str) -> dict[str, Any]:
+            return await profiles.rename(name, new_name)
+
+        @reg.register(
+            "duplicate_profile",
+            kind="command",
+            summary="Copy a Profile's current Chains under a new name (inactive).",
+        )
+        async def duplicate_profile(name: str, new_name: str) -> dict[str, Any]:
+            return await profiles.duplicate(name, new_name)
+
+        @reg.register(
+            "set_role_chain",
+            kind="command",
+            summary="Set a Role's Chain ([{provider, model}, ...], first serves) as a new"
+            " Profile version, after a Probe of each entry. An empty chain turns confirm off.",
+        )
+        async def set_role_chain(
+            name: str, role: str, chain: list[dict[str, str]]
+        ) -> dict[str, Any]:
+            return await profiles.set_chain(name, role, chain)
+
+        @reg.register(
+            "reset_role",
+            kind="command",
+            summary="Drop a Role from a Profile so it serves from .env again.",
+        )
+        async def reset_role(name: str, role: str) -> dict[str, Any]:
+            return await profiles.reset_role(name, role)
+
+        @reg.register(
+            "activate_profile",
+            kind="command",
+            summary="Make a Profile the one that serves, after probing its Chains.",
+        )
+        async def activate_profile(name: str) -> dict[str, Any]:
+            return await profiles.activate(name)
+
+        @reg.register(
+            "revert_profile",
+            kind="command",
+            summary="Make an earlier Profile version current (probed first if active).",
+        )
+        async def revert_profile(name: str, version: int) -> dict[str, Any]:
+            return await profiles.revert(name, version)
 
     async def _audit_command(action: str, payload: dict[str, Any]) -> None:
         """Commands are state-changing: every one leaves an append-only trace."""

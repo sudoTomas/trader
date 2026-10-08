@@ -6,7 +6,7 @@ for a hosted one, an API key. Keys are encrypted at rest with Fernet (master key
 no read returns one, only ``••••`` plus its last four characters. Every change is audited
 without the value.
 
-No Role uses a Provider yet; the registry still wires from ``.env`` until #107.
+Roles reach Providers through Profiles (``llm.profiles``, #107).
 """
 
 from __future__ import annotations
@@ -224,6 +224,23 @@ class ProviderDesk:
         return _out(row)
 
     async def remove(self, name: str) -> dict[str, Any]:
+        """Remove a Provider. Refused while a Profile's current Chain uses it; older
+        versions may still name it (they read as ``(removed)``)."""
+        users = await self._db.fetch_all(
+            """
+            SELECT p.name AS profile, r.role
+            FROM llm_profiles p
+            JOIN llm_profile_versions v ON v.id = p.current_version
+            CROSS JOIN LATERAL jsonb_each(v.roles) AS r(role, chain)
+            JOIN llm_providers lp ON lp.name = %s
+            WHERE r.chain @> jsonb_build_array(jsonb_build_object('provider_id', lp.id))
+            ORDER BY p.name, r.role
+            """,
+            (name,),
+        )
+        if users:
+            uses = ", ".join(f"{u['profile']} uses it ({u['role']})" for u in users)
+            raise ProviderError(f"{uses}; change that Chain first")
         row = await self._db.fetch_one(
             "DELETE FROM llm_providers WHERE name = %s RETURNING name", (name,)
         )
@@ -324,6 +341,11 @@ class ProviderDesk:
         if row is None:
             raise ProviderNotFound(name)
         return row
+
+    def api_key(self, row: dict[str, Any]) -> str | None:
+        """A Provider row's key in plaintext, for building its client. Never returned by a
+        surface; only the Profile routes call this."""
+        return self._decrypt(row["api_key_enc"]) if row["api_key_enc"] else None
 
     def _decrypt(self, token: str) -> str:
         if self._fernet is None:

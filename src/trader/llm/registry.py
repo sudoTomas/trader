@@ -7,11 +7,17 @@ them when a credential exists and the decide client backstops. ``confirm`` is Je
 (``TRADER_CONFIRM_*``), absent unless configured, and nothing backstops it. x_search sentiment
 is not routed here — it stays xAI-only. Every completion served here is metered
 into ``usage_daily`` under its role — there is no unmetered path.
+
+The active Profile (#107) overrides this per Role and per call: one registry per process
+asks the Profile store for each call's Chain, so a switch reaches the loop, the desk, the
+compiler and the briefs on their next call. A Role the Profile leaves out uses the
+``.env`` chain built here.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import replace
+from typing import Any, Protocol
 
 import httpx
 import structlog
@@ -33,18 +39,45 @@ RESEARCH_ROLES = ("brief", "compiler", "sentiment", "critic")
 GENERIC_PROVIDER = "openai_compat"
 
 
+class NoRoute(LLMError):
+    """Nothing serves this Role: unconfigured, or switched off in the active Profile."""
+
+
+class ProfileRoutes(Protocol):
+    """What the registry needs from the Profile store (``llm.profiles.ProfileDesk``)."""
+
+    async def route(self, role: str) -> tuple[int, list[LLMClient]] | None: ...
+
+
 class LLMRegistry:
     """Ordered fallback chain per role, with usage metering on every completion."""
 
-    def __init__(self, routes: dict[str, list[LLMClient]], meter: UsageMeter | None) -> None:
+    def __init__(
+        self,
+        routes: dict[str, list[LLMClient]],
+        meter: UsageMeter | None,
+        *,
+        profiles: ProfileRoutes | None = None,
+    ) -> None:
         self._routes = routes
         self._meter = meter
+        self._profiles = profiles
 
     def chain_for(self, role: str) -> list[LLMClient]:
+        """The ``.env`` chain for ``role``."""
         chain = self._routes.get(role, [])
         if not chain:
-            raise LLMError(f"no LLM provider configured for role '{role}'")
+            raise NoRoute(f"no LLM provider configured for role '{role}'")
         return chain
+
+    async def _chain(self, role: str) -> tuple[int | None, list[LLMClient]]:
+        routed = await self._profiles.route(role) if self._profiles is not None else None
+        if routed is None:
+            return None, self.chain_for(role)
+        version, chain = routed
+        if not chain:
+            raise NoRoute(f"{role} is off in the active Profile")
+        return version, chain
 
     async def complete(
         self,
@@ -57,7 +90,8 @@ class LLMRegistry:
     ) -> Completion:
         errors: list[str] = []
         last: LLMError | None = None
-        for client in self.chain_for(role):
+        version, chain = await self._chain(role)
+        for client in chain:
             try:
                 completion = await client.complete(
                     messages, schema=schema, max_tokens=max_tokens, temperature=temperature
@@ -73,6 +107,8 @@ class LLMRegistry:
                     error=str(exc),
                 )
                 continue
+            if version is not None:
+                completion = replace(completion, profile_version=version)
             if self._meter is not None:
                 await self._meter.record(role, completion)
             return completion
@@ -190,12 +226,14 @@ def build_llm_registry(
     meter: UsageMeter | None = None,
     *,
     xai_manager: XaiCredentialManager | None = None,
+    profiles: ProfileRoutes | None = None,
 ) -> LLMRegistry:
     """Wire the chains this build can serve from configured credentials.
 
-    ``xai_manager`` is the process-wide OAuth credential manager (``create_app`` builds
-    one and threads it through every registry); None falls back to building one per
-    call, which store-less builds and tests rely on.
+    ``profiles`` is the Profile store (#107); given, the active Profile overrides these
+    chains per Role and per call. ``xai_manager`` is the process-wide OAuth credential
+    manager (``create_app`` builds one and threads it through every registry); None falls
+    back to building one per call, which store-less builds and tests rely on.
 
     Grok fronts research roles when any xAI credential path exists and
     ``TRADER_RESEARCH_BASE_URL`` is empty — SuperGrok OAuth (device-code login)
@@ -219,7 +257,7 @@ def build_llm_registry(
     if research is not None:
         for role in RESEARCH_ROLES:
             routes[role] = [research]
-        return LLMRegistry(routes, meter)
+        return LLMRegistry(routes, meter, profiles=profiles)
     grok = xai_client(settings, manager=xai_manager)
     # Research prefers Grok; the decide client backstops whether xAI is absent
     # or the decide role itself moved off the self-hosted vLLM (the Desk must
@@ -229,4 +267,4 @@ def build_llm_registry(
     # critique is same-model, not skipped.
     for role in RESEARCH_ROLES:
         routes[role] = ([grok] if grok is not None else []) + backstop
-    return LLMRegistry(routes, meter)
+    return LLMRegistry(routes, meter, profiles=profiles)

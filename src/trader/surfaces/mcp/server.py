@@ -8,8 +8,13 @@ There is deliberately no raw place-order tool — orders exist only through the 
 
 from __future__ import annotations
 
+import functools
+from collections.abc import Awaitable, Callable
+from typing import Any
+
 from mcp.server import MCPServer
 
+from trader.store.audit import SURFACE
 from trader.surfaces.services import ServiceRegistry
 
 # The capture surface (#8): what an external research agent holding the capture key may
@@ -38,5 +43,20 @@ def build_mcp(
     for cap in registry.all():
         if only is not None and cap.name not in only:
             continue
-        mcp.tool(name=cap.tool_name, description=cap.summary)(cap.handler)
+        mcp.tool(name=cap.tool_name, description=cap.summary)(_as_mcp(cap.handler))
     return mcp
+
+
+def _as_mcp(handler: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
+    """Run a capability with the audit surface set to ``mcp``. Tool calls run in the MCP
+    session's own tasks, so a value set by the HTTP middleware may not reach them."""
+
+    @functools.wraps(handler)
+    async def call(*args: Any, **kwargs: Any) -> Any:
+        token = SURFACE.set("mcp")
+        try:
+            return await handler(*args, **kwargs)
+        finally:
+            SURFACE.reset(token)
+
+    return call

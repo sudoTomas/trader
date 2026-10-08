@@ -114,16 +114,18 @@ class SentimentService:
     def __init__(
         self,
         db: Database,
-        client: XSentimentClient,
+        client: XSentimentClient | None,
         *,
         daily_call_cap: int = DEFAULT_DAILY_CALL_CAP,
         meter: Any | None = None,  # llm.usage.UsageMeter; built from db when omitted
+        profiles: Any | None = None,  # llm.profiles.ProfileDesk; its sentiment Chain wins
     ) -> None:
         from trader.llm.usage import UsageMeter
         from trader.store.repos import UsageRepo
 
         self._db = db
-        self._client = client
+        self._client = client  # the .env xAI client; None without an xAI credential
+        self._profiles = profiles
         self._repo = SentimentRepo(db)
         self._cap = daily_call_cap
         self._meter = meter or UsageMeter(UsageRepo(db))
@@ -136,30 +138,46 @@ class SentimentService:
         now: datetime | None = None,
     ) -> dict[str, Any]:
         now = now or datetime.now(tz=UTC)
+        clients = await self._chain()
+        if not clients:
+            # Nothing to ask: not a poll, so nothing is journaled or metered.
+            return {
+                "status": "unavailable",
+                "symbol": symbol.ticker,
+                "reason": "no sentiment model",
+            }
+        client = clients[0]
         if await self._repo.calls_today() >= self._cap:
-            return await self._unavailable(symbol, "daily cap reached")
+            return await self._unavailable(symbol, "daily cap reached", client)
 
         prompt = PROMPT.format(name=symbol.ticker.split("/")[0], ticker=symbol.ticker)
-        text, citations, usage = await self._client.search(
-            prompt,
-            from_date=(now - timedelta(hours=lookback_hours)).date().isoformat(),
-            to_date=now.date().isoformat(),
-        )
-        await self._record_usage(usage, citations=citations, now=now)
+        for i, client in enumerate(clients):
+            try:
+                text, citations, usage = await client.search(
+                    prompt,
+                    from_date=(now - timedelta(hours=lookback_hours)).date().isoformat(),
+                    to_date=now.date().isoformat(),
+                )
+                break
+            except httpx.HTTPError:
+                if i == len(clients) - 1:
+                    raise
+                log.warning("sentiment_model_failed", model=client.model)
+        await self._record_usage(usage, client, citations=citations, now=now)
 
         if not citations:
             # Zero citations with filters active = model-prior, not live X
             # (see docs/lessons.md#sentiment-no-citations-is-unavailable).
-            return await self._unavailable(symbol, "degraded: no live citations")
+            return await self._unavailable(symbol, "degraded: no live citations", client)
 
         match = JSON_OBJECT.search(text)
         if match is None:
-            return await self._unavailable(symbol, "unparseable verdict")
+            return await self._unavailable(symbol, "unparseable verdict", client)
         try:
             verdict = SentimentVerdict.model_validate(json.loads(match.group(0)))
         except (json.JSONDecodeError, ValidationError) as exc:
             log.warning("sentiment_verdict_invalid", symbol=symbol.ticker, error=str(exc))
-            return await self._unavailable(symbol, "unparseable verdict")
+            return await self._unavailable(symbol, "unparseable verdict", client)
 
         await self._repo.insert(
             symbol=symbol.ticker,
@@ -168,7 +186,7 @@ class SentimentService:
             volume=verdict.volume,
             drivers=verdict.drivers,
             citations=citations,
-            model=self._client.model,
+            model=client.model,
         )
         return {
             "status": "ok",
@@ -179,20 +197,29 @@ class SentimentService:
             "citations": citations,
         }
 
-    async def _unavailable(self, symbol: Symbol, reason: str) -> dict[str, Any]:
+    async def _chain(self) -> list[Any]:
+        """The active Profile's sentiment Chain when it sets one (#107), else ``.env``."""
+        routed = await self._profiles.route(ROLE) if self._profiles is not None else None
+        if routed is not None:
+            return routed[1]
+        return [self._client] if self._client is not None else []
+
+    async def _unavailable(self, symbol: Symbol, reason: str, client: Any) -> dict[str, Any]:
         await self._repo.insert(
             symbol=symbol.ticker,
             status="unavailable",
-            model=self._client.model,
+            model=client.model,
             reason=reason,
         )
         log.info("sentiment_unavailable", symbol=symbol.ticker, reason=reason)
         return {"status": "unavailable", "symbol": symbol.ticker, "reason": reason}
 
-    async def _record_usage(self, usage: Usage, *, citations: list[str], now: datetime) -> None:
+    async def _record_usage(
+        self, usage: Usage, client: Any, *, citations: list[str], now: datetime
+    ) -> None:
         if self._meter is None:
             return
-        prompt_price, completion_price = price_per_million("xai", self._client.model)
+        prompt_price, completion_price = price_per_million("xai", client.model)
         token_cost = (
             usage.prompt_tokens * prompt_price + usage.completion_tokens * completion_price
         ) / 1_000_000
@@ -202,7 +229,5 @@ class SentimentService:
         )
         await self._meter.record(
             ROLE,
-            Completion(
-                text="", usage=usage, cost_usd=cost, provider="xai", model=self._client.model
-            ),
+            Completion(text="", usage=usage, cost_usd=cost, provider="xai", model=client.model),
         )

@@ -190,7 +190,22 @@ hand, never by the screener.
   `/providers`, MCP). Keys are Fernet-encrypted with `TRADER_SECRETS_KEY`, write-only
   (`••••last4`), operator key only, audited without the value
   ([ADR 0002](adr/0002-provider-keys-in-postgres.md)). A Provider on a loopback or private
-  address is local. No Role routes to a Provider yet; that is #107.
+  address is local. A Provider a current Chain uses cannot be removed.
+- **Profiles** (#107): named, renamable combinations of Chains (`llm_profiles`,
+  append-only `llm_profile_versions`), one active. Its current version overrides the
+  `.env` chain per Role, per call: the process builds ONE registry (`create_app`) that asks
+  the Profile store for each call's Chain, so a switch reaches the loop, desk, compiler,
+  briefs and replays on their next call with no restart; a Role the Profile leaves out
+  keeps `.env`. The Role filter: decide/analyst/critic/brief/compiler take chat Providers,
+  sentiment xAI only (x_search), confirm Jev only or an empty Chain (off). Saving a Chain,
+  activating and reverting the active Profile run the **Probe** first (`llm/probe.py`): one
+  unmetered call per entry in the Role's real contract on a synthetic context; a failing
+  first entry refuses the change, a failing fallback saves with a warning
+  ([ADR 0001](adr/0001-instant-decide-model-swap.md)). Every journaled decision records
+  `profile_version` (NULL on `.env`) and `served_by` (`provider:model`, fallback included).
+  Changes are audited with the caller and surface (`api`/`cli`/`desk`/`mcp`). The Nemotron
+  thinking guard follows the URL: a Provider at `TRADER_NEMOTRON_BASE_URL` gets it, no
+  other does. Surfaces: `trader profile …`, `/profiles`, `/roles`, MCP.
 - **Nemotron preset** (`TRADER_NEMOTRON_BASE_URL`, default `http://localhost:8009/v1` — a
   vLLM you host): every request MUST send `chat_template_kwargs: {enable_thinking: false}`
   or throughput collapses to ~0.35 tok/s

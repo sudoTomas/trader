@@ -38,13 +38,16 @@ class DecisionsRepo:
         brief_version: int | None = None,
         cost_usd: float | None = None,
         latency_ms: int | None = None,
+        profile_version: int | None = None,
+        served_by: str | None = None,
     ) -> int:
         row = await self._db.fetch_one(
             """
             INSERT INTO decisions (trigger, status, symbol, asset_class, prompt, raw_output,
                                    decision, risk_verdicts, desk_verdicts, confirm,
-                                   macro_view_version, brief_version, cost_usd, latency_ms)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                   macro_view_version, brief_version, cost_usd, latency_ms,
+                                   profile_version, served_by)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
             (
@@ -62,6 +65,8 @@ class DecisionsRepo:
                 brief_version,
                 cost_usd,
                 latency_ms,
+                profile_version,
+                served_by,
             ),
         )
         assert row is not None
