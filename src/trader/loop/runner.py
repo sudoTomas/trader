@@ -1,6 +1,7 @@
 """LoopRunner — the money path, wired. Plain async, no LangGraph.
 
-    SignalScheduler → ContextBuilder → Decider → RiskGuard → Journal → (Executor: M3)
+    SignalScheduler → ContextBuilder → Decider → (Confirm) → (critic) → RiskGuard → Journal
+    → (Executor: M3)
 
 **Shadow mode defaults ON**: the full pipeline runs, every decision and risk verdict is
 journaled, and nothing is submitted. Turning it off is a deliberate operator act
@@ -37,6 +38,7 @@ from trader.brokers.base import BrokerError
 from trader.core.symbols import Symbol
 from trader.data.base import MarketData, MarketDataError
 from trader.llm.registry import LLMRegistry
+from trader.loop.confirm import skipped
 from trader.loop.context import (
     BAR_LOOKBACK,
     DEFAULT_INTERVALS,
@@ -175,6 +177,10 @@ class LoopRunner:
     # Decision desk: analyst lanes before the decide, critic after it.
     # Absent = no desk. Advisory: a crashing desk degrades to a plain decide, never blocks.
     desk: Any | None = None
+    # Confirm seat, first stage (#99): Kev judges every open or close Draft and the
+    # answer is journaled beside it. Journal-only: it never changes the decision.
+    # Absent = no Confirm (TRADER_CONFIRM_PROVIDER empty).
+    confirm: Any | None = None  # loop.confirm.Confirmer
     stats: LoopStats = field(default_factory=LoopStats)
 
     def __post_init__(self) -> None:
@@ -590,6 +596,13 @@ class LoopRunner:
             return WakeupResult(symbol.ticker, names, ERROR, decision_id, reason=str(exc))
 
         decision = result.decision
+        confirm: dict[str, Any] | None = None
+        if self.confirm is not None and decision.intent is not None:
+            try:
+                confirm = await self.confirm.confirm(ctx, decision)
+            except Exception as exc:  # noqa: BLE001 - Kev must never stop the loop
+                log.warning("confirm_failed", symbol=symbol.ticker, error=str(exc)[:300])
+                confirm = skipped(decision, f"error ({type(exc).__name__})")
         if self.desk is not None:
             try:
                 decision, desk_verdicts = await self.desk.review(ctx, decision, desk_verdicts or {})
@@ -632,6 +645,7 @@ class LoopRunner:
                     decision=decision,
                     risk_verdicts=verdicts,
                     desk_verdicts=desk_verdicts,
+                    confirm=confirm,
                     macro_view_version=macro_view_version,
                     brief_version=brief_version,
                     cost_usd=result.completion.cost_usd,
@@ -663,6 +677,7 @@ class LoopRunner:
             decision=decision,
             risk_verdicts=verdicts,
             desk_verdicts=desk_verdicts,
+            confirm=confirm,
             macro_view_version=macro_view_version,
             brief_version=brief_version,
             cost_usd=result.completion.cost_usd,

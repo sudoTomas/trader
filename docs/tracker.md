@@ -57,6 +57,12 @@ embry0 stays on GitHub (`sudoTomas/embry0`).
 | [#34](https://github.com/sudoTomas/trader/issues/34) | Exit-review lane (decide-gated; after #1) |
 | [#35](https://github.com/sudoTomas/trader/issues/35) | **Epic:** open-source release (MIT, public after cleanup; Python stays) |
 
+## Filed 2026-10-07 (Confirm seat)
+
+| GitHub | What |
+|---|---|
+| [#99](https://github.com/sudoTomas/trader/issues/99) | Confirm seat stage 1: Nemotron drafts, Kev confirms, journal-only (`confirm` column; retires `TRADER_DECIDE_PROVIDER=jev`) |
+
 Batch one (2026-09-29) merged as PRs #36 (D), #39 (B), #38 (C), #37 (E), #40 (A); report in
 `docs/reports/2026-09-29-batch-one.md`. Deployed only after the operator restarts `trader-api`.
 

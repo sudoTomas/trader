@@ -100,6 +100,13 @@ class DecisionOutput(BaseModel):
 DECISION_SCHEMA: dict[str, Any] = require_all_keys(DecisionOutput.model_json_schema())
 
 
+def system_prompt(ctx: DecisionContext) -> str:
+    """The decide rules for this context; the Confirm reads the same text as its rules."""
+    if ctx.held_position is not None:
+        return SYSTEM_PROMPT + EXIT_REVIEW_PROMPT
+    return SYSTEM_PROMPT
+
+
 class DeciderError(RuntimeError):
     """A wakeup could not produce a decision.
 
@@ -128,11 +135,8 @@ class Decider:
 
     async def decide(self, ctx: DecisionContext) -> DecisionResult:
         prompt = ctx.to_prompt()
-        system = SYSTEM_PROMPT
-        if ctx.held_position is not None:
-            system += EXIT_REVIEW_PROMPT
         messages = [
-            {"role": "system", "content": system},
+            {"role": "system", "content": system_prompt(ctx)},
             {"role": "user", "content": prompt},
         ]
         last_error = ""
