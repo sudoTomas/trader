@@ -95,6 +95,7 @@ ALL_TABLES = (
     "bars",
     "usage_daily",
     "llm_price_overrides",
+    "llm_spend_caps",
     "llm_profile_versions",
     "llm_profiles",
     "llm_providers",

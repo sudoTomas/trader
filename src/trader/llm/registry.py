@@ -49,6 +49,18 @@ class ProfileRoutes(Protocol):
     async def route(self, role: str) -> tuple[int, list[LLMClient]] | None: ...
 
 
+class SpendGate(Protocol):
+    """What the registry needs from the Spend caps (``llm.caps.SpendCaps``)."""
+
+    async def reached(self, role: str) -> bool: ...
+
+
+def is_paid(client: LLMClient) -> bool:
+    """A client that meters a non-zero price. One without a price is free (stubs, Jev)."""
+    price = getattr(client, "price", None)
+    return price is not None and any(p > 0 for p in price())
+
+
 class LLMRegistry:
     """Ordered fallback chain per role, with usage metering on every completion."""
 
@@ -58,10 +70,12 @@ class LLMRegistry:
         meter: UsageMeter | None,
         *,
         profiles: ProfileRoutes | None = None,
+        caps: SpendGate | None = None,
     ) -> None:
         self._routes = routes
         self._meter = meter
         self._profiles = profiles
+        self._caps = caps
 
     def chain_for(self, role: str) -> list[LLMClient]:
         """The ``.env`` chain for ``role``."""
@@ -91,7 +105,14 @@ class LLMRegistry:
         errors: list[str] = []
         last: LLMError | None = None
         version, chain = await self._chain(role)
+        # At the Role's daily cap its paid models sit out the rest of the UTC day (#108).
+        capped = self._caps is not None and await self._caps.reached(role)
+        skipped = 0
         for client in chain:
+            if capped and is_paid(client):
+                skipped += 1
+                errors.append(f"{client.name}:{client.model} skipped (daily spend cap)")
+                continue
             try:
                 completion = await client.complete(
                     messages, schema=schema, max_tokens=max_tokens, temperature=temperature
@@ -112,6 +133,8 @@ class LLMRegistry:
             if self._meter is not None:
                 await self._meter.record(role, completion)
             return completion
+        if skipped == len(chain):
+            raise LLMError(f"{role} is at its daily spend cap and its Chain has no free model")
         # Chained to the last provider's error so a caller can report that one cause.
         raise LLMError(f"all providers failed for role '{role}': {errors}") from last
 
@@ -227,13 +250,15 @@ def build_llm_registry(
     *,
     xai_manager: XaiCredentialManager | None = None,
     profiles: ProfileRoutes | None = None,
+    caps: SpendGate | None = None,
 ) -> LLMRegistry:
     """Wire the chains this build can serve from configured credentials.
 
     ``profiles`` is the Profile store (#107); given, the active Profile overrides these
-    chains per Role and per call. ``xai_manager`` is the process-wide OAuth credential
-    manager (``create_app`` builds one and threads it through every registry); None falls
-    back to building one per call, which store-less builds and tests rely on.
+    chains per Role and per call; ``caps`` are the Spend caps (#108). ``xai_manager`` is
+    the process-wide OAuth credential manager (``create_app`` builds one and threads it
+    through every registry); None falls back to building one per call, which store-less
+    builds and tests rely on.
 
     Grok fronts research roles when any xAI credential path exists and
     ``TRADER_RESEARCH_BASE_URL`` is empty — SuperGrok OAuth (device-code login)
@@ -257,7 +282,7 @@ def build_llm_registry(
     if research is not None:
         for role in RESEARCH_ROLES:
             routes[role] = [research]
-        return LLMRegistry(routes, meter, profiles=profiles)
+        return LLMRegistry(routes, meter, profiles=profiles, caps=caps)
     grok = xai_client(settings, manager=xai_manager)
     # Research prefers Grok; the decide client backstops whether xAI is absent
     # or the decide role itself moved off the self-hosted vLLM (the Desk must
@@ -267,4 +292,4 @@ def build_llm_registry(
     # critique is same-model, not skipped.
     for role in RESEARCH_ROLES:
         routes[role] = ([grok] if grok is not None else []) + backstop
-    return LLMRegistry(routes, meter, profiles=profiles)
+    return LLMRegistry(routes, meter, profiles=profiles, caps=caps)

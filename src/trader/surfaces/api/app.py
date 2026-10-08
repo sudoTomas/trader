@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field
 
+from trader.llm.caps import CapError
 from trader.llm.profiles import ProfileError, ProfileNotFound
 from trader.llm.providers import ProviderError, ProviderNotFound
 from trader.ops.config import Settings, get_settings
@@ -95,6 +96,10 @@ class RevertIn(BaseModel):
     version: int
 
 
+class CapIn(BaseModel):
+    daily_usd: float
+
+
 class XaiProbeIn(BaseModel):
     """``POST /xai/probe`` body. Every field optional: the service fills the #7 matrix
     defaults (models × both endpoints × none/x_search/web_search, credential auto)."""
@@ -116,10 +121,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # (#63, docs/lessons.md#oauth-refresh-margin). None without TRADER_XAI_TOKEN_KEY.
     xai_manager = build_xai_manager(settings)
     providers = build_providers(db, settings)
-    profiles = build_profiles(db, settings, providers)
-    # ONE registry per process (#107): it reads the active Profile per call, so a switch
-    # reaches the loop, the desk, the compiler, the briefs and replays on their next call.
-    llm = build_llm(db, settings, profiles, xai_manager=xai_manager)
+    caps = build_caps(db, settings)
+    profiles = build_profiles(db, settings, providers, caps)
+    # ONE registry per process (#107): it reads the active Profile and the Spend caps per
+    # call, so a switch or a cap reaches the loop, desk, compiler, briefs and replays at once.
+    llm = build_llm(db, settings, profiles, caps, xai_manager=xai_manager)
     sentiment = build_sentiment(db, settings, xai_manager=xai_manager, profiles=profiles)
     desk = build_desk(db, settings, llm=llm)
     runner = build_runner(db, settings, sentiment, desk, llm=llm) if settings.loop_enabled else None
@@ -140,6 +146,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         screener=build_screener_data(db, settings),
         providers=providers,
         profiles=profiles,
+        caps=caps,
     )
     mcp = build_mcp(registry)
     capture_mcp = build_mcp(registry, only=CAPTURE_CAPABILITIES, name="trader-capture")
@@ -316,6 +323,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.exception_handler(ProfileError)
     async def profile_refused(_: Request, exc: ProfileError) -> JSONResponse:
         return JSONResponse({"detail": str(exc)}, status_code=422)
+
+    @app.exception_handler(CapError)
+    async def cap_refused(_: Request, exc: CapError) -> JSONResponse:
+        return JSONResponse({"detail": str(exc)}, status_code=422)
+
+    @app.get("/caps")
+    async def spend_caps() -> dict:
+        return await registry.get("spend_caps").handler()
+
+    @app.put("/caps/{role}")
+    async def set_spend_cap(role: str, body: CapIn) -> dict:
+        return await registry.get("set_spend_cap").handler(role=role, daily_usd=body.daily_usd)
+
+    @app.delete("/caps/{role}")
+    async def clear_spend_cap(role: str) -> dict:
+        return await registry.get("clear_spend_cap").handler(role=role)
 
     @app.get("/profiles")
     async def profiles() -> list[dict]:
@@ -542,15 +565,19 @@ def sentiment_handles(settings: Settings) -> list[str]:
     return [h.strip() for h in settings.sentiment_x_handles.split(",") if h.strip()]
 
 
-def build_llm(db: Database, settings: Settings, profiles=None, *, xai_manager=None):
+def build_llm(db: Database, settings: Settings, profiles=None, caps=None, *, xai_manager=None):
     """The process's one metered LLM registry: ``.env`` chains, overridden per Role by the
-    active Profile when ``profiles`` is given."""
+    active Profile when ``profiles`` is given, and held to ``caps``."""
     from trader.llm.registry import build_llm_registry
     from trader.llm.usage import UsageMeter
     from trader.store.repos import UsageRepo
 
     return build_llm_registry(
-        settings, UsageMeter(UsageRepo(db)), xai_manager=xai_manager, profiles=profiles
+        settings,
+        UsageMeter(UsageRepo(db)),
+        xai_manager=xai_manager,
+        profiles=profiles,
+        caps=caps,
     )
 
 
@@ -583,7 +610,14 @@ def build_providers(db: Database, settings: Settings):
     return ProviderDesk(db, secrets_key=settings.secrets_key)
 
 
-def build_profiles(db: Database, settings: Settings, providers):
+def build_caps(db: Database, settings: Settings):
+    """Per-Role daily Spend caps (#108). The critic's default is its old desk budget."""
+    from trader.llm.caps import SpendCaps
+
+    return SpendCaps(db, defaults={"critic": settings.desk_critic_daily_usd})
+
+
+def build_profiles(db: Database, settings: Settings, providers, caps=None):
     """The model picker's Profiles (#107): the active one serves every Role it names."""
     from trader.llm.profiles import ProfileDesk
 
@@ -592,6 +626,7 @@ def build_profiles(db: Database, settings: Settings, providers):
         providers,
         nemotron_base_url=settings.nemotron_base_url,
         sentiment_handles=sentiment_handles(settings),
+        caps=caps,
     )
 
 
@@ -611,12 +646,10 @@ def build_desk(db: Database, settings: Settings, *, llm=None, xai_manager=None):
     """The decision desk — built in every store-backed build (replay needs it); the LIVE
     loop only receives it when TRADER_DESK_ENABLED=true (see create_app)."""
     from trader.desk.desk import Desk
-    from trader.store.repos import UsageRepo
 
+    # Built alone, it still holds the critic to its default Spend cap.
     return Desk(
-        llm or build_llm(db, settings, xai_manager=xai_manager),
-        usage=UsageRepo(db),
-        critic_daily_usd=settings.desk_critic_daily_usd,
+        llm or build_llm(db, settings, caps=build_caps(db, settings), xai_manager=xai_manager)
     )
 
 

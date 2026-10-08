@@ -87,6 +87,7 @@ def build_registry(
     screener: Any | None = None,
     providers: Any | None = None,
     profiles: Any | None = None,
+    caps: Any | None = None,
 ) -> ServiceRegistry:
     """Construct the registry with the capabilities available in this build.
 
@@ -100,7 +101,8 @@ def build_registry(
     multi-symbol daily-bars provider (``get_daily_bars_multi``), absent without
     market-data credentials. ``providers`` is the model picker's Provider store
     (``llm.providers.ProviderDesk``) and ``profiles`` its Profile store
-    (``llm.profiles.ProfileDesk``), both absent in store-less builds.
+    (``llm.profiles.ProfileDesk``), and ``caps`` the Spend caps (``llm.caps.SpendCaps``),
+    all absent in store-less builds.
     """
     reg = ServiceRegistry()
 
@@ -1068,6 +1070,37 @@ def build_registry(
         )
         async def revert_profile(name: str, version: int) -> dict[str, Any]:
             return await profiles.revert(name, version)
+
+    # --- model picker: Spend caps (#108) ---------------------------------------
+    # A daily USD cap per Role, apart from Profiles. SpendCaps audits each change itself.
+
+    if caps is not None:
+
+        @reg.register(
+            "spend_caps",
+            kind="query",
+            summary="Each Role's daily Spend cap (USD, UTC day), where it comes from, and"
+            " today's spend.",
+        )
+        async def spend_caps() -> dict[str, Any]:
+            return await caps.list()
+
+        @reg.register(
+            "set_spend_cap",
+            kind="command",
+            summary="Cap a Role's spend per UTC day (USD). At the cap its paid models sit out"
+            " the day and a free model in its Chain serves.",
+        )
+        async def set_spend_cap(role: str, daily_usd: float) -> dict[str, Any]:
+            return await caps.set(role, daily_usd)
+
+        @reg.register(
+            "clear_spend_cap",
+            kind="command",
+            summary="Drop a Role's cap, back to its default (uncapped when it has none).",
+        )
+        async def clear_spend_cap(role: str) -> dict[str, Any]:
+            return await caps.clear(role)
 
     async def _audit_command(action: str, payload: dict[str, Any]) -> None:
         """Commands are state-changing: every one leaves an append-only trace."""

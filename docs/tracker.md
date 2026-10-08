@@ -73,7 +73,7 @@ Not yet deployed to the Spark: needs `TRADER_SECRETS_KEY` in its `.env` (migrati
 | [#103](https://github.com/sudoTomas/trader/issues/103) **closed 2026-10-08 (PR #110)** | 1/6 Providers and encrypted keys on every surface | — |
 | [#107](https://github.com/sudoTomas/trader/issues/107) **closed 2026-10-08 (PR #111)** | 2/6 Profiles, Role Chains and the Probe in a shared registry | #103 |
 | [#104](https://github.com/sudoTomas/trader/issues/104) **closed 2026-10-08 (PR #112; live Probe pending a Console key)** | 3/6 Native Anthropic adapter | #103 |
-| [#105](https://github.com/sudoTomas/trader/issues/105) | 4/6 Live layered pricing (local models are free) | #103 |
+| [#105](https://github.com/sudoTomas/trader/issues/105) **closed 2026-10-08 (PR #113)** | 4/6 Live layered pricing (local models are free) | #103 |
 | [#108](https://github.com/sudoTomas/trader/issues/108) | 5/6 Per-Role daily Spend caps | #107, #105 |
 | [#106](https://github.com/sudoTomas/trader/issues/106) | 6/6 Desk Models page | #107, #108 |
 

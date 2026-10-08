@@ -294,8 +294,9 @@ class Settings(BaseSettings):
         category=TUNING,
         section="Research Desk",
         description=(
-            "Critic spend cap per UTC day (the critic prefers Grok, cross-model). At the cap, "
-            "reviews degrade to journaled pass-throughs. Analysts run on the decide client."
+            "Default Spend cap for the critic Role, USD per UTC day (#108; a cap set on any "
+            "surface replaces it). At the cap the critic's paid models sit out the day and a "
+            "free one in its Chain reviews; with none, reviews are journaled pass-throughs."
         ),
     )
     sentiment_poll_seconds: float = setting(
