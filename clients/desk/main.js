@@ -102,9 +102,9 @@ ipcMain.handle('api', async (_event, method, route, body) => {
     init.body = JSON.stringify(body);
   }
   const r = await fetch(url, init);
-  const body = await r.json().catch(() => null);
-  if (!r.ok) throw new Error(body?.detail ? JSON.stringify(body.detail) : `${r.status} ${r.statusText}`);
-  return body;
+  const out = await r.json().catch(() => null);
+  if (!r.ok) throw new Error(out?.detail ? JSON.stringify(out.detail) : `${r.status} ${r.statusText}`);
+  return out;
 });
 
 app.whenReady().then(() => {

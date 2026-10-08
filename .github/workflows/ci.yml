@@ -39,3 +39,5 @@ jobs:
         run: uv run python scripts/gen_config_reference.py --check
       - name: Tests
         run: uv run pytest -q
+      - name: Desk tests
+        run: node --test clients/desk/desk_logic.test.js

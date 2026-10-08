@@ -189,3 +189,13 @@ test('the Kev pill reads the Confirm and its skips', () => {
   assert.deepEqual([agree.text, agree.tone], ['Kev · open 72%', 'ok']);
   assert.equal(confirmPill({ draft, p_same_action: 0.6, prefers: 'other_side' }).text, 'Kev · open 60% · prefers other side');
 });
+
+test('every desk script compiles', () => {
+  // Only the page runs in Playwright; this catches a syntax error in the main process too.
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const vm = require('node:vm');
+  for (const f of fs.readdirSync(__dirname).filter((n) => n.endsWith('.js'))) {
+    assert.doesNotThrow(() => new vm.Script(fs.readFileSync(path.join(__dirname, f), 'utf8'), { filename: f }), f);
+  }
+});
