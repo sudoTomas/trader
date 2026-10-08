@@ -911,3 +911,28 @@ def profile_revert(
 ) -> None:
     """Make an earlier version current (probed first when the Profile is active)."""
     _echo_masked(_post(f"/profiles/{name}/revert", json_body={"version": version}))
+
+
+cap_app = typer.Typer(help="Per-Role daily Spend caps (USD per UTC day), apart from Profiles.")
+app.add_typer(cap_app, name="cap")
+
+
+@cap_app.command("list")
+def cap_list() -> None:
+    """Each Role's cap, where it comes from, and today's spend."""
+    _echo_masked(_get("/caps"))
+
+
+@cap_app.command("set")
+def cap_set(
+    role: str = typer.Argument(..., help="Role to cap."),
+    daily_usd: float = typer.Argument(..., help="USD per UTC day."),
+) -> None:
+    """Cap a Role. At the cap its paid models sit out the day; a free one serves."""
+    _echo_masked(_put(f"/caps/{role}", json_body={"daily_usd": daily_usd}))
+
+
+@cap_app.command("clear")
+def cap_clear(role: str = typer.Argument(..., help="Role.")) -> None:
+    """Drop a Role's cap, back to its default."""
+    _echo_masked(_delete(f"/caps/{role}"))

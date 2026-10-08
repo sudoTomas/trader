@@ -88,6 +88,7 @@ class ProfileDesk:
         sentiment_handles: list[str] | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
         anthropic_transport: Any | None = None,  # httpx2 transport, for tests
+        caps: Any | None = None,  # llm.caps.SpendCaps
     ) -> None:
         self._db = db
         self._providers = providers
@@ -95,6 +96,7 @@ class ProfileDesk:
         self._handles = sentiment_handles or []
         self._transport = transport
         self._anthropic_transport = anthropic_transport
+        self._caps = caps
         # (provider id, provider updated_at, role kind, model) -> client. A key change or
         # rename bumps updated_at, so the next call builds a fresh client.
         self._clients: dict[tuple[Any, ...], Any] = {}
@@ -201,6 +203,15 @@ class ProfileDesk:
         """Save a Role's Chain as a new version, after the Probe."""
         profile = await self._profile(name)
         entries = await self._resolve_chain(role, chain)
+        prices = [await self._providers.prices.price(e, e["model"]) for e in entries]
+        if self._caps is not None and await self._caps.cap(role) is not None:
+            # A capped Role must be able to count what it spends (#108).
+            for entry, price in zip(entries, prices, strict=True):
+                if price["source"] == "unknown":
+                    raise ProfileError(
+                        f"{entry['name']}:{entry['model']} has no price and {role} has a"
+                        " spend cap; set one first (trader provider price)"
+                    )
         results, warnings = await self._probe(role, entries)
         roles = {
             **profile["roles"],
@@ -212,7 +223,20 @@ class ProfileDesk:
             name,
             {"role": role, "version": version, "chain": [self._entry(e) for e in entries]},
         )
-        return {"profile": await self._summary(name), "probe": results, "warnings": warnings}
+        estimate = None
+        if self._caps is not None and entries:
+            first = prices[0]
+            usd = await self._caps.estimate(role, (first["price_in"], first["price_out"]))
+            estimate = {
+                "usd_per_day": usd,
+                "basis": f"7-day average volume × {entries[0]['name']}:{entries[0]['model']}",
+            }
+        return {
+            "profile": await self._summary(name),
+            "probe": results,
+            "warnings": warnings,
+            "estimate": estimate,
+        }
 
     async def reset_role(self, name: str, role: str) -> dict[str, Any]:
         """Drop a Role from the Profile, so it serves from ``.env`` again."""

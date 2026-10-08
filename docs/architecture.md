@@ -224,6 +224,16 @@ hand, never by the screener.
   Model lists and `/roles` show each price with its source; Profile-served clients are
   priced at build, so `usage_daily` meters what the picker shows. `.env`-served roles
   keep the `PRICES` table in `llm/usage.py`.
+- **Spend caps** (#108, `llm/caps.py`): a daily USD cap per Role (`llm_spend_caps`), apart
+  from Profiles, so a switch never lifts one; the critic's default is
+  `TRADER_DESK_CRITIC_DAILY_USD` (the old desk budget, now enforced here). Before each
+  call the shared registry checks the Role's spend today in `usage_daily`; at the cap its
+  paid models (non-zero metered price) sit out the UTC day and a free one later in the
+  Chain serves. The first hit a day is logged and audited. With nothing free left the
+  Role fails as in an outage (decide: journaled error, transient backoff). Saving a Chain
+  returns an estimate (7-day average token volume × the first model's price), and a
+  hosted model with no price is refused in a capped Role. Surfaces: `trader cap …`,
+  `/caps`, MCP.
 - **Nemotron preset** (`TRADER_NEMOTRON_BASE_URL`, default `http://localhost:8009/v1` — a
   vLLM you host): every request MUST send `chat_template_kwargs: {enable_thinking: false}`
   or throughput collapses to ~0.35 tok/s

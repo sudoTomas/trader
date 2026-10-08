@@ -225,31 +225,6 @@ async def test_holds_never_reach_the_critic():
     assert llm.calls == []
 
 
-async def test_critic_daily_budget_cap_passes_through(db):
-    from datetime import UTC, datetime
-
-    from trader.desk.desk import Desk
-    from trader.store.repos import UsageRepo
-
-    usage = UsageRepo(db)
-    await usage.record(
-        day=datetime.now(tz=UTC).date(),
-        role="critic",
-        provider="xai",
-        model="grok-4",
-        prompt_tokens=1000,
-        completion_tokens=100,
-        cost_usd=0.02,
-    )
-    llm = RoleLLM({"critic": []})  # the wire must not be touched
-    desk = Desk(llm, usage=usage, critic_daily_usd=0.01)
-    final, info = await desk.review(await context_for(), make_open(), {"analysts": []})
-    assert final == make_open()
-    assert info["critic"]["verdict"] == "pass_through"
-    assert "budget" in info["critic"]["reason"]
-    assert llm.calls == []
-
-
 def test_critic_wire_schema_requires_every_key():
     """Same failure class as the decider's omitted side/notional: a shrink verdict
     without its notional would pass guided decoding if the key were optional."""

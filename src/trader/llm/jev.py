@@ -62,6 +62,12 @@ class JevClient:
     async def close(self) -> None:
         await self._client.aclose()
 
+    def price(self) -> tuple[float, float]:
+        """USD per 1M (prompt, completion) tokens, exactly as this client meters them."""
+        configured = (self._price_in, self._price_out)
+        override = configured if configured != (0.0, 0.0) else None
+        return price_per_million(self.name, self.model, default=configured, override=override)
+
     async def complete(
         self,
         messages: list[dict[str, Any]],
@@ -98,11 +104,7 @@ class JevClient:
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise LLMError(f"{self.name}: malformed answers: {type(exc).__name__}") from exc
 
-        configured = (self._price_in, self._price_out)
-        override = configured if configured != (0.0, 0.0) else None
-        in_price, out_price = price_per_million(
-            self.name, self.model, default=configured, override=override
-        )
+        in_price, out_price = self.price()
         cost = (usage.prompt_tokens * in_price + usage.completion_tokens * out_price) / 1_000_000
         return Completion(
             text=json.dumps(answers),

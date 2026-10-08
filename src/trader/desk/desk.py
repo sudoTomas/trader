@@ -12,14 +12,15 @@ Application of the critic verdict happens HERE, deterministically:
   the journal, the veto reason lives in the desk verdicts.
 
 Holds never reach the critic (nothing to brake, and it keeps a mostly-hold loop's Grok
-spend near zero). A per-day critic budget caps the rest: at the cap, reviews degrade to
-journaled pass-throughs until tomorrow.
+spend near zero). The critic Role's Spend cap (#108, default
+``TRADER_DESK_CRITIC_DAILY_USD``) bounds the rest in the shared registry: at the cap its
+paid models sit out the day and a free one in its Chain reviews; with none left, the
+review is a journaled pass-through (critic unavailable).
 """
 
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -31,21 +32,14 @@ from trader.loop.context import DecisionContext
 
 log = structlog.get_logger(__name__)
 
-DEFAULT_CRITIC_DAILY_USD = 1.0
-
 
 class Desk:
     def __init__(
         self,
         llm: Any,  # LLMRegistry-shaped
-        *,
-        usage: Any | None = None,  # store.repos.UsageRepo; absent = no budget check
-        critic_daily_usd: float = DEFAULT_CRITIC_DAILY_USD,
     ) -> None:
         self._analysts = AnalystPool(llm)
         self._critic = Critic(llm)
-        self._usage = usage
-        self._critic_daily_usd = critic_daily_usd
 
     async def enrich(self, ctx: DecisionContext) -> tuple[DecisionContext, dict[str, Any]]:
         """Fan out the analysts and attach their reads as prompt lanes."""
@@ -62,8 +56,6 @@ class Desk:
         }
         if decision.intent is None:
             verdict: dict[str, Any] = {"verdict": "skipped", "reason": "hold needs no critique"}
-        elif await self._budget_spent():
-            verdict = {"verdict": "pass_through", "reason": "daily critic budget reached"}
         else:
             verdict = await self._critic.review(ctx, decision)
 
@@ -103,13 +95,3 @@ class Desk:
                 return decision
             return replace(decision, intent=replace(decision.intent, notional=asked))
         return decision  # approve | pass_through | skipped
-
-    async def _budget_spent(self) -> bool:
-        if self._usage is None:
-            return False
-        rows = await self._usage.for_day(datetime.now(tz=UTC).date())
-        spent = sum(float(r["cost_usd"]) for r in rows if r["role"] == "critic")
-        if spent >= self._critic_daily_usd:
-            log.warning("critic_budget_reached", spent=spent, cap=self._critic_daily_usd)
-            return True
-        return False
