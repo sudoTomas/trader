@@ -124,6 +124,15 @@ test('an API refusal reads as its own words', () => {
   assert.equal(errorText(new Error('blocked: POST /loop/wake')), 'blocked: POST /loop/wake');
 });
 
+test('a remote base keeps the same-origin rule', () => {
+  const remote = 'http://192.168.1.20:8080';
+  assert.equal(deskRequestUrl(remote, 'GET', '/health').href, `${remote}/health`);
+  assert.equal(deskRequestUrl(remote, 'POST', '/risk/pause').hostname, '192.168.1.20');
+  // Loopback is another host now, so a route aimed back at it is blocked too.
+  assert.throws(() => deskRequestUrl(remote, 'GET', 'http://127.0.0.1:8080/health'), /blocked/);
+  assert.throws(() => deskRequestUrl(remote, 'GET', 'http://192.168.1.20:9090/health'), /blocked/);
+});
+
 test('path tricks do not become an allowed POST', () => {
   assert.throws(() => deskRequestUrl(BASE, 'POST', '/risk/pause/../../broker/flatten-all'), /blocked/);
   assert.throws(() => deskRequestUrl(BASE, 'POST', '/broker/flatten-all'), /blocked/);

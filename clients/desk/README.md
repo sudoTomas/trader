@@ -55,6 +55,19 @@ npm start                  # or run it straight from a terminal
 
 Needs a trader API already listening on the desk port (`trader-api`, or uvicorn you started yourself).
 
+To watch an API running on another machine, point the desk at it and give it a settings
+file of its own, outside any checkout, holding just `TRADER_API_KEY`, `ALPACA_API_KEY_ID`
+and `ALPACA_API_SECRET`:
+
+```bash
+TRADER_DESK_URL=http://192.168.1.20:8080 \
+TRADER_DESK_ENV_FILE=~/.config/trader/desk.env \
+npm start
+```
+
+The API key travels as plain HTTP, so use this on your own LAN or through an SSH tunnel
+(`ssh -L 8080:127.0.0.1:8080 host`, then the default URL works).
+
 ## Settings
 
 Environment variables, all optional:
@@ -63,7 +76,8 @@ Environment variables, all optional:
 |---|---|---|
 | `TRADER_DIR` | the checkout this folder sits in | trader checkout to run |
 | `TRADER_DESK_ENV_FILE` | `$TRADER_DIR/.env` | trader's settings file. Point it outside every checkout to keep live settings away from tests. |
-| `TRADER_DESK_PORT` | `8080` | API port |
+| `TRADER_DESK_PORT` | `8080` | API port on this machine |
+| `TRADER_DESK_URL` | `http://127.0.0.1:$TRADER_DESK_PORT` | Full API base URL; set it to watch an API on another machine |
 | `TRADER_API_KEY` | read from the settings file | sent as `X-API-Key` when auth is on |
 
 ## Look
@@ -85,7 +99,7 @@ The desk carries the Salamander identity proposed for the project (see the namin
 
 ## Files
 
-- `main.js`: owns the window and forwards API calls. GET must stay on `127.0.0.1` and the desk port. Writes (POST, PUT, DELETE) are the method-and-path allowlist. Redirects are refused.
+- `main.js`: owns the window and forwards API calls. GET must stay on the API's own host and port (loopback unless `TRADER_DESK_URL` says otherwise). Writes (POST, PUT, DELETE) are the method-and-path allowlist. Redirects are refused.
 - `desk_logic.js`: that route check, plus the approval toast and ledger wording
 - `preload.js`: the only bridge the page gets (`get`, `post`, `put`, `del`, `broker`, backend status)
 - `models.js`: the Models page
