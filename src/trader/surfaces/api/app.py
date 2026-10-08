@@ -11,10 +11,12 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field
 
+from trader.llm.providers import ProviderError, ProviderNotFound
 from trader.ops.config import Settings, get_settings
 from trader.store.db import Database
 from trader.store.migrate import run_migrations
@@ -37,6 +39,24 @@ class ResearchNoteIn(BaseModel):
     # When the research was CREATED (ISO-8601, tz-aware); submission time is recorded
     # separately as created_at. Freshness anchors on this when given.
     authored_at: str | None = None
+
+
+class ProviderIn(BaseModel):
+    """``POST /providers`` body. The key travels here, never in a query string (those get
+    logged); it is stored encrypted and never returned."""
+
+    name: str
+    preset: str
+    api_key: str | None = None
+    base_url: str | None = None
+
+
+class ProviderKeyIn(BaseModel):
+    api_key: str = Field(min_length=1)
+
+
+class ProviderRenameIn(BaseModel):
+    new_name: str
 
 
 class XaiProbeIn(BaseModel):
@@ -81,6 +101,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         briefs,
         xai_http=xai_http,
         screener=build_screener_data(db, settings),
+        providers=build_providers(db, settings),
     )
     mcp = build_mcp(registry)
     capture_mcp = build_mcp(registry, only=CAPTURE_CAPABILITIES, name="trader-capture")
@@ -201,6 +222,46 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/broker/adopt")
     async def adopt_venue_positions(confirm: str = Query(default="")) -> dict:
         return await registry.get("adopt_venue_positions").handler(confirm=confirm)
+
+    @app.exception_handler(ProviderNotFound)
+    async def provider_not_found(_: Request, exc: ProviderNotFound) -> JSONResponse:
+        return JSONResponse({"detail": f"no Provider named {exc.args[0]!r}"}, status_code=404)
+
+    @app.exception_handler(ProviderError)
+    async def provider_refused(_: Request, exc: ProviderError) -> JSONResponse:
+        return JSONResponse({"detail": str(exc)}, status_code=422)
+
+    @app.get("/providers")
+    async def providers() -> list[dict]:
+        return await registry.get("providers").handler()
+
+    @app.get("/providers/presets")
+    async def provider_presets() -> dict:
+        return await registry.get("provider_presets").handler()
+
+    @app.get("/providers/discover")
+    async def discover_providers() -> list[dict]:
+        return await registry.get("discover_providers").handler()
+
+    @app.get("/providers/{name}/models")
+    async def provider_models(name: str) -> list[str]:
+        return await registry.get("provider_models").handler(name=name)
+
+    @app.post("/providers")
+    async def add_provider(provider: ProviderIn) -> dict:
+        return await registry.get("add_provider").handler(**provider.model_dump())
+
+    @app.post("/providers/{name}/key")
+    async def set_provider_key(name: str, body: ProviderKeyIn) -> dict:
+        return await registry.get("set_provider_key").handler(name=name, api_key=body.api_key)
+
+    @app.post("/providers/{name}/rename")
+    async def rename_provider(name: str, body: ProviderRenameIn) -> dict:
+        return await registry.get("rename_provider").handler(name=name, new_name=body.new_name)
+
+    @app.delete("/providers/{name}")
+    async def remove_provider(name: str) -> dict:
+        return await registry.get("remove_provider").handler(name=name)
 
     @app.post("/broker/flatten-all")
     async def flatten_all(confirm: str = Query(default="")) -> dict:
@@ -398,6 +459,14 @@ def build_evaluator(db: Database, settings: Settings, desk=None, *, xai_manager=
         desk=desk,
         exit_review_enabled=settings.exit_review_enabled,
     )
+
+
+def build_providers(db: Database, settings: Settings):
+    """The model picker's Provider store (#103). Keys are encrypted with TRADER_SECRETS_KEY;
+    unset, keyless local Providers still work and keyed ones are refused with a hint."""
+    from trader.llm.providers import ProviderDesk
+
+    return ProviderDesk(db, secrets_key=settings.secrets_key)
 
 
 def build_screener_data(db: Database, settings: Settings):

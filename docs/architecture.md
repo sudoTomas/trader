@@ -185,6 +185,12 @@ hand, never by the screener.
   else `TRADER_RESEARCH_*`), with per-role fallback. `confirm` is Jev alone
   (`TRADER_CONFIRM_*`): Jev answers question sets, never a JSON schema, so it is never a
   decide, analyst or research backstop.
+- **Providers** (model picker, #102; slice #103): hosted and local model servers stored as
+  data (`llm_providers`), added from presets on every surface (`trader provider …`,
+  `/providers`, MCP). Keys are Fernet-encrypted with `TRADER_SECRETS_KEY`, write-only
+  (`••••last4`), operator key only, audited without the value
+  ([ADR 0002](adr/0002-provider-keys-in-postgres.md)). A Provider on a loopback or private
+  address is local. No Role routes to a Provider yet; that is #107.
 - **Nemotron preset** (`TRADER_NEMOTRON_BASE_URL`, default `http://localhost:8009/v1` — a
   vLLM you host): every request MUST send `chat_template_kwargs: {enable_thinking: false}`
   or throughput collapses to ~0.35 tok/s

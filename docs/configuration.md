@@ -133,6 +133,7 @@ Two roles, each any OpenAI-compatible `/v1`: **decide** (also the desk analysts)
 | `TRADER_XAI_MODEL` | `str` | `grok-4` | endpoint | Grok model id for the xAI research roles. |
 | `XAI_API_KEY` (alias `TRADER_XAI_API_KEY`) | `str` | *(empty)* | credential | xAI API key: first-class fallback when SuperGrok OAuth is absent or quarantined. Provider-conventional name; the `TRADER_` form is accepted too. |
 | `TRADER_XAI_TOKEN_KEY` | `str` | *(empty)* | credential | SuperGrok device-code OAuth: Fernet key that encrypts the token store. Set it, then run `trader xai login`. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Unset, OAuth is disabled and the provider resolves to `XAI_API_KEY` alone. |
+| `TRADER_SECRETS_KEY` | `str` | *(empty)* | credential | Fernet key that encrypts Provider API keys stored in Postgres by the model picker. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Unset, Providers that need a key cannot be added; keyless local Providers still work. Losing it loses the stored keys. |
 | `TRADER_XAI_TOKEN_PATH` | `str` | `~/.config/trader/xai_token.enc` | tuning | Encrypted SuperGrok OAuth token store path. |
 
 ## Broker / market data credentials

@@ -584,6 +584,18 @@ class Settings(BaseSettings):
             "disabled and the provider resolves to `XAI_API_KEY` alone."
         ),
     )
+    secrets_key: str = setting(
+        "",
+        category=CREDENTIAL,
+        section="LLM endpoints",
+        description=(
+            "Fernet key that encrypts Provider API keys stored in Postgres by the model "
+            'picker. Generate with `python -c "from cryptography.fernet import Fernet; '
+            'print(Fernet.generate_key().decode())"`. Unset, Providers that need a key '
+            "cannot be added; keyless local Providers still work. Losing it loses the "
+            "stored keys."
+        ),
+    )
     xai_token_path: str = setting(
         "~/.config/trader/xai_token.enc",
         category=TUNING,
