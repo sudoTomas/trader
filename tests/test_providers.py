@@ -153,12 +153,19 @@ async def test_models_come_live_from_the_provider_and_are_cached(db: Database):
     await d.add(name="openrouter", preset="openrouter", api_key=OPENROUTER_KEY)
     await d.add(name="ollama", preset="ollama", base_url="http://spark:11434/v1")
 
-    assert await d.models("openrouter") == ["anthropic/claude-opus-5-5", "openai/gpt-5"]
-    assert seen[0] == ("https://openrouter.ai/api/v1/models", f"Bearer {OPENROUTER_KEY}")
-    assert await d.models("ollama") == ["llama3.3:70b", "qwen3:8b"]
-    assert seen[1] == ("http://spark:11434/api/tags", None)
+    def ids(models: list[dict]) -> list[str]:
+        return [m["id"] for m in models]
+
+    def listings() -> list:
+        # The model-list fetches, not the price sources (#105), which go unauthenticated.
+        return [s for s in seen if s[1] or s[0].endswith("/api/tags")]
+
+    assert ids(await d.models("openrouter")) == ["anthropic/claude-opus-5-5", "openai/gpt-5"]
+    assert listings()[0] == ("https://openrouter.ai/api/v1/models", f"Bearer {OPENROUTER_KEY}")
+    assert ids(await d.models("ollama")) == ["llama3.3:70b", "qwen3:8b"]
+    assert listings()[1] == ("http://spark:11434/api/tags", None)
     await d.models("openrouter")
-    assert len(seen) == 2  # served from the short cache
+    assert len(listings()) == 2  # served from the short cache
 
 
 async def test_model_listing_errors_carry_the_status_only(db: Database):

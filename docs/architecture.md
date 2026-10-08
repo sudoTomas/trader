@@ -215,6 +215,15 @@ hand, never by the screener.
   Changes are audited with the caller and surface (`api`/`cli`/`desk`/`mcp`). The Nemotron
   thinking guard follows the URL: a Provider at `TRADER_NEMOTRON_BASE_URL` gets it, no
   other does. Surfaces: `trader profile …`, `/profiles`, `/roles`, MCP.
+- **Pricing** (#105, `llm/pricing.py`): every (Provider, model) prices from, first hit
+  wins: local Provider → $0 (whatever the model; the same open-weight id on a hosted
+  Provider is paid); a manual override (`llm_price_overrides`, any surface, audited);
+  the Provider's own list (OpenRouter; xAI and Together unconfirmed, not used); LiteLLM's
+  public catalog (Provider-prefixed id first); else unknown ($0, logged once). Remote
+  sources are fetched at most once a day per URL and a failed fetch keeps the last copy.
+  Model lists and `/roles` show each price with its source; Profile-served clients are
+  priced at build, so `usage_daily` meters what the picker shows. `.env`-served roles
+  keep the `PRICES` table in `llm/usage.py`.
 - **Nemotron preset** (`TRADER_NEMOTRON_BASE_URL`, default `http://localhost:8009/v1` — a
   vLLM you host): every request MUST send `chat_template_kwargs: {enable_thinking: false}`
   or throughput collapses to ~0.35 tok/s

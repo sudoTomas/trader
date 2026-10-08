@@ -335,7 +335,7 @@ def provider_discover() -> None:
 
 @provider_app.command("models")
 def provider_models(name: str = typer.Argument(..., help="Provider name.")) -> None:
-    """Model ids the Provider serves now."""
+    """Models the Provider serves now, each with its price and the price's source."""
     _echo_masked(_get(f"/providers/{name}/models"))
 
 
@@ -378,6 +378,27 @@ def provider_rename(
     """Rename a Provider."""
     body = {"new_name": new_name}
     _echo_masked(_post(f"/providers/{name}/rename", json_body=body))
+
+
+@provider_app.command("price")
+def provider_price(
+    name: str = typer.Argument(..., help="Provider name."),
+    model: str = typer.Argument(..., help="Model id."),
+    price_in: float = typer.Option(..., "--in", help="USD per 1M prompt tokens."),
+    price_out: float = typer.Option(..., "--out", help="USD per 1M completion tokens."),
+) -> None:
+    """Price a model by hand; wins over the Provider's list and the catalog."""
+    body = {"model": model, "price_in": price_in, "price_out": price_out}
+    _echo_masked(_post(f"/providers/{name}/prices", json_body=body))
+
+
+@provider_app.command("unprice")
+def provider_unprice(
+    name: str = typer.Argument(..., help="Provider name."),
+    model: str = typer.Argument(..., help="Model id."),
+) -> None:
+    """Drop a model's manual price; the live sources price it again."""
+    _echo_masked(_post(f"/providers/{name}/prices/clear", json_body={"model": model}))
 
 
 @provider_app.command("remove")
