@@ -35,6 +35,13 @@ folder holds everything behind it.
 | [`hermes/README.md`](hermes/README.md) | How an external agent (Hermes, or any MCP/HTTP client) reads state and submits research. It cannot place orders; no such tool exists on any surface. |
 | [`hermes/skills/research-capture/SKILL.md`](hermes/skills/research-capture/SKILL.md) | The capture skill: distilling a forwarded article or memo into a note with an honest `authored_at`. |
 
+## Clients
+
+| Page | What it is |
+|---|---|
+| [`../clients/desk/README.md`](../clients/desk/README.md) | The desk: an Electron window over the API. Brings up the backend if nothing is running, shows decisions, book, research and risk, and can only pause/resume and resolve approvals. |
+| [`brand.md`](brand.md) | The proposed Salamander brand (#85): name, line, mark files, colour tokens and what each colour means, type, and the rules that keep the desk consistent. |
+
 ## Research notes (spikes and decision records)
 
 Dated investigations that shaped a decision. They record what was true when written; the

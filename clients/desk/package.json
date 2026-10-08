@@ -1,0 +1,14 @@
+{
+  "name": "trader-desk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Desktop window for the trader agent: attaches to the local API and shows its state.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "postinstall": "node node_modules/electron/install.js"
+  },
+  "devDependencies": {
+    "electron": "^44.4.5"
+  }
+}
