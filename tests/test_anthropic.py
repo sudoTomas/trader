@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import httpx
 import httpx2
 import pytest
 from cryptography.fernet import Fernet
@@ -171,12 +172,17 @@ async def test_an_anthropic_provider_lists_its_models(db: Database):
     from trader.llm.providers import ProviderDesk
 
     server = Claude(models=["claude-opus-5-5", "claude-haiku-5-5"])
+    offline = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(404)))
     providers = ProviderDesk(
-        db, secrets_key=SECRETS_KEY, anthropic_transport=httpx2.MockTransport(server)
+        db,
+        secrets_key=SECRETS_KEY,
+        anthropic_transport=httpx2.MockTransport(server),
+        http=offline,
     )
     await providers.add(name="claude", preset="anthropic", api_key=API_KEY)
 
-    assert await providers.models("claude") == ["claude-haiku-5-5", "claude-opus-5-5"]
+    listed = await providers.models("claude")
+    assert [m["id"] for m in listed] == ["claude-haiku-5-5", "claude-opus-5-5"]
     path, headers, _ = server.requests[0]
     assert (path, headers["x-api-key"]) == ("/v1/models", API_KEY)
     assert providers.presets()["anthropic"]["default_model"] == "claude-opus-5-5"
@@ -193,7 +199,10 @@ async def test_a_claude_chain_saves_after_its_probe_and_serves_the_role(db: Data
     hold = {**DECIDE, "action": "hold", "side": None, "notional_usd": None}
     server = Claude(json.dumps(hold))
     transport = httpx2.MockTransport(server)
-    providers = ProviderDesk(db, secrets_key=SECRETS_KEY, anthropic_transport=transport)
+    offline = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(404)))
+    providers = ProviderDesk(
+        db, secrets_key=SECRETS_KEY, anthropic_transport=transport, http=offline
+    )
     profiles = ProfileDesk(db, providers, anthropic_transport=transport)
     await providers.add(name="claude", preset="anthropic", api_key=API_KEY)
     await profiles.create("trial")

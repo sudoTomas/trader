@@ -928,9 +928,10 @@ def build_registry(
         @reg.register(
             "provider_models",
             kind="query",
-            summary="Model ids a Provider serves now (live, cached briefly).",
+            summary="Models a Provider serves now (live, cached briefly), each with its price"
+            " (USD per 1M tokens) and source: local, override, provider, catalog or unknown.",
         )
-        async def provider_models(name: str) -> list[str]:
+        async def provider_models(name: str) -> list[dict[str, Any]]:
             return await providers.models(name)
 
         @reg.register(
@@ -963,6 +964,25 @@ def build_registry(
         @reg.register("rename_provider", kind="command", summary="Rename a model Provider.")
         async def rename_provider(name: str, new_name: str) -> dict[str, Any]:
             return await providers.rename(name, new_name)
+
+        @reg.register(
+            "set_model_price",
+            kind="command",
+            summary="Price a model by hand (USD per 1M prompt/completion tokens); wins over"
+            " the Provider's list and the catalog. Local models are always free.",
+        )
+        async def set_model_price(
+            name: str, model: str, price_in: float, price_out: float
+        ) -> dict[str, Any]:
+            return await providers.set_price(name, model, price_in=price_in, price_out=price_out)
+
+        @reg.register(
+            "clear_model_price",
+            kind="command",
+            summary="Drop a model's manual price; the live sources price it again.",
+        )
+        async def clear_model_price(name: str, model: str) -> dict[str, Any]:
+            return await providers.clear_price(name, model)
 
         @reg.register(
             "remove_provider", kind="command", summary="Remove a model Provider and its key."

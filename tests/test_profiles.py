@@ -68,7 +68,9 @@ class ModelServer:
 async def desks(
     db: Database, server: ModelServer, *, nemotron_base_url: str = ""
 ) -> tuple[ProviderDesk, ProfileDesk]:
-    providers = ProviderDesk(db, secrets_key=SECRETS_KEY)
+    # The mock answers the price catalog with a 404 too: tests never leave the machine.
+    offline = httpx.AsyncClient(transport=httpx.MockTransport(server))
+    providers = ProviderDesk(db, secrets_key=SECRETS_KEY, http=offline)
     profiles = ProfileDesk(
         db,
         providers,

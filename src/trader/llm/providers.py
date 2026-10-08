@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import math
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
@@ -23,6 +25,7 @@ import httpx
 import psycopg
 from cryptography.fernet import Fernet, InvalidToken
 
+from trader.llm.pricing import PriceBook
 from trader.store.audit import audit
 from trader.store.db import Database
 
@@ -120,11 +123,13 @@ class ProviderDesk:
         actor: str = "surface",
         http: httpx.AsyncClient | None = None,
         anthropic_transport: Any | None = None,  # httpx2 transport, for tests
+        clock: Callable[[], float] = time.time,
     ) -> None:
         self._db = db
         self._actor = actor
         self._http = http or httpx.AsyncClient(timeout=10.0)
         self._anthropic_transport = anthropic_transport
+        self.prices = PriceBook(db, self._http, clock=clock)
         # name -> (fetched at, model ids); see models().
         self._models: dict[str, tuple[float, list[str]]] = {}
         # A bad master key refuses key operations with the reason; it never stops the API
@@ -275,15 +280,60 @@ class ProviderDesk:
         }
         return out
 
-    async def models(self, name: str) -> list[str]:
-        """The model ids the Provider serves now, fetched live and cached briefly.
+    async def models(self, name: str) -> list[dict[str, Any]]:
+        """The models the Provider serves now, each with its price and the price's source
+        (fetched live, cached briefly). Any id can still be typed where a model is
+        picked; this list is a convenience."""
+        row = await self._row(name)
+        ids = await self._model_ids(name, row)
+        priced = await self.prices.prices(row, ids)
+        return [{"id": model, **price} for model, price in zip(ids, priced, strict=True)]
 
-        Any id can still be typed where a model is picked; this list is a convenience.
-        """
+    async def price(self, name: str, model: str) -> dict[str, Any]:
+        """What one model costs on this Provider, USD per 1M tokens, and why."""
+        return await self.prices.price(await self._row(name), model)
+
+    async def set_price(
+        self, name: str, model: str, *, price_in: float, price_out: float
+    ) -> dict[str, Any]:
+        """Price a model by hand (USD per 1M tokens); wins over every live source."""
+        if not all(math.isfinite(p) and p >= 0 for p in (price_in, price_out)):
+            raise ProviderError("prices must be non-negative numbers (USD per 1M tokens)")
+        row = await self._row(name)
+        if row["local"]:
+            raise ProviderError(f"{name} is local and local models are free; nothing to price")
+        model = model.strip()
+        if not model:
+            raise ProviderError("name the model to price")
+        await self._db.execute(
+            """
+            INSERT INTO llm_price_overrides (provider_id, model, price_in, price_out)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (provider_id, model) DO UPDATE
+            SET price_in = EXCLUDED.price_in, price_out = EXCLUDED.price_out, updated_at = now()
+            """,
+            (row["id"], model, price_in, price_out),
+        )
+        await self._audit(
+            "set_model_price", name, {"model": model, "price_in": price_in, "price_out": price_out}
+        )
+        return {"model": model, **await self.prices.price(row, model)}
+
+    async def clear_price(self, name: str, model: str) -> dict[str, Any]:
+        """Drop a model's manual price; the live sources price it again."""
+        row = await self._row(name)
+        cleared = await self._db.execute(
+            "DELETE FROM llm_price_overrides WHERE provider_id = %s AND model = %s",
+            (row["id"], model),
+        )
+        if cleared:
+            await self._audit("clear_model_price", name, {"model": model})
+        return {"provider": name, "model": model, "cleared": bool(cleared)}
+
+    async def _model_ids(self, name: str, row: dict[str, Any]) -> list[str]:
         cached = self._models.get(name)
         if cached is not None and time.monotonic() - cached[0] < MODELS_TTL_SECONDS:
             return cached[1]
-        row = await self._row(name)
         if row["kind"] == JEV:
             return []  # Jev serves no model list; type the model id
         try:

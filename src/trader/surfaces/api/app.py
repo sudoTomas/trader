@@ -60,6 +60,18 @@ class ProviderRenameIn(BaseModel):
     new_name: str
 
 
+class ModelPriceIn(BaseModel):
+    """A manual price, USD per 1M tokens. The model travels in the body: ids carry '/'."""
+
+    model: str
+    price_in: float
+    price_out: float
+
+
+class ModelIn(BaseModel):
+    model: str
+
+
 class ProfileIn(BaseModel):
     name: str
 
@@ -270,7 +282,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return await registry.get("discover_providers").handler()
 
     @app.get("/providers/{name}/models")
-    async def provider_models(name: str) -> list[str]:
+    async def provider_models(name: str) -> list[dict]:
         return await registry.get("provider_models").handler(name=name)
 
     @app.post("/providers")
@@ -284,6 +296,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/providers/{name}/rename")
     async def rename_provider(name: str, body: ProviderRenameIn) -> dict:
         return await registry.get("rename_provider").handler(name=name, new_name=body.new_name)
+
+    @app.post("/providers/{name}/prices")
+    async def set_model_price(name: str, body: ModelPriceIn) -> dict:
+        return await registry.get("set_model_price").handler(name=name, **body.model_dump())
+
+    @app.post("/providers/{name}/prices/clear")
+    async def clear_model_price(name: str, body: ModelIn) -> dict:
+        return await registry.get("clear_model_price").handler(name=name, model=body.model)
 
     @app.delete("/providers/{name}")
     async def remove_provider(name: str) -> dict:

@@ -94,6 +94,7 @@ ALL_TABLES = (
     "sentiment_scores",
     "bars",
     "usage_daily",
+    "llm_price_overrides",
     "llm_profile_versions",
     "llm_profiles",
     "llm_providers",

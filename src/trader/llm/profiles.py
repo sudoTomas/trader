@@ -136,17 +136,28 @@ class ProfileDesk:
 
     async def routes(self) -> dict[str, dict[str, Any]]:
         """Where each Role is served from now: the active Profile, or ``.env``."""
-        names = await self._provider_names()
+        rows = {r["id"]: r for r in await self._db.fetch_all("SELECT * FROM llm_providers")}
         active = await self._db.fetch_one(ACTIVE_VERSION)
-        roles = self._roles_out(active["roles"], names) if active else {}
         out: dict[str, dict[str, Any]] = {}
         for role in ROLE_KINDS:
-            if role in roles:
+            if active is not None and role in active["roles"]:
+                chain = []
+                for entry in active["roles"][role]:
+                    row = rows.get(entry["provider_id"])
+                    chain.append(
+                        {
+                            "provider": row["name"] if row else "(removed)",
+                            "model": entry["model"],
+                            "price": await self._providers.prices.price(row, entry["model"])
+                            if row
+                            else None,
+                        }
+                    )
                 out[role] = {
                     "source": "profile",
                     "profile": active["name"],
                     "version": active["version"],
-                    "chain": roles[role],
+                    "chain": chain,
                 }
             else:
                 out[role] = {"source": ".env"}
@@ -268,17 +279,27 @@ class ProfileDesk:
             if row is None:
                 log.warning("profile_provider_missing", role=role, provider_id=entry["provider_id"])
                 continue
-            clients.append(self._client(role, {**row, "model": entry["model"]}))
+            # Priced at build, so usage_daily meters what the picker shows (#105).
+            price = await self._providers.prices.price(row, entry["model"])
+            clients.append(
+                self._client(
+                    role, {**row, "model": entry["model"]}, (price["price_in"], price["price_out"])
+                )
+            )
         if entries and not clients:
             raise LLMError(f"every Provider in the active Profile's {role} Chain was removed")
         return active["id"], clients
 
     # --- internals --------------------------------------------------------------------
 
-    def _client(self, role: str, entry: dict[str, Any]) -> Any:
-        """One client per Provider, model and kind of call; rebuilt after a key change."""
+    def _client(
+        self, role: str, entry: dict[str, Any], price: tuple[float, float] = (0.0, 0.0)
+    ) -> Any:
+        """One client per Provider, model, price and kind of call; rebuilt after a key
+        change (updated_at) or a price change. Probe clients are unpriced: unmetered."""
         sentiment = role == "sentiment"
-        cache_key = (entry["id"], entry["updated_at"], entry["model"], sentiment)
+        cache_key = (entry["id"], entry["updated_at"], entry["model"], sentiment, price)
+        price_in, price_out = price
         client = self._clients.get(cache_key)
         if client is not None:
             return client
@@ -299,6 +320,8 @@ class ProfileDesk:
                 api_key=api_key or "",
                 base_url=entry["base_url"],
                 transport=self._anthropic_transport,
+                price_in=price_in,
+                price_out=price_out,
             )
         elif entry["kind"] == JEV:
             client = JevClient(
@@ -306,6 +329,8 @@ class ProfileDesk:
                 base_url=entry["base_url"],
                 model=entry["model"],
                 client=httpx.AsyncClient(timeout=30.0, transport=self._transport),
+                price_in=price_in,
+                price_out=price_out,
             )
             client.name = entry["name"]
         else:
@@ -318,6 +343,8 @@ class ProfileDesk:
                 base_url=entry["base_url"],
                 extra_body=apply_thinking_guard({}) if on_preset else {},
                 grammar_safe=not on_preset,
+                price_in=price_in,
+                price_out=price_out,
                 client=httpx.AsyncClient(
                     base_url=entry["base_url"],
                     headers=headers,
