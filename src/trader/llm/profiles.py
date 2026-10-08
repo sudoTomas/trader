@@ -22,21 +22,29 @@ import psycopg
 import structlog
 from psycopg.types.json import Jsonb
 
+from trader.llm.anthropic import AnthropicClient
 from trader.llm.base import LLMError
 from trader.llm.jev import JevClient
 from trader.llm.nemotron import apply_thinking_guard
 from trader.llm.openai_compat import OpenAIChatClient
 from trader.llm.probe import probe
-from trader.llm.providers import ANTHROPIC, JEV, NAME_RE, OPENAI_COMPAT, XAI, ProviderDesk
+from trader.llm.providers import (
+    ANTHROPIC,
+    JEV,
+    NAME_RE,
+    OPENAI_COMPAT,
+    PRESETS,
+    XAI,
+    ProviderDesk,
+)
 from trader.store.audit import CALLER, SURFACE, audit
 from trader.store.db import Database
 
 log = structlog.get_logger(__name__)
 
-CHAT = frozenset({OPENAI_COMPAT, XAI})
+CHAT = frozenset({OPENAI_COMPAT, XAI, ANTHROPIC})
 #: Which Provider kinds may serve each Role. sentiment needs x_search (xAI's
-#: ``/v1/responses``); confirm needs a question-set judge (Jev). Anthropic joins CHAT with
-#: its adapter (#104).
+#: ``/v1/responses``); confirm needs a question-set judge (Jev).
 ROLE_KINDS: dict[str, frozenset[str]] = {
     "decide": CHAT,
     "analyst": CHAT,
@@ -79,12 +87,14 @@ class ProfileDesk:
         nemotron_base_url: str = "",
         sentiment_handles: list[str] | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
+        anthropic_transport: Any | None = None,  # httpx2 transport, for tests
     ) -> None:
         self._db = db
         self._providers = providers
         self._nemotron_base_url = nemotron_base_url
         self._handles = sentiment_handles or []
         self._transport = transport
+        self._anthropic_transport = anthropic_transport
         # (provider id, provider updated_at, role kind, model) -> client. A key change or
         # rename bumps updated_at, so the next call builds a fresh client.
         self._clients: dict[tuple[Any, ...], Any] = {}
@@ -282,6 +292,14 @@ class ProfileDesk:
             )
             client = XSentimentClient(http, model=entry["model"], allowed_x_handles=self._handles)
             client.name = entry["name"]
+        elif entry["kind"] == ANTHROPIC:
+            client = AnthropicClient(
+                name=entry["name"],
+                model=entry["model"],
+                api_key=api_key or "",
+                base_url=entry["base_url"],
+                transport=self._anthropic_transport,
+            )
         elif entry["kind"] == JEV:
             client = JevClient(
                 api_key=api_key or "",
@@ -317,14 +335,18 @@ class ProfileDesk:
         entries = []
         for item in chain:
             provider = str(item.get("provider", "")).strip()
-            model = str(item.get("model", "")).strip()
-            if not provider or not model:
+            model = str(item.get("model") or "").strip()
+            if not provider:
                 raise ProfileError("each Chain entry needs a provider and a model")
             row = await self._db.fetch_one(
                 "SELECT * FROM llm_providers WHERE name = %s", (provider,)
             )
             if row is None:
                 raise ProfileError(f"no Provider named {provider!r}")
+            preset = PRESETS.get(row["preset"])
+            model = model or (preset.default_model if preset else None) or ""
+            if not model:
+                raise ProfileError("each Chain entry needs a provider and a model")
             if row["kind"] not in ROLE_KINDS[role]:
                 raise ProfileError(self._refusal(role, provider, row["kind"]))
             entries.append({**row, "model": model})
@@ -332,8 +354,6 @@ class ProfileDesk:
 
     @staticmethod
     def _refusal(role: str, provider: str, kind: str) -> str:
-        if kind == ANTHROPIC:
-            return f"{provider}: Claude models serve Roles once the Anthropic adapter lands (#104)"
         if role == "sentiment":
             return f"sentiment needs x_search, which only xAI serves; {provider} is {kind}"
         if role == "confirm":

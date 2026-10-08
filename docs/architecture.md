@@ -191,6 +191,15 @@ hand, never by the screener.
   (`••••last4`), operator key only, audited without the value
   ([ADR 0002](adr/0002-provider-keys-in-postgres.md)). A Provider on a loopback or private
   address is local. A Provider a current Chain uses cannot be removed.
+- **Anthropic adapter** (#104, `llm/anthropic.py`): Claude serves any chat Role through the
+  official `anthropic` SDK (1.x, built on httpx2), never an OpenAI-compatible shim. System
+  → `system`, a schema → `output_config.format` after `anthropic.transform_schema` (bounds
+  the API does not take become description hints; callers still validate with pydantic).
+  Model lists come from the Models API; a Chain entry with no model gets
+  `claude-opus-5-5`. No SDK retries (the Chain falls through), status-only errors, and a
+  reply cut off at `max_tokens` or refused is an error, not a half answer. A free-form map
+  in a schema (the compiler's `sections`) is closed to `{}` on the wire, so a Claude
+  compiler writes the global thesis only.
 - **Profiles** (#107): named, renamable combinations of Chains (`llm_profiles`,
   append-only `llm_profile_versions`), one active. Its current version overrides the
   `.env` chain per Role, per call: the process builds ONE registry (`create_app`) that asks
