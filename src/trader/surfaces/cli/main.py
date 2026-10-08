@@ -29,7 +29,10 @@ def _request(
 ) -> object:
     try:
         with _client() as client:
-            resp = client.request(method, path, params=params, json=json_body)
+            # Names this surface in the audit trail (see surfaces/api/middleware.py).
+            resp = client.request(
+                method, path, params=params, json=json_body, headers={"x-trader-surface": "cli"}
+            )
             resp.raise_for_status()
             return resp.json()
     except httpx.ConnectError as exc:
@@ -46,6 +49,10 @@ def _get(path: str, params: dict | None = None) -> object:
 
 def _post(path: str, params: dict | None = None, json_body: dict | None = None) -> object:
     return _request("POST", path, params, json_body)
+
+
+def _put(path: str, json_body: dict | None = None) -> object:
+    return _request("PUT", path, json_body=json_body)
 
 
 def _delete(path: str) -> object:
@@ -784,3 +791,102 @@ def seat_report(
 
 if __name__ == "__main__":
     app()
+
+
+profile_app = typer.Typer(
+    help="Model Profiles: named Chains per Role, one active. Changes serve after a Probe."
+)
+app.add_typer(profile_app, name="profile")
+
+
+def _chain_entry(spec: str) -> dict[str, str]:
+    """``provider:model``. Split on the first colon: Provider names have none, and model
+    ids may (``spark:qwen3:8b`` is Provider ``spark``, model ``qwen3:8b``)."""
+    provider, sep, model = spec.partition(":")
+    if not sep or not provider or not model:
+        raise typer.BadParameter(f"{spec!r} is not provider:model")
+    return {"provider": provider, "model": model}
+
+
+@profile_app.command("list")
+def profile_list() -> None:
+    """Profiles, the active one and their current Chains."""
+    _echo_masked(_get("/profiles"))
+
+
+@profile_app.command("show")
+def profile_show(name: str = typer.Argument(..., help="Profile name.")) -> None:
+    """One Profile with every version."""
+    _echo_masked(_get(f"/profiles/{name}"))
+
+
+@profile_app.command("routes")
+def profile_routes() -> None:
+    """Where each Role is served from now: the active Profile, or .env."""
+    _echo_masked(_get("/roles"))
+
+
+@profile_app.command("create")
+def profile_create(name: str = typer.Argument(..., help="Name (a-z, 0-9, '-', '_').")) -> None:
+    """Create an empty Profile; the first one is active."""
+    _echo_masked(_post("/profiles", json_body={"name": name}))
+
+
+@profile_app.command("rename")
+def profile_rename(
+    name: str = typer.Argument(..., help="Current name."),
+    new_name: str = typer.Argument(..., help="New name."),
+) -> None:
+    """Rename a Profile."""
+    _echo_masked(_post(f"/profiles/{name}/rename", json_body={"new_name": new_name}))
+
+
+@profile_app.command("duplicate")
+def profile_duplicate(
+    name: str = typer.Argument(..., help="Profile to copy."),
+    new_name: str = typer.Argument(..., help="Name of the copy."),
+) -> None:
+    """Copy a Profile's current Chains under a new name (inactive)."""
+    _echo_masked(_post(f"/profiles/{name}/duplicate", json_body={"new_name": new_name}))
+
+
+@profile_app.command("set")
+def profile_set(
+    name: str = typer.Argument(..., help="Profile name."),
+    role: str = typer.Argument(
+        ..., help="decide, analyst, critic, brief, compiler, sentiment or confirm."
+    ),
+    model: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--model", help="provider:model, repeat for fallbacks in order. None: confirm off."
+        ),
+    ] = None,
+) -> None:
+    """Set a Role's Chain as a new version, after a Probe of each entry."""
+    chain = [_chain_entry(spec) for spec in model or []]
+    _echo_masked(_put(f"/profiles/{name}/roles/{role}", json_body={"chain": chain}))
+
+
+@profile_app.command("reset")
+def profile_reset(
+    name: str = typer.Argument(..., help="Profile name."),
+    role: str = typer.Argument(..., help="Role to return to its .env default."),
+) -> None:
+    """Drop a Role from a Profile so it serves from .env again."""
+    _echo_masked(_delete(f"/profiles/{name}/roles/{role}"))
+
+
+@profile_app.command("activate")
+def profile_activate(name: str = typer.Argument(..., help="Profile name.")) -> None:
+    """Make a Profile the one that serves, after probing its Chains."""
+    _echo_masked(_post(f"/profiles/{name}/activate"))
+
+
+@profile_app.command("revert")
+def profile_revert(
+    name: str = typer.Argument(..., help="Profile name."),
+    version: int = typer.Argument(..., help="Version to make current again."),
+) -> None:
+    """Make an earlier version current (probed first when the Profile is active)."""
+    _echo_masked(_post(f"/profiles/{name}/revert", json_body={"version": version}))

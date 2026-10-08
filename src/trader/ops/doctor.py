@@ -218,7 +218,9 @@ def _decide_hint(settings: Settings) -> str:
 async def check_decide(
     settings: Settings, *, registry: LLMRegistry | None = None, wait_seconds: float = 60.0
 ) -> CheckResult:
-    """One tiny schema-constrained completion through the loop's own decide client."""
+    """One tiny schema-constrained completion through the ``.env`` decide client. An
+    active Profile can route decide elsewhere (#107); ``trader profile routes`` shows that,
+    and the Profile's own Probe already checked its model."""
     env, hint = _decide_env(settings), _decide_hint(settings)
     built_here = registry is None
     try:

@@ -25,6 +25,7 @@ import structlog
 from trader.core.types import Decision
 from trader.desk.critic import draft_under_review
 from trader.llm.base import LLMError
+from trader.llm.registry import NoRoute
 from trader.loop.context import DecisionContext
 from trader.loop.decider import system_prompt
 
@@ -104,12 +105,13 @@ def _top(probs: dict[str, float]) -> str:
 
 
 class Confirmer:
-    """One Jev call per open or close Draft. Returns a journal record, never a Decision."""
+    """One Jev call per open or close Draft. Returns a journal record, never a Decision;
+    None when nothing serves the confirm Role (the column stays NULL)."""
 
     def __init__(self, llm: Any) -> None:  # LLMRegistry-shaped
         self._llm = llm
 
-    async def confirm(self, ctx: DecisionContext, decision: Decision) -> dict[str, Any]:
+    async def confirm(self, ctx: DecisionContext, decision: Decision) -> dict[str, Any] | None:
         draft = draft_of(decision)
         side_question = f"{draft['action']}_side"
         questions = {"action": QUESTIONS["action"], side_question: QUESTIONS[side_question]}
@@ -120,6 +122,8 @@ class Confirmer:
         started = time.perf_counter()
         try:
             completion = await self._llm.complete(ROLE, messages, schema=questions)
+        except NoRoute:
+            return None  # no Confirm configured, or switched off in the active Profile
         except LLMError as exc:
             # The provider's own error ("jev: HTTP 500"), without the provider prefix.
             cause = exc.__cause__ if isinstance(exc.__cause__, LLMError) else exc

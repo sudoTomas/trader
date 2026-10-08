@@ -5,6 +5,7 @@ insert-only by construction, and the table's trigger refuses UPDATE/DELETE anywa
 from __future__ import annotations
 
 import math
+from contextvars import ContextVar
 from typing import Any
 
 import structlog
@@ -13,6 +14,12 @@ from psycopg.types.json import Jsonb
 from trader.store.db import Database
 
 log = structlog.get_logger("audit")
+
+#: Who is calling and through which surface, for audits that must name both (#107). The
+#: API middleware sets them per request (``operator`` | ``capture``; ``api`` | ``cli`` |
+#: ``desk``) and the MCP mounts set the surface to ``mcp``. Anything else is ``internal``.
+CALLER: ContextVar[str] = ContextVar("trader_caller", default="internal")
+SURFACE: ContextVar[str] = ContextVar("trader_surface", default="internal")
 
 
 def json_safe(value: Any) -> Any:

@@ -16,11 +16,20 @@ from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from trader.store.audit import CALLER, SURFACE
+
 # Liveness must stay probeable by compose/monitoring without a key.
 EXEMPT_PATHS = frozenset({"/health"})
 
 OPERATOR_SCOPE = "operator"
 CAPTURE_SCOPE = "capture"
+#: The caller recorded in audits when this build runs with auth off.
+AUTH_DISABLED = "auth-disabled"
+
+#: Clients of the REST API name themselves here, so audits can say which surface acted
+#: (#107). Anything else is plain ``api``; the MCP mounts are ``mcp`` by path.
+SURFACE_HEADER = "x-trader-surface"
+NAMED_SURFACES = frozenset({"cli", "desk"})
 
 # The whole capture surface on REST: submit / list / retire notes, read the Macro View.
 # Method + exact path (a note id is one segment). Nothing here can reach the risk chain,
@@ -78,8 +87,11 @@ class ApiKeyMiddleware:
         return None
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if not self._enabled or scope["type"] != "http" or scope["path"] in EXEMPT_PATHS:
+        if scope["type"] != "http" or scope["path"] in EXEMPT_PATHS:
             await self._app(scope, receive, send)
+            return
+        if not self._enabled:
+            await self._serve(scope, receive, send, AUTH_DISABLED)
             return
         provided = Headers(scope=scope).get("x-api-key", "")
         granted = self.scope_of(provided)
@@ -102,4 +114,19 @@ class ApiKeyMiddleware:
             )
             await response(scope, receive, send)
             return
-        await self._app(scope, receive, send)
+        await self._serve(scope, receive, send, granted)
+
+    async def _serve(self, scope: Scope, receive: Receive, send: Send, caller: str) -> None:
+        """Pass the request on with its caller and surface set for the audit trail."""
+        path = scope["path"]
+        if path == "/mcp" or path.startswith(("/mcp/", CAPTURE_MCP_PREFIX)):
+            surface = "mcp"
+        else:
+            named = Headers(scope=scope).get(SURFACE_HEADER, "")
+            surface = named if named in NAMED_SURFACES else "api"
+        caller_token, surface_token = CALLER.set(caller), SURFACE.set(surface)
+        try:
+            await self._app(scope, receive, send)
+        finally:
+            CALLER.reset(caller_token)
+            SURFACE.reset(surface_token)

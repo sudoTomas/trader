@@ -267,15 +267,19 @@ async def test_confirm_can_never_alter_the_decision(db):
     }
 
 
-def test_app_builds_a_confirmer_only_when_configured(db):
+async def test_the_app_confirmer_records_nothing_until_a_confirm_route_exists(db):
+    """The app always builds a Confirmer (a Profile can add the Role at runtime, #107);
+    with no .env Jev and no Profile Chain it returns no record, so the column stays NULL."""
     from trader.ops.config import Settings
     from trader.surfaces.api.app import build_runner as build_app_runner
 
     keys = {"alpaca_api_key_id": "id", "alpaca_api_secret": "secret"}  # shadow: never dialed
     plain = build_app_runner(db, Settings(_env_file=None, **keys))
-    assert plain.confirm is None
+    ctx = await context_for()
+    assert isinstance(plain.confirm, Confirmer)
+    assert await plain.confirm.confirm(ctx, make_draft()) is None
     configured = build_app_runner(
         db, Settings(_env_file=None, confirm_provider="jev", confirm_api_key="k", **keys)
     )
-    assert isinstance(configured.confirm, Confirmer)
+    assert configured.llm.chain_for("confirm")[0].model == "jev-latest"
     assert [c.name for c in configured.llm.chain_for("confirm")] == ["jev"]

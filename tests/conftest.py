@@ -94,6 +94,8 @@ ALL_TABLES = (
     "sentiment_scores",
     "bars",
     "usage_daily",
+    "llm_profile_versions",
+    "llm_profiles",
     "llm_providers",
 )
 
