@@ -61,7 +61,20 @@ embry0 stays on GitHub (`sudoTomas/embry0`).
 
 | GitHub | What |
 |---|---|
-| [#99](https://github.com/sudoTomas/trader/issues/99) | Confirm seat stage 1: Nemotron drafts, Kev confirms, journal-only (`confirm` column; retires `TRADER_DECIDE_PROVIDER=jev`) |
+| [#99](https://github.com/sudoTomas/trader/issues/99) **closed 2026-10-08 (PR #101, deployed)** | Confirm seat stage 1: Nemotron drafts, Kev confirms, journal-only (`confirm` column; retires `TRADER_DECIDE_PROVIDER=jev`) |
+
+## Filed 2026-10-08 (model picker)
+
+PRD [#102](https://github.com/sudoTomas/trader/issues/102); glossary `CONTEXT.md` ("Models"); ADRs `docs/adr/0001`, `0002`.
+
+| GitHub | Slice | Blocked by |
+|---|---|---|
+| [#103](https://github.com/sudoTomas/trader/issues/103) | 1/6 Providers and encrypted keys on every surface | — |
+| [#107](https://github.com/sudoTomas/trader/issues/107) | 2/6 Profiles, Role Chains and the Probe in a shared registry | #103 |
+| [#104](https://github.com/sudoTomas/trader/issues/104) | 3/6 Native Anthropic adapter | #103 |
+| [#105](https://github.com/sudoTomas/trader/issues/105) | 4/6 Live layered pricing (local models are free) | #103 |
+| [#108](https://github.com/sudoTomas/trader/issues/108) | 5/6 Per-Role daily Spend caps | #107, #105 |
+| [#106](https://github.com/sudoTomas/trader/issues/106) | 6/6 Desk Models page | #107, #108 |
 
 Batch one (2026-09-29) merged as PRs #36 (D), #39 (B), #38 (C), #37 (E), #40 (A); report in
 `docs/reports/2026-09-29-batch-one.md`. Deployed only after the operator restarts `trader-api`.
