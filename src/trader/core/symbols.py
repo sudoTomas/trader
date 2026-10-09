@@ -35,6 +35,9 @@ class Symbol:
     shortable: bool
     min_notional: float  # smallest order the venue accepts, in USD
     provider_symbols: dict[str, str] = field(default_factory=dict)
+    # The venue's word on whether it trades this symbol at all; refreshed from Alpaca
+    # when the loop starts (#73). A symbol it will not trade takes no opens.
+    tradable: bool = True
 
     def for_provider(self, provider: str) -> str:
         """This symbol as ``provider`` spells it (falls back to the canonical ticker)."""

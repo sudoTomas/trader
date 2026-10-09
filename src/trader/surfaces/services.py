@@ -226,7 +226,11 @@ def build_registry(
             return {"redeemed": False, "reason": "approval not found"}
         try:
             parked = payload_to_intent(row["order_intent"])
-            symbol = default_registry().get(parked.symbol)
+            # The loop's copy carries the venue's flags (#73); the registry is the fallback.
+            loop_symbol = getattr(runner, "symbol", None)
+            symbol = (
+                loop_symbol(parked.symbol) if loop_symbol else None
+            ) or default_registry().get(parked.symbol)
         except (KeyError, TypeError, ValueError) as exc:
             return {"redeemed": False, "reason": f"unreadable parked intent: {exc}"}
 

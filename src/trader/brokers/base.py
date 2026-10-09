@@ -40,6 +40,16 @@ class AccountSnapshot:
 
 
 @dataclass(frozen=True)
+class VenueAsset:
+    """What the venue says about one symbol (#73): whether it trades it at all, and
+    whether it fills fractional orders."""
+
+    symbol: str
+    tradable: bool
+    fractionable: bool
+
+
+@dataclass(frozen=True)
 class BrokerPosition:
     symbol: str
     qty: float  # signed
@@ -115,5 +125,7 @@ class Broker(Protocol):
     async def cancel_order(self, broker_order_id: str) -> None: ...
 
     async def close_position(self, symbol: str) -> BrokerOrder | None: ...
+
+    async def get_asset(self, symbol: str) -> VenueAsset: ...
 
     def stream_trade_updates(self) -> AsyncIterator[OrderEvent]: ...

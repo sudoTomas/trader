@@ -26,7 +26,7 @@ from __future__ import annotations
 import asyncio
 import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from datetime import time as dt_time
 from typing import Any
@@ -35,7 +35,7 @@ from zoneinfo import ZoneInfo
 import structlog
 
 from trader.brokers.base import BrokerError
-from trader.core.symbols import Symbol
+from trader.core.symbols import AssetClass, Symbol
 from trader.core.types import Action, Decision, OrderIntent, Side
 from trader.data.base import MarketData, MarketDataError
 from trader.llm.base import Completion
@@ -234,6 +234,7 @@ class LoopRunner:
 
     async def start(self) -> None:
         if self._task is None:
+            await self.refresh_venue_flags()
             self._stopping.clear()
             self._task = asyncio.create_task(self.run_forever(), name="trader-loop")
             log.info("loop_started", shadow=self.shadow, symbols=[s.ticker for s in self.symbols])
@@ -244,6 +245,38 @@ class LoopRunner:
                 self.executor.run_stream(), name="trader-fills-stream"
             )
             log.info("fills_stream_started")
+
+    async def refresh_venue_flags(self) -> None:
+        """Take each stock's and ETF's flags from the venue (#73): whether it trades it,
+        and whether it fills fractional orders. Crypto is always fractional. A failed
+        lookup fails closed to whole shares; it does not halt the symbol."""
+        if self.broker is None or not hasattr(self.broker, "get_asset"):
+            return
+        refreshed = []
+        for symbol in self.symbols:
+            if symbol.asset_class is AssetClass.CRYPTO:
+                refreshed.append(symbol)
+                continue
+            try:
+                asset = await self.broker.get_asset(symbol.for_provider("alpaca_trading"))
+            except BrokerError as exc:
+                log.warning("venue_flags_unavailable", symbol=symbol.ticker, error=str(exc))
+                refreshed.append(replace(symbol, fractionable=False))
+                continue
+            refreshed.append(
+                replace(symbol, tradable=asset.tradable, fractionable=asset.fractionable)
+            )
+            log.info(
+                "venue_flags",
+                symbol=symbol.ticker,
+                tradable=asset.tradable,
+                fractionable=asset.fractionable,
+            )
+        self.symbols = refreshed
+
+    def symbol(self, ticker: str) -> Symbol | None:
+        """This loop's own copy of a symbol, venue flags included."""
+        return next((s for s in self.symbols if s.ticker == ticker), None)
 
     async def stop(self) -> None:
         self._stopping.set()

@@ -45,6 +45,7 @@ from trader.brokers.base import (
     BrokerPosition,
     DuplicateOrder,
     OrderEvent,
+    VenueAsset,
 )
 from trader.ops.config import Settings
 
@@ -197,6 +198,15 @@ class AlpacaBroker:
             )
             for row in rows
         ]
+
+    async def get_asset(self, symbol: str) -> VenueAsset:
+        """The venue's flags for one symbol. An inactive asset is not tradable."""
+        data = await self._request("GET", f"/v2/assets/{symbol}")
+        return VenueAsset(
+            symbol=data.get("symbol", symbol),
+            tradable=bool(data.get("tradable")) and data.get("status") == "active",
+            fractionable=bool(data.get("fractionable")),
+        )
 
     def _to_order(self, data: dict[str, Any]) -> BrokerOrder:
         return BrokerOrder(
