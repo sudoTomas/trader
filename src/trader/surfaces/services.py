@@ -190,6 +190,17 @@ def build_registry(
             "unprotected": [p["symbol"] for p in positions if p["stop_price"] is None],
         }
 
+    @reg.register(
+        "config",
+        kind="query",
+        summary="Every setting this process runs with: value, default and source.",
+    )
+    async def config() -> dict[str, Any]:
+        from trader.ops.config import get_settings
+        from trader.ops.config_reference import running_config
+
+        return {"fields": running_config(get_settings())}
+
     @reg.register("approvals", kind="query", summary="Order intents awaiting a human.")
     async def approvals() -> list[dict[str, Any]]:
         from trader.risk.approvals import ApprovalService
