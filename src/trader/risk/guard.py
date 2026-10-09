@@ -19,9 +19,10 @@ Order (deliberate — an audit reader should see the cheap absolute gates first)
 9. approval      — opens above the unattended cap clamp down to it and execute.
                    Only an explicit park band above that cap waits for a human.
                    A clamp under the notional floor is a deny (no dust order).
-10. whole shares — a symbol the venue will not fill fractionally gets a share count,
-                   rounded down; less than one share is a deny. Exits round too, and
-                   a request that covers the holding closes exactly what is held.
+10. full close / whole shares — an exit for at least 98% of the holding's value
+                   closes exactly the held qty (a dollar-rounded close leaves no dust).
+                   Otherwise a symbol the venue will not fill fractionally gets a share
+                   count, rounded down; less than one share is a deny.
 
 Risk-reducing intents (closing//reducing an existing position) skip 5-9: a limit that
 trapped an open position would be a larger risk than the one it guards. Exits are
@@ -55,6 +56,8 @@ log = structlog.get_logger(__name__)
 ALLOW, DENY, CLAMP = "allow", "deny", "clamp"
 # Float slack when a dollar size divides into shares (100.0 / 20.0 must be 5, not 4.999…).
 _QTY_EPSILON = 1e-9
+# An exit asking for at least this share of the holding closes all of it, by qty.
+_FULL_CLOSE_FRAC = 0.98
 
 
 @dataclass(frozen=True)
@@ -180,15 +183,16 @@ def evaluate_chain(ctx: RiskContext) -> RiskOutcome:
         verdicts.append(Verdict(check, CLAMP, reason, notional))
 
     def finish(notional: float) -> RiskOutcome:
-        """Approve at ``notional``; a whole-share venue gets a share count (step 10)."""
-        if ctx.symbol.fractionable:
-            return RiskOutcome(True, _resize(ctx.intent, notional, ctx.price), verdicts)
+        """Approve at ``notional``; a full exit or a whole-share venue gets a qty (step 10)."""
         requested = notional / ctx.price
         held = abs(ctx.position_qty)
-        if ctx.is_reducing and requested >= held - _QTY_EPSILON:
-            # Covers the holding: close exactly what is held.
-            allow("whole_shares", held * ctx.price, f"closes the whole holding ({held:g} shares)")
+        if ctx.is_reducing and requested >= held * _FULL_CLOSE_FRAC - _QTY_EPSILON:
+            # (Nearly) covers the holding: close exactly what is held.
+            unit = "units" if ctx.symbol.asset_class is AssetClass.CRYPTO else "shares"
+            allow("full_close", held * ctx.price, f"closes the whole holding ({held:g} {unit})")
             return RiskOutcome(True, replace(ctx.intent, qty=held, notional=None), verdicts)
+        if ctx.symbol.fractionable:
+            return RiskOutcome(True, _resize(ctx.intent, notional, ctx.price), verdicts)
         shares = math.floor(requested + _QTY_EPSILON)
         if shares <= 0:
             return deny(

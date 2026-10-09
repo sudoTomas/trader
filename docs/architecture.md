@@ -110,7 +110,9 @@ SignalScheduler → ContextBuilder → (analyst desk) → Decider → (Confirm) 
   (crypto long-only, equity shortability, session open) → stop cooldown (no opens on a
   symbol the stop just closed) → sizing clamps (max position frac,
   notional floor, kelly cap) → concurrency + trades/day → daily-loss + weekly-drawdown
-  breakers → approval threshold (large orders park as pending) → whole shares (a symbol the
+  breakers → approval threshold (large orders park as pending) → full close (an exit for at
+  least 98% of the holding's value closes the held qty, so a dollar-rounded close leaves no
+  dust) → whole shares (a symbol the
   venue will not fill fractionally gets a share count, rounded down; its `fractionable` and
   `tradable` flags come from Alpaca's assets endpoint when the loop starts, and a failed
   lookup fails closed to whole shares). Unreadable input = deny.

@@ -281,6 +281,28 @@ def test_breaker_halts_opens_but_never_traps_an_exit():
     assert "reducing_position" in checks(outcome)
 
 
+def test_an_exit_for_nearly_the_whole_holding_closes_it_by_qty():
+    """A model close is a notional rounded to dollars; selling exactly that would leave
+    dust (2026-10-02: $1,007.00 against $1,007.18 left 0.00016 ETH). An exit within 2%
+    of the holding's value closes the held qty; a real partial reduce is untouched."""
+    held = AccountState(equity=100_000.0, positions={"BTC/USD": 0.5})  # $30,000 at 60k
+
+    def sell(notional: float):
+        intent = OrderIntent("BTC/USD", Side.SELL, notional=notional)
+        return evaluate_chain(ctx(intent=intent, account=held))
+
+    nearly = sell(29_500.0)  # 98.3% of the holding
+    assert nearly.approved
+    assert (nearly.intent.qty, nearly.intent.notional) == (0.5, None)
+    assert checks(nearly)[-1] == "full_close"
+    assert nearly.verdicts[-1].reason == "closes the whole holding (0.5 units)"
+
+    half = sell(15_000.0)
+    assert half.approved
+    assert (half.intent.qty, half.intent.notional) == (None, 15_000.0)
+    assert "full_close" not in checks(half)
+
+
 # --- 8. approval threshold --------------------------------------------------
 
 
