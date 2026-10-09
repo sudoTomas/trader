@@ -19,6 +19,9 @@ Order (deliberate — an audit reader should see the cheap absolute gates first)
 9. approval      — opens above the unattended cap clamp down to it and execute.
                    Only an explicit park band above that cap waits for a human.
                    A clamp under the notional floor is a deny (no dust order).
+10. whole shares — a symbol the venue will not fill fractionally gets a share count,
+                   rounded down; less than one share is a deny. Exits round too, and
+                   a request that covers the holding closes exactly what is held.
 
 Risk-reducing intents (closing//reducing an existing position) skip 5-9: a limit that
 trapped an open position would be a larger risk than the one it guards. Exits are
@@ -50,6 +53,8 @@ from trader.store.db import Database
 log = structlog.get_logger(__name__)
 
 ALLOW, DENY, CLAMP = "allow", "deny", "clamp"
+# Float slack when a dollar size divides into shares (100.0 / 20.0 must be 5, not 4.999…).
+_QTY_EPSILON = 1e-9
 
 
 @dataclass(frozen=True)
@@ -174,6 +179,30 @@ def evaluate_chain(ctx: RiskContext) -> RiskOutcome:
     def clamp(check: str, notional: float, reason: str) -> None:
         verdicts.append(Verdict(check, CLAMP, reason, notional))
 
+    def finish(notional: float) -> RiskOutcome:
+        """Approve at ``notional``; a whole-share venue gets a share count (step 10)."""
+        if ctx.symbol.fractionable:
+            return RiskOutcome(True, _resize(ctx.intent, notional, ctx.price), verdicts)
+        requested = notional / ctx.price
+        held = abs(ctx.position_qty)
+        if ctx.is_reducing and requested >= held - _QTY_EPSILON:
+            # Covers the holding: close exactly what is held.
+            allow("whole_shares", held * ctx.price, f"closes the whole holding ({held:g} shares)")
+            return RiskOutcome(True, replace(ctx.intent, qty=held, notional=None), verdicts)
+        shares = math.floor(requested + _QTY_EPSILON)
+        if shares <= 0:
+            return deny(
+                "whole_shares",
+                f"{notional:.2f} is less than one share at {ctx.price:.2f}"
+                f" ({ctx.symbol.ticker} trades in whole shares only)",
+            )
+        value = shares * ctx.price
+        if shares == requested:
+            allow("whole_shares", value)
+        else:
+            clamp("whole_shares", value, f"rounded down to {shares:g} whole shares")
+        return RiskOutcome(True, replace(ctx.intent, qty=shares, notional=None), verdicts)
+
     # --- 1. input sanity: fail closed on anything unreadable -----------------
     notional = _requested_notional(ctx.intent, ctx.price)
     if not _finite_positive(ctx.price):
@@ -205,6 +234,8 @@ def evaluate_chain(ctx: RiskContext) -> RiskOutcome:
         return deny(
             "class_policy", f"{ctx.symbol.market_calendar.name} venue is closed at {ctx.now}"
         )
+    if not ctx.symbol.tradable and not ctx.is_reducing:
+        return deny("class_policy", f"{ctx.symbol.ticker} is not tradable at the venue")
     opening_short = ctx.intent.side is Side.SELL and not ctx.is_reducing
     if opening_short:
         if ctx.symbol.asset_class is AssetClass.CRYPTO:
@@ -218,7 +249,7 @@ def evaluate_chain(ctx: RiskContext) -> RiskOutcome:
     if ctx.is_reducing:
         # Exits skip the remaining limits by design (see module docstring).
         allow("reducing_position", notional, "risk-reducing: sizing/throughput limits skipped")
-        return RiskOutcome(True, _resize(ctx.intent, notional, ctx.price), verdicts)
+        return finish(notional)
 
     # --- 5. stop cooldown (opens only) ---------------------------------------
     cooldown = timedelta(seconds=ctx.limits.stop_cooldown_seconds)
@@ -307,7 +338,7 @@ def evaluate_chain(ctx: RiskContext) -> RiskOutcome:
             notional,
             "human-approved; unattended cap already cleared",
         )
-        return RiskOutcome(True, _resize(ctx.intent, notional, ctx.price), verdicts)
+        return finish(notional)
     threshold = ctx.limits.approval_notional_usd
     if not _finite_positive(threshold):
         return deny("approval_threshold", "approval cap is missing or not a positive finite number")
@@ -342,7 +373,7 @@ def evaluate_chain(ctx: RiskContext) -> RiskOutcome:
         )
     else:
         allow("approval_threshold", notional)
-    return RiskOutcome(True, _resize(ctx.intent, notional, ctx.price), verdicts)
+    return finish(notional)
 
 
 # ---------------------------------------------------------------------------

@@ -84,7 +84,7 @@ because nothing reached the guard. `trader decision 42` prints the full prompt.
 | **SignalScheduler** | Event-driven wakeups (heartbeat, price move, vol spike, sentiment swing, position risk) with per-asset-class cadence, calendar gating, and cooldowns. |
 | **ContextBuilder** | Fetches ~100 bars per interval on demand, computes RSI/SMA/EMA/realized vol locally, attaches the Macro View slice, X sentiment, positions, and recent journal rows. No LLM tool calls in the hot path. No market data is stored. |
 | **Decider** | One completion, constrained to a JSON schema, one retry with the validation errors fed back. `notional_usd` is a request, never a size. |
-| **RiskGuard** | Ordered, fail-closed chain: paper gate → kill switches → per-class policy → stop cooldown → sizing clamps → throughput → breakers → approval threshold. Each check returns `allow`, `clamp`, or `deny`; large opens clamp to the unattended cap or park for a human. Unreadable input is a deny. |
+| **RiskGuard** | Ordered, fail-closed chain: paper gate → kill switches → per-class policy → stop cooldown → sizing clamps → throughput → breakers → approval threshold → whole shares (for symbols the venue will not fill fractionally). Each check returns `allow`, `clamp`, or `deny`; large opens clamp to the unattended cap or park for a human. Unreadable input is a deny. |
 | **Executor** | Alpaca paper only. Idempotent `client_order_id`, order row persisted before submit, fills from the trade-updates stream. |
 | **Journal** | Every wakeup, including shadow and suppressed ones, writes a row with the exact prompt, raw output, verdicts, and the research versions it saw. Replay-ready. |
 
