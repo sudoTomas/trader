@@ -26,6 +26,9 @@ a client of the API: it adds no trading logic, and RiskGuard still decides every
   Profiles (switch, rename, duplicate, history and revert). The header chip names the
   decide model, and a decision's detail names the model and Profile version that served it.
 
+- **Settings:** every setting the trader runs with, by section, with the values that
+  differ from their default highlighted. Read-only; credentials show only set or not set.
+
 ![Models](docs/screenshots/models.png)
 
 ![Stops beside the broker holdings](docs/screenshots/stops-book.png)

@@ -7,7 +7,7 @@ const REFRESH_MS = 5000;
 const RESEARCH_MS = 60000;
 const TICK_SECONDS = 60; // TRADER_LOOP_TICK_SECONDS default; the API does not expose it
 
-const store = { decisions: [], audit: [], approvals: [], positions: [], orders: [], usage: null, risk: null, loop: null, view: null, notes: [], account: null, brokerPositions: [], history: null, brokerError: null };
+const store = { config: null, decisions: [], audit: [], approvals: [], positions: [], orders: [], usage: null, risk: null, loop: null, view: null, notes: [], account: null, brokerPositions: [], history: null, brokerError: null };
 const openKeys = new Set(); // expanded ledger rows and table rows survive refreshes
 const seenKeys = new Set(); // rows already shown once; anything new gets the arrival motion
 let firstLedger = true;
@@ -653,6 +653,27 @@ function renderRisk() {
   );
 }
 
+// ---------- settings (read-only) ----------
+function renderSettings() {
+  const sections = configSections(store.config?.fields);
+  const changed = sections.reduce((n, s) => n + s.rows.filter((r) => r.changed).length, 0);
+  $('settings-sub').textContent = sections.length
+    ? `What this trader runs with. ${changed} of ${sections.reduce((n, s) => n + s.rows.length, 0)} differ from their default. Change them in its .env and restart it.`
+    : 'What this trader runs with.';
+  $('settings').replaceChildren(
+    ...(sections.length
+      ? sections.flatMap((s) => [
+        el('div', { className: 'label', textContent: s.section }),
+        el('div', { className: 'card' }, table([
+          { h: 'Setting', get: (r) => el('span', { className: 'mono', title: r.description || '', textContent: r.env_name }), wrap: true },
+          { h: 'Value', get: (r) => el('span', { className: r.changed ? 'pill warn' : 'mono', textContent: r.value }), wrap: true },
+          { h: 'Default', get: (r) => el('span', { className: 'mono minor', textContent: r.default }), wrap: true },
+        ], s.rows)),
+      ])
+      : [empty('No settings yet', 'This API is older than the Settings page, or it is not reachable.')]),
+  );
+}
+
 // ---------- nav (rail) ----------
 const NAV = [
   { id: 'live', label: 'Live', ico: 'pulse' },
@@ -661,6 +682,7 @@ const NAV = [
   { id: 'research', label: 'Research', ico: 'book' },
   { id: 'risk', label: 'Risk', ico: 'shield' },
   { id: 'models', label: 'Models', ico: 'chip' },
+  { id: 'settings', label: 'Settings', ico: 'gear' },
 ];
 
 function currentView() {
@@ -729,6 +751,7 @@ function renderAll() {
   renderBrokerPositions(); // its Stop column reads the risk status
   renderBrief();
   renderModels();
+  renderSettings();
 }
 
 async function refresh() {
@@ -756,6 +779,7 @@ async function refresh() {
     load('/decisions?limit=150', 'decisions', []),
     load('/audit?limit=60', 'audit', []),
     load('/usage?days=7', 'usage'),
+    load('/config', 'config'),
     refreshModels(),
   ]);
   renderAll();

@@ -199,6 +199,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def cache_stats() -> dict:
         return await registry.get("cache_stats").handler()
 
+    @app.get("/config")
+    async def config() -> dict:
+        return await registry.get("config").handler()
+
     @app.get("/risk/status")
     async def risk_status() -> dict:
         return await registry.get("risk_status").handler()

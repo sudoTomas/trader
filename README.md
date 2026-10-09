@@ -202,6 +202,7 @@ run_replay_eval  reconcile  flatten_all (confirm-gated)
 
 ```bash
 trader risk status          # kill switches, breaker halts, configured limits
+trader config show          # every setting it runs with: value, default, source (no secrets)
 trader loop status          # shadow/live mode and counters
 trader broker reconcile     # {"drift": {}} or a pause until resolved
 ```

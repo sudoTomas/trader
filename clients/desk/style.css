@@ -412,3 +412,9 @@ input:focus-visible, select:focus-visible { outline: 2px solid var(--live); outl
 .editrow input:not([type=number]) { flex: 1 1 200px; }
 .editrow input[type=number] { width: 110px; }
 @media (max-width: 760px) { .chain, .editor { margin-left: 0; } }
+
+/* ---------- Settings page ---------- */
+#settings table { table-layout: fixed; }
+#settings th:nth-child(1) { width: 36%; }
+#settings th:nth-child(2) { width: 34%; }
+@media (max-width: 1000px) { #settings th:nth-child(1) { width: 52%; } }

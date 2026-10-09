@@ -82,6 +82,17 @@ def cache_stats() -> None:
     typer.echo(json.dumps(_get("/cache-stats"), indent=2))
 
 
+config_app = typer.Typer(help="The configuration this trader runs with.")
+app.add_typer(config_app, name="config")
+
+
+@config_app.command("show")
+def config_show() -> None:
+    """Print every setting: value, default, and whether it was configured. Credentials
+    say only set or not set."""
+    typer.echo(json.dumps(_get("/config"), indent=2))
+
+
 risk_app = typer.Typer(help="Risk status and the human-in-the-loop approval queue.")
 app.add_typer(risk_app, name="risk")
 

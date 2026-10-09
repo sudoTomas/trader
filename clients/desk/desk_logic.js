@@ -165,9 +165,22 @@ function stopSummary(stops) {
   return `${+(stops.stop_loss_frac * 100).toFixed(2)}% loss from entry · no reopen for ${+hours.toFixed(1)}h`;
 }
 
+// The Settings page (#94): the running config by section, in the API's order, with the
+// values that differ from their default flagged. Values arrive already redacted.
+function configSections(fields) {
+  const show = (v) => (v === '' ? '(empty)' : String(v));
+  const sections = [];
+  for (const f of fields || []) {
+    let s = sections.find((x) => x.section === f.section);
+    if (!s) sections.push((s = { section: f.section, rows: [] }));
+    s.rows.push({ env_name: f.env_name, value: show(f.value), default: show(f.default), category: f.category, description: f.description, changed: show(f.value) !== show(f.default) });
+  }
+  return sections;
+}
+
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     ALLOWED_WRITES, deskRequestUrl, approvalToast, resolveAuditLine, criticPill, confirmPill,
-    modelChip, priceText, capText, probeText, servedText, errorText, stopText, stopSummary,
+    modelChip, priceText, capText, probeText, servedText, errorText, stopText, stopSummary, configSections,
   };
 }

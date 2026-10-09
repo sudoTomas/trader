@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   deskRequestUrl, approvalToast, resolveAuditLine, criticPill, confirmPill,
-  modelChip, priceText, capText, probeText, servedText, errorText, stopText, stopSummary,
+  modelChip, priceText, capText, probeText, servedText, errorText, stopText, stopSummary, configSections,
 } = require('./desk_logic');
 
 const BASE = 'http://127.0.0.1:8080';
@@ -221,4 +221,24 @@ test('the stop setting reads as one line', () => {
   assert.equal(stopSummary({ stop_loss_frac: 0.05, cooldown_seconds: 5400 }), '5% loss from entry · no reopen for 1.5h');
   assert.equal(stopSummary({ stop_loss_frac: 0, cooldown_seconds: 86400 }), 'Off');
   assert.equal(stopSummary(null), null);
+});
+
+test('settings group by section and flag what differs from the default', () => {
+  const fields = [
+    { env_name: 'TRADER_LOOP_SYMBOLS', value: 'BTC/USD', default: 'ETH/USD,SPY', source: 'configured', section: 'Decide loop', category: 'tuning' },
+    { env_name: 'TRADER_LOOP_TICK_SECONDS', value: 60, default: 60, source: 'default', section: 'Decide loop', category: 'tuning' },
+    { env_name: 'TRADER_SHADOW_MODE', value: true, default: true, source: 'configured', section: 'Safety gates', category: 'gate' },
+    { env_name: 'TRADER_API_KEY', value: 'set', default: 'not set', source: 'configured', section: 'Surfaces / auth', category: 'credential' },
+  ];
+  const out = configSections(fields);
+  assert.deepEqual(out.map((s) => s.section), ['Decide loop', 'Safety gates', 'Surfaces / auth']);
+  assert.deepEqual(out[0].rows.map((r) => [r.env_name, r.value, r.changed]), [
+    ['TRADER_LOOP_SYMBOLS', 'BTC/USD', true],
+    ['TRADER_LOOP_TICK_SECONDS', '60', false],
+  ]);
+  // Set explicitly to its default value: configured, but not a change.
+  assert.equal(out[1].rows[0].changed, false);
+  assert.equal(out[1].rows[0].value, 'true');
+  assert.equal(out[2].rows[0].changed, true);
+  assert.equal(configSections(null).length, 0);
 });
