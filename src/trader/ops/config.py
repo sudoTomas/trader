@@ -247,6 +247,22 @@ class Settings(BaseSettings):
             "to the cap and executes unattended."
         ),
     )
+    risk_stop_loss_frac: float = setting(
+        0.08,
+        category=TUNING,
+        section="Risk limits (RiskGuard)",
+        description=(
+            "Deterministic stop: when a held position's loss against its entry reaches this "
+            "fraction on two ticks in a row, the loop closes the whole position without "
+            "asking the model. `0` turns it off. Pause and drift still block it."
+        ),
+    )
+    risk_stop_cooldown_seconds: int = setting(
+        86_400,
+        category=TUNING,
+        section="Risk limits (RiskGuard)",
+        description="After a stop closes a symbol, RiskGuard refuses opens on it for this long.",
+    )
 
     # --- Research Desk ---
     research_stale_days: int = setting(

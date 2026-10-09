@@ -36,6 +36,10 @@ class RiskLimits:
     park_above_usd: float | None = None
     approval_price_tolerance_frac: float = 0.01  # see docs/lessons.md#approval-price-tolerance
     approval_ttl_seconds: int = 3600
+    # Deterministic stop (#74): the loop closes a position whose loss against its entry
+    # reaches this fraction; 0 is off. A stopped symbol takes no opens for the cooldown.
+    stop_loss_frac: float = 0.0
+    stop_cooldown_seconds: int = 86_400
 
     def __post_init__(self) -> None:
         if not 0 < self.max_position_frac <= 1:
@@ -47,6 +51,10 @@ class RiskLimits:
         for name in ("daily_loss_limit_frac", "weekly_drawdown_limit_frac"):
             if not 0 < getattr(self, name) < 1:
                 raise ValueError(f"{name} must be within (0, 1)")
+        if not 0 <= self.stop_loss_frac < 1:
+            raise ValueError("stop_loss_frac must be within [0, 1)")
+        if self.stop_cooldown_seconds < 0:
+            raise ValueError("stop_cooldown_seconds must be >= 0")
         if self.park_above_usd is not None:
             if not math.isfinite(self.park_above_usd) or self.park_above_usd <= 0:
                 raise ValueError("park_above_usd must be a positive finite number when set")
@@ -64,6 +72,8 @@ def limits_from_settings(settings: Settings) -> RiskLimits:
         daily_loss_limit_frac=settings.risk_daily_loss_limit_frac,
         weekly_drawdown_limit_frac=settings.risk_weekly_drawdown_limit_frac,
         approval_notional_usd=settings.risk_approval_notional_usd,
+        stop_loss_frac=settings.risk_stop_loss_frac,
+        stop_cooldown_seconds=settings.risk_stop_cooldown_seconds,
         park_above_usd=_park_above(
             settings.risk_park_above_usd, settings.risk_approval_notional_usd
         ),

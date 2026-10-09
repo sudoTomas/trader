@@ -18,13 +18,17 @@ a client of the API: it adds no trading logic, and RiskGuard still decides every
 - **Book:** approvals waiting, positions at the broker, positions in trader's ledger, orders.
 - **Decisions:** every call in a table.
 - **Research:** the Macro View with its note citations, and the research notes.
-- **Risk:** risk state, limits and model usage.
+- **Risk:** risk state, limits, the stop-loss setting and any position it cannot protect,
+  and model usage. The Book's broker holdings show each position's stop and how far the
+  price is from it.
 - **Models:** each Role's Chain with prices, today's spend against its cap, and an
   on-demand Probe; Providers (add, test, replace key, remove, find local servers);
   Profiles (switch, rename, duplicate, history and revert). The header chip names the
   decide model, and a decision's detail names the model and Profile version that served it.
 
 ![Models](docs/screenshots/models.png)
+
+![Stops beside the broker holdings](docs/screenshots/stops-book.png)
 
 ## What it can change
 

@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   deskRequestUrl, approvalToast, resolveAuditLine, criticPill, confirmPill,
-  modelChip, priceText, capText, probeText, servedText, errorText,
+  modelChip, priceText, capText, probeText, servedText, errorText, stopText, stopSummary,
 } = require('./desk_logic');
 
 const BASE = 'http://127.0.0.1:8080';
@@ -198,4 +198,27 @@ test('every desk script compiles', () => {
   for (const f of fs.readdirSync(__dirname).filter((n) => n.endsWith('.js'))) {
     assert.doesNotThrow(() => new vm.Script(fs.readFileSync(path.join(__dirname, f), 'utf8'), { filename: f }), f);
   }
+});
+
+test('a holding shows its stop and how far the price is from it', () => {
+  const stops = { stop_loss_frac: 0.08, cooldown_seconds: 86400, unprotected: ['ETH/USD'], positions: [
+    { symbol: 'BTC/USD', qty: 0.5, avg_entry_price: 200, stop_price: 184 },
+    { symbol: 'ETH/USD', qty: 2, avg_entry_price: null, stop_price: null },
+    { symbol: 'SPY', qty: -3, avg_entry_price: 500, stop_price: 540 },
+  ] };
+  // Alpaca spells crypto without the slash.
+  assert.deepEqual(stopText(stops, 'BTCUSD', 200), { warn: false, text: '$184.00 · 8.0% away' });
+  assert.deepEqual(stopText(stops, 'ETHUSD', 3000), { warn: true, text: 'unprotected: entry unknown' });
+  assert.deepEqual(stopText(stops, 'SPY', 520), { warn: false, text: '$540.00 · 3.8% away' });
+  assert.equal(stopText({ ...stops, positions: [{ symbol: 'BTC/USD', qty: 0.01, stop_price: 58880 }] }, 'BTCUSD', 61000).text, '$58,880.00 · 3.5% away');
+  assert.deepEqual(stopText(stops, 'BTCUSD', 180), { warn: true, text: '$184.00 · past the stop' });
+  assert.equal(stopText(stops, 'QQQ', 400), null);
+  assert.deepEqual(stopText({ ...stops, stop_loss_frac: 0 }, 'BTCUSD', 200), { warn: true, text: 'stop off' });
+});
+
+test('the stop setting reads as one line', () => {
+  assert.equal(stopSummary({ stop_loss_frac: 0.08, cooldown_seconds: 86400 }), '8% loss from entry · no reopen for 24h');
+  assert.equal(stopSummary({ stop_loss_frac: 0.05, cooldown_seconds: 5400 }), '5% loss from entry · no reopen for 1.5h');
+  assert.equal(stopSummary({ stop_loss_frac: 0, cooldown_seconds: 86400 }), 'Off');
+  assert.equal(stopSummary(null), null);
 });

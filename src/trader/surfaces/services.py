@@ -149,6 +149,7 @@ def build_registry(
         assert db is not None, "risk_status requires a store"
         state = await BreakerStore(db).load()
         settings = get_settings()
+        limits = limits_from_settings(settings)
         return {
             "trading_paused": state.trading_paused,
             "pause_reason": state.pause_reason,
@@ -159,7 +160,34 @@ def build_registry(
             "day_start_equity": state.day_start_equity,
             "week_high_equity": state.week_high_equity,
             "live_enabled": settings.alpaca_live_enabled,
-            "limits": asdict(limits_from_settings(settings)),
+            "limits": asdict(limits),
+            "stops": await _stops(limits),
+        }
+
+    async def _stops(limits: Any) -> dict[str, Any]:
+        """The deterministic stop (#74) per held position. Off (0) protects nothing; a
+        position without an entry price cannot be protected."""
+        from trader.store.repos import PositionsRepo
+
+        assert db is not None
+        frac = limits.stop_loss_frac
+        positions = []
+        for row in await PositionsRepo(db).all():
+            qty = float(row["qty"])
+            if not qty:
+                continue
+            entry = float(row["avg_entry_price"]) if row["avg_entry_price"] is not None else None
+            stop = None
+            if entry is not None and frac > 0:
+                stop = round(entry * (1 - frac if qty > 0 else 1 + frac), 8)
+            positions.append(
+                {"symbol": row["symbol"], "qty": qty, "avg_entry_price": entry, "stop_price": stop}
+            )
+        return {
+            "stop_loss_frac": frac,
+            "cooldown_seconds": limits.stop_cooldown_seconds,
+            "positions": positions,
+            "unprotected": [p["symbol"] for p in positions if p["stop_price"] is None],
         }
 
     @reg.register("approvals", kind="query", summary="Order intents awaiting a human.")

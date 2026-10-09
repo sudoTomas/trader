@@ -388,6 +388,8 @@ function renderBrief() {
   const pending = store.approvals.filter((a) => a.status === 'pending').length;
   if (pending) items.push({ parts: [[String(pending), true], [' approvals waiting for you']], warn: true });
   if (store.risk?.trading_paused) items.push({ parts: [['Trading is paused']], warn: true });
+  const unprotected = store.risk?.stops?.unprotected || [];
+  if (unprotected.length) items.push({ parts: [['No stop on '], [unprotected.join(', '), true]], warn: true });
 
   // Rebuilding restarts the scroll, so only rebuild when the words change (minutes, not seconds).
   const text = JSON.stringify(items.map((i) => i.parts.map((p) => p[0]).join('').replace(/just now|\d+[mh] ago/, '')));
@@ -484,6 +486,14 @@ function renderBrokerPositions() {
         get: (p) => {
           const v = Number(p.unrealized_pl);
           return el('span', { className: v > 0 ? 'pnl-up' : 'pnl-down', textContent: `${signedUsd(v)} (${(Number(p.unrealized_plpc) * 100).toFixed(2)}%)` });
+        },
+        r: true,
+      },
+      {
+        h: 'Stop',
+        get: (p) => {
+          const stop = stopText(store.risk?.stops, p.symbol, Number(p.current_price));
+          return stop ? el('span', { className: stop.warn ? 'pill warn' : '', textContent: stop.text }) : '—';
         },
         r: true,
       },
@@ -628,6 +638,8 @@ function renderRisk() {
     ['Day start equity', usd(r.day_start_equity)],
     ['Week high equity', usd(r.week_high_equity)],
     ['Routing', r.live_enabled ? 'Live money enabled' : 'Paper only'],
+    ['Stop-loss', stopSummary(r.stops)],
+    ['Unprotected', r.stops?.unprotected?.length ? r.stops.unprotected.join(', ') : 'None'],
   ]);
   kv($('limits'), Object.entries(r.limits || {}).map(([k, v]) => [words(k), String(v)]));
   $('usage').replaceChildren(
@@ -714,6 +726,7 @@ function renderAll() {
   renderDecisions();
   renderResearch();
   renderRisk();
+  renderBrokerPositions(); // its Stop column reads the risk status
   renderBrief();
   renderModels();
 }
