@@ -143,9 +143,31 @@ function errorText(err) {
   }
 }
 
+const stopUsd = (v) => `$${Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+// The deterministic stop (#74) beside a holding. Broker symbols drop the crypto slash.
+function stopText(stops, brokerSymbol, last) {
+  if (!stops) return null;
+  const key = String(brokerSymbol).replace('/', '');
+  const p = (stops.positions || []).find((x) => x.symbol.replace('/', '') === key);
+  if (!p) return null;
+  if (!(stops.stop_loss_frac > 0)) return { warn: true, text: 'stop off' };
+  if (p.stop_price == null) return { warn: true, text: 'unprotected: entry unknown' };
+  const gap = p.qty > 0 ? last - p.stop_price : p.stop_price - last;
+  if (gap <= 0) return { warn: true, text: `${stopUsd(p.stop_price)} · past the stop` };
+  return { warn: false, text: `${stopUsd(p.stop_price)} · ${((gap / last) * 100).toFixed(1)}% away` };
+}
+
+function stopSummary(stops) {
+  if (!stops) return null;
+  if (!(stops.stop_loss_frac > 0)) return 'Off';
+  const hours = stops.cooldown_seconds / 3600;
+  return `${+(stops.stop_loss_frac * 100).toFixed(2)}% loss from entry · no reopen for ${+hours.toFixed(1)}h`;
+}
+
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     ALLOWED_WRITES, deskRequestUrl, approvalToast, resolveAuditLine, criticPill, confirmPill,
-    modelChip, priceText, capText, probeText, servedText, errorText,
+    modelChip, priceText, capText, probeText, servedText, errorText, stopText, stopSummary,
   };
 }

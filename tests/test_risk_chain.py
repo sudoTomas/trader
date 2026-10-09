@@ -527,6 +527,7 @@ def test_chain_runs_in_the_documented_order():
         "paper_gate",
         "kill_switch",
         "class_policy",
+        "stop_cooldown",
         "max_position_frac",
         "kelly_cap",
         "min_notional",

@@ -12,14 +12,15 @@ Order (deliberate — an audit reader should see the cheap absolute gates first)
                    not know the true position, so even an exit could be wrong)
 4. class policy  — crypto + commodity ETFs long-only, equity shortability, venue
                    session open
-5. sizing clamps — max position fraction, Kelly cap, minimum notional floor
-6. throughput    — concurrent positions, trades per day
-7. breakers      — daily loss, weekly drawdown: block OPENS, exits stay managed
-8. approval      — opens above the unattended cap clamp down to it and execute.
+5. stop cooldown — a symbol the deterministic stop closed takes no opens for a while
+6. sizing clamps — max position fraction, Kelly cap, minimum notional floor
+7. throughput    — concurrent positions, trades per day
+8. breakers      — daily loss, weekly drawdown: block OPENS, exits stay managed
+9. approval      — opens above the unattended cap clamp down to it and execute.
                    Only an explicit park band above that cap waits for a human.
                    A clamp under the notional floor is a deny (no dust order).
 
-Risk-reducing intents (closing//reducing an existing position) skip 5-8: a limit that
+Risk-reducing intents (closing//reducing an existing position) skip 5-9: a limit that
 trapped an open position would be a larger risk than the one it guards. Exits are
 never clamped to the approval cap — closes must land.
 
@@ -32,7 +33,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import structlog
@@ -89,6 +90,7 @@ class RiskContext:
     live: bool = False  # caller is asking to route to a LIVE broker
     live_enabled: bool = False  # TRADER_ALPACA_LIVE_ENABLED
     human_approved: bool = False  # a human already cleared the park band; do not re-clamp it
+    stopped_at: datetime | None = None  # when the deterministic stop last closed this symbol
 
     @property
     def position_qty(self) -> float:
@@ -218,7 +220,17 @@ def evaluate_chain(ctx: RiskContext) -> RiskOutcome:
         allow("reducing_position", notional, "risk-reducing: sizing/throughput limits skipped")
         return RiskOutcome(True, _resize(ctx.intent, notional, ctx.price), verdicts)
 
-    # --- 5. sizing clamps ----------------------------------------------------
+    # --- 5. stop cooldown (opens only) ---------------------------------------
+    cooldown = timedelta(seconds=ctx.limits.stop_cooldown_seconds)
+    if ctx.stopped_at is not None and ctx.now - ctx.stopped_at < cooldown:
+        until = ctx.stopped_at + cooldown
+        return deny(
+            "stop_cooldown",
+            f"stopped out at {ctx.stopped_at.isoformat()}; no opens until {until.isoformat()}",
+        )
+    allow("stop_cooldown", notional)
+
+    # --- 6. sizing clamps ----------------------------------------------------
     cap = ctx.account.equity * ctx.limits.max_position_frac
     held = abs(ctx.position_qty) * ctx.price
     headroom = cap - held
@@ -265,7 +277,7 @@ def evaluate_chain(ctx: RiskContext) -> RiskOutcome:
         return deny("min_notional", f"{notional:.2f} is below the {floor:.2f} floor")
     allow("min_notional", notional)
 
-    # --- 6. throughput -------------------------------------------------------
+    # --- 7. throughput -------------------------------------------------------
     open_count = sum(1 for qty in ctx.account.positions.values() if qty != 0)
     if ctx.position_qty == 0 and open_count >= ctx.limits.max_concurrent_positions:
         return deny(
@@ -279,12 +291,12 @@ def evaluate_chain(ctx: RiskContext) -> RiskOutcome:
         )
     allow("throughput", notional)
 
-    # --- 7. breakers (opens only; exits already returned above) --------------
+    # --- 8. breakers (opens only; exits already returned above) --------------
     if ctx.state.halted_reason:
         return deny("breaker", f"halted: {ctx.state.halted_reason} (exits still allowed)")
     allow("breaker", notional)
 
-    # --- 8. approval threshold ----------------------------------------------
+    # --- 9. approval threshold ----------------------------------------------
     # Unattended opens clamp to the cap. Parking is opt-in, and only above that cap.
     # Exits returned at the reducing-position check and never reach this step.
     # A human approval clears THIS step only — sizing, breakers, and class policy
@@ -352,6 +364,16 @@ class RiskGuard:
     def limits(self) -> RiskLimits:
         return self._limits
 
+    async def _last_stop(self, ticker: str, now: datetime) -> datetime | None:
+        """When the deterministic stop last sent a close for ``ticker``. A stop that was
+        blocked or ran in shadow sent nothing, so it starts no cooldown."""
+        row = await self._db.fetch_one(
+            "SELECT max(ts) AS ts FROM decisions WHERE symbol = %s AND trigger = 'stop_loss'"
+            " AND status = 'executed' AND ts <= %s",
+            (ticker, now),
+        )
+        return row["ts"] if row else None
+
     async def evaluate(
         self,
         intent: OrderIntent,
@@ -392,6 +414,7 @@ class RiskGuard:
                 live=live,
                 live_enabled=self._live_enabled,
                 human_approved=human_approved,
+                stopped_at=await self._last_stop(symbol.ticker, now),
             )
         )
 

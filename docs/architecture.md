@@ -107,11 +107,17 @@ SignalScheduler → ContextBuilder → (analyst desk) → Decider → (Confirm) 
   approve, shrink or veto the Draft; fails open to a journaled pass-through.
 - **RiskGuard** — ordered, fail-closed chain; each check returns allow / deny(reason) /
   clamp(size, reason): paper-gate → kill switches (trading paused, drift) → per-class policy
-  (crypto long-only, equity shortability, session open) → sizing clamps (max position frac,
+  (crypto long-only, equity shortability, session open) → stop cooldown (no opens on a
+  symbol the stop just closed) → sizing clamps (max position frac,
   notional floor, kelly cap) → concurrency + trades/day → daily-loss + weekly-drawdown
   breakers → approval threshold (large orders park as pending). Unreadable input = deny.
   (Consolidates what v1 scattered across sleeve/translator/tournament;
   [risk-chain-consolidated](lessons.md#risk-chain-consolidated).)
+- **Stop-loss** (#74) — deterministic, in the loop, before the model: a held position whose
+  loss against its entry reaches `TRADER_RISK_STOP_LOSS_FRAC` (default 8%) on two ticks in a
+  row is closed in full, by quantity, through the same RiskGuard chain, journaled with trigger
+  `stop_loss`. Pause and drift still block it; a blocked stop retries every tick and journals
+  once per outcome. A position with no entry price is journaled as unprotected.
 - **Executor** — Alpaca paper only. Idempotent `client_order_id`; persist the order row
   before submit; trade-updates WebSocket → fills ledger. Closes must eventually land; opens
   are best-effort + journaled ([closes-must-land](lessons.md#closes-must-land),

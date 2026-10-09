@@ -48,7 +48,7 @@ HELD_POSITION_BUDGET_CHARS = 900
 # entry: under the lane's budget it stays or goes intact, never truncated mid-sentence.
 # No numbers here on purpose: replay run 18 (docs/reports/2026-09-29-exit-review-replay-gate.md)
 # showed a stated "1%" becomes a mechanical stop the model applies without judgment. Deterministic
-# stops live in RiskGuard / the position_risk trigger, never in prompt text.
+# stops live in the loop's stop-loss (#74) and RiskGuard, never in prompt text.
 EXIT_REVIEW_ASK = (
     "State whether the original thesis still holds. If it does not, or if the position "
     "has moved against you beyond your stated tolerance, prefer `close` (full, or partial "

@@ -36,6 +36,7 @@ import structlog
 
 from trader.brokers.base import BrokerError
 from trader.core.symbols import Symbol
+from trader.core.types import Action, Decision, OrderIntent, Side
 from trader.data.base import MarketData, MarketDataError
 from trader.llm.base import Completion
 from trader.llm.registry import LLMRegistry
@@ -74,6 +75,10 @@ EQUITY_FALLBACK = "equity_fallback"
 # cadence (the scheduler's per-asset-class floor); this is the fallback when a scheduler
 # does not expose one.
 MARK_VOL_FALLBACK_TTL_SECONDS = 300.0
+# The deterministic stop (#74). One crossing can be a bad quote, so it takes two ticks.
+STOP_LOSS = "stop_loss"
+STOP_CONFIRM_TICKS = 2
+UNPROTECTED = "no stop: entry unknown"
 
 
 async def count_trades_today(db: Database, symbol: Symbol, now: datetime) -> int:
@@ -214,6 +219,12 @@ class LoopRunner:
         self._equity_as_of: datetime | None = None
         self._last_good_equity: float | None = None
         self._equity_fallback_open = False
+        # Stop state, per ticker: consecutive ticks past the stop, the last journaled
+        # outcome (so a blocked stop retries every tick but journals once), and the
+        # positions already journaled as unprotected.
+        self._stop_breaches: dict[str, int] = {}
+        self._stop_last: dict[str, tuple[str, str]] = {}
+        self._unprotected: set[str] = set()
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
         self._stream_task: asyncio.Task | None = None
@@ -315,6 +326,8 @@ class LoopRunner:
             }
             await self._poll_sentiment(now, positions)
             marks = await self._marks(now, positions, entries)
+            # The stop runs before the model and pre-empts it for the symbols it holds.
+            stopping, stop_results = await self._stops(now, marks, positions, entries, equity)
             assert self.scheduler is not None
             if force:
                 triggers = [
@@ -324,8 +337,10 @@ class LoopRunner:
                 ]
             else:
                 triggers = self.scheduler.evaluate(now, marks)
+            # Not marked dispatched, so they fire again once the stop is done.
+            triggers = [t for t in triggers if t.symbol not in stopping]
             if not triggers:
-                return []
+                return stop_results
 
             by_symbol: dict[str, list[Trigger]] = {}
             for trigger in triggers:
@@ -347,7 +362,7 @@ class LoopRunner:
             # Cooldowns start only now — after the wakeups actually ran.
             self.scheduler.mark_dispatched(triggers, now)
             self.stats.wakeups += len(results)
-            return results
+            return stop_results + results
 
     async def _resolve_equity(self, now: datetime) -> float:
         """Equity for this tick. Shadow builds keep ``self.equity``.
@@ -529,6 +544,141 @@ class LoopRunner:
                 sentiment_score=score,
             )
         return marks
+
+    async def _stops(
+        self,
+        now: datetime,
+        marks: dict[str, Mark],
+        positions: dict[str, float],
+        entries: dict[str, float | None],
+        equity: float,
+    ) -> tuple[set[str], list[WakeupResult]]:
+        """The deterministic stop (#74): no model, just the loss against the entry.
+
+        Returns the tickers whose stop is confirmed this tick (their decide is skipped)
+        and a result for every row journaled. A blocked stop (pause, drift, closed venue)
+        retries every tick but journals only when its outcome changes; while an order for
+        the symbol is still open, nothing is resent.
+        """
+        frac = self.guard.limits.stop_loss_frac
+        if frac <= 0:
+            return set(), []
+        stopping: set[str] = set()
+        results: list[WakeupResult] = []
+        for symbol in self.symbols:
+            ticker = symbol.ticker
+            qty = positions.get(ticker, 0.0)
+            if not qty or entries.get(ticker) is None:
+                self._stop_breaches.pop(ticker, None)
+                self._stop_last.pop(ticker, None)
+                if not qty:
+                    self._unprotected.discard(ticker)
+                elif ticker not in self._unprotected:
+                    self._unprotected.add(ticker)
+                    results.append(await self._journal_unprotected(symbol))
+                continue
+            self._unprotected.discard(ticker)
+            mark = marks.get(ticker)
+            loss = mark.unrealized_pnl_frac if mark is not None else None
+            if mark is None or loss is None:
+                continue  # venue closed or no quote: no evidence either way
+            if loss > -frac:
+                self._stop_breaches.pop(ticker, None)
+                self._stop_last.pop(ticker, None)
+                continue
+            ticks = self._stop_breaches[ticker] = self._stop_breaches.get(ticker, 0) + 1
+            if ticks < STOP_CONFIRM_TICKS:
+                continue
+            stopping.add(ticker)
+            if await self._order_in_flight(ticker):
+                continue
+            result = await self._stop(symbol, qty, mark, loss, ticks, now, positions, equity)
+            if result is not None:
+                results.append(result)
+        return stopping, results
+
+    async def _stop(
+        self,
+        symbol: Symbol,
+        qty: float,
+        mark: Mark,
+        loss: float,
+        ticks: int,
+        now: datetime,
+        positions: dict[str, float],
+        equity: float,
+    ) -> WakeupResult | None:
+        """Close the whole position, by qty, through the same RiskGuard chain."""
+        ticker = symbol.ticker
+        frac = self.guard.limits.stop_loss_frac
+        intent = OrderIntent(ticker, Side.SELL if qty > 0 else Side.BUY, qty=abs(qty))
+        decision = Decision(
+            ticker,
+            Action.CLOSE,
+            1.0,
+            f"stop-loss: {loss:+.1%} against entry is past -{frac:.1%} on {ticks} ticks",
+            intent,
+        )
+        outcome = await self.guard.evaluate(
+            intent,
+            symbol,
+            price=mark.price,
+            account=AccountState(
+                equity=equity,
+                positions=positions,
+                trades_today=await self._trades_today(symbol, now),
+            ),
+            now=now,
+            realized_vol=mark.realized_vol,
+            shadow=self.shadow,
+        )
+        record = {
+            "trigger": STOP_LOSS,
+            "symbol": ticker,
+            "asset_class": symbol.asset_class,
+            "decision": decision,
+            "risk_verdicts": outcome.verdict_dicts,
+        }
+        if outcome.approved and not (
+            self.shadow or self.executor is None or ticker in self.shadow_symbols
+        ):
+            decision_id = await self._journal.record(status=PENDING, **record)
+            execution = await self.executor.execute(
+                outcome, symbol, price=mark.price, decision_id=decision_id
+            )
+            status = EXECUTED if execution.submitted else ERROR
+            reason = execution.reason or outcome.reason
+            await self._journal.set_status(decision_id, status)
+        else:
+            status = DENIED if not outcome.approved else SHADOW
+            reason = outcome.reason
+            if self._stop_last.get(ticker) == (status, reason):
+                return None
+            decision_id = await self._journal.record(status=status, **record)
+        self._stop_last[ticker] = (status, reason)
+        log.warning("stop_loss", symbol=ticker, loss=loss, status=status, reason=reason)
+        return WakeupResult(
+            ticker, [STOP_LOSS], status, decision_id, action=Action.CLOSE, reason=reason
+        )
+
+    async def _journal_unprotected(self, symbol: Symbol) -> WakeupResult:
+        decision_id = await self._journal.record(
+            trigger=STOP_LOSS,
+            status=SUPPRESSED,
+            symbol=symbol.ticker,
+            asset_class=symbol.asset_class,
+            raw_output=UNPROTECTED,
+        )
+        log.warning("stop_loss_unprotected", symbol=symbol.ticker)
+        return WakeupResult(symbol.ticker, [STOP_LOSS], SUPPRESSED, decision_id, reason=UNPROTECTED)
+
+    async def _order_in_flight(self, ticker: str) -> bool:
+        row = await self.db.fetch_one(
+            "SELECT 1 AS open FROM orders WHERE symbol = %s"
+            " AND status IN ('new', 'submitted', 'partially_filled') LIMIT 1",
+            (ticker,),
+        )
+        return row is not None
 
     async def _wakeup(
         self,
