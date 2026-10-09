@@ -203,9 +203,9 @@ def build_registry(
         import math
         from datetime import UTC, datetime
 
-        from trader.core.symbols import default_registry
         from trader.data.base import MarketDataError
         from trader.loop.runner import count_trades_today
+        from trader.ops.config import get_settings
         from trader.risk.approvals import payload_to_intent
         from trader.risk.guard import AccountState, RiskDenied
         from trader.store.repos import ApprovalsRepo, PositionsRepo
@@ -226,11 +226,12 @@ def build_registry(
             return {"redeemed": False, "reason": "approval not found"}
         try:
             parked = payload_to_intent(row["order_intent"])
-            # The loop's copy carries the venue's flags (#73); the registry is the fallback.
+            # The loop's copy carries the venue's flags (#73); the configured universe is
+            # the fallback.
             loop_symbol = getattr(runner, "symbol", None)
             symbol = (
                 loop_symbol(parked.symbol) if loop_symbol else None
-            ) or default_registry().get(parked.symbol)
+            ) or get_settings().symbol_registry().get(parked.symbol)
         except (KeyError, TypeError, ValueError) as exc:
             return {"redeemed": False, "reason": f"unreadable parked intent: {exc}"}
 
@@ -689,11 +690,11 @@ def build_registry(
         summary="Poll X sentiment for one symbol now (server-side x_search; capped daily).",
     )
     async def fetch_x_sentiment(symbol: str) -> dict[str, Any]:
-        from trader.core.symbols import default_registry
+        from trader.ops.config import get_settings
 
         if sentiment is None:
             return {"status": "unavailable", "reason": "no xAI credential in this build"}
-        return await sentiment.get_x_sentiment(default_registry().get(symbol))
+        return await sentiment.get_x_sentiment(get_settings().symbol_registry().get(symbol))
 
     # --- fred macro series ---------------------------------------------------
 
@@ -772,11 +773,11 @@ def build_registry(
         import asyncio
         from datetime import datetime
 
-        from trader.core.symbols import default_registry
+        from trader.ops.config import get_settings
 
         if evaluator is None:
             return {"run_id": None, "status": "unavailable", "reason": "no evaluator in build"}
-        sym = default_registry().get(symbol)
+        sym = get_settings().symbol_registry().get(symbol)
         config: dict[str, Any] = {"desk": desk, "briefs": briefs, "macro_view": macro_view}
         if exit_review is not None:
             config["exit_review"] = exit_review

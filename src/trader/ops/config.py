@@ -14,6 +14,8 @@ from typing import Any
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from trader.core.symbols import SymbolRegistry, default_registry
+
 # Categories: what flipping a field can do.
 GATE = "gate"  # fail-closed safety switch; the default is the closed position
 TUNING = "tuning"  # numeric or behavioral parameter; never opens a door by itself
@@ -155,6 +157,17 @@ class Settings(BaseSettings):
         category=TUNING,
         section="Decide loop",
         description="Comma-separated symbols the loop watches and may trade.",
+    )
+    extra_symbols: str = setting(
+        "",
+        category=TUNING,
+        section="Decide loop",
+        description=(
+            "Comma-separated US-listed stocks or ETFs added to the symbol universe, minted "
+            "long-only on the NYSE calendar. Adding a name here makes it known; it is watched "
+            "only when also listed in `TRADER_LOOP_SYMBOLS`, and a new name should shadow via "
+            "`TRADER_SHADOW_SYMBOLS` before it may submit."
+        ),
     )
     shadow_symbols: str = setting(
         "",
@@ -685,6 +698,10 @@ class Settings(BaseSettings):
         ),
         validation_alias=AliasChoices("FRED_API_KEY", "TRADER_FRED_API_KEY"),
     )
+
+    def symbol_registry(self) -> SymbolRegistry:
+        """The symbol universe for this build: the seed plus ``TRADER_EXTRA_SYMBOLS``."""
+        return default_registry(t for t in self.extra_symbols.split(",") if t.strip())
 
     def require_auth(self) -> None:
         """Fail closed: a server with no API key and no explicit dev opt-out must not boot."""

@@ -27,7 +27,6 @@ from psycopg.rows import dict_row
 
 from trader.brokers.alpaca import PAPER_REST, AlpacaBroker
 from trader.brokers.base import BrokerError
-from trader.core.symbols import default_registry
 from trader.data.base import MarketData, MarketDataError
 from trader.data.composite import build_market_data
 from trader.llm.base import LLMError
@@ -387,7 +386,7 @@ async def check_market_data(
         )
     ticker = tickers[0]
     try:
-        symbol = default_registry().get(ticker)
+        symbol = settings.symbol_registry().get(ticker)
     except KeyError as exc:
         return CheckResult(
             "market_data",
