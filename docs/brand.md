@@ -1,6 +1,7 @@
 # Brand: Salamander
 
-The proposed name for the trader agent and its desk (#85). This file is the written
+The name of the project and its desk (#85, adopted 2026-10-13). The Python package, module
+and CLI stay `trader`. This file is the written
 reference; the visual specimen is `clients/desk/brand/salamander.html`.
 
 ## Name

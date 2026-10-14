@@ -4,7 +4,7 @@ Guidance for Claude Code working in this repo.
 
 ## What this is
 
-`trader` — agentic-first autonomous trading agent (v2). Greenfield successor to
+**Salamander** (package, module and CLI: `trader`) — agentic-first autonomous trading agent (v2). Greenfield successor to
 `trading-agent` (v1, a frozen private archive that is not published with this repo). The
 full design is in **`docs/architecture.md`** — read it before non-trivial work.
 

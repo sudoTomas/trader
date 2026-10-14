@@ -1,6 +1,6 @@
-# Trader — Architecture
+# Salamander — Architecture
 
-Agentic-first autonomous trading agent. Greenfield successor to **trading-agent** (v1),
+Salamander (package and CLI: `trader`) is an agentic-first autonomous trading agent. Greenfield successor to **trading-agent** (v1),
 which is frozen as a private reference archive. This document is the source of truth for the
 design; where a decision was learned the hard way, the lesson is catalogued in
 [`lessons.md`](lessons.md) and linked by slug.

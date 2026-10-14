@@ -1,4 +1,9 @@
-# trader
+<img src="clients/desk/brand/salamander-mark-gold.svg" alt="Salamander mark" width="72" align="right">
+
+# Salamander
+
+*Slow gold.* Salamander (Sal for short) is the project's name; the Python package, the
+module and the CLI keep the name `trader`. Brand reference: [`docs/brand.md`](docs/brand.md).
 
 **An autonomous paper-trading agent where an LLM proposes and a deterministic RiskGuard
 disposes.** The loop wakes on a signal, builds market context, asks a model for one
