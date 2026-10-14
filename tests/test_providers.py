@@ -90,7 +90,7 @@ async def test_a_provider_on_a_loopback_or_private_address_is_local(db: Database
         base_url="http://127.0.0.1:8011/v1/systemone",
     )
     lan = await d.add(
-        name="lan-vllm", preset="custom", base_url="http://192.168.195.251:8009/v1", api_key="k"
+        name="lan-vllm", preset="custom", base_url="http://192.168.1.50:8009/v1", api_key="k"
     )
     hosted = await d.add(name="together", preset="together", api_key="tg-key")
     assert (kev["local"], kev["key"]) == (True, "••••9b9b")
