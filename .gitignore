@@ -21,3 +21,7 @@ uv.lock
 # OS
 .DS_Store
 desk-watch.log
+
+# operator notes, never published
+HANDOFF*.md
+docs/agents/
