@@ -89,7 +89,7 @@ Environment variables, all optional:
 
 ## Look
 
-The desk carries the Salamander identity proposed for the project (see the naming issue).
+The desk carries the project's Salamander identity ([`docs/brand.md`](../../docs/brand.md)).
 `brand/salamander.html` is the brand sheet.
 
 - **Colour means something.** Salamander yellow `#F5B82E` is fixed: accepted, held, earned,
