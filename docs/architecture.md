@@ -86,9 +86,21 @@ SignalScheduler → ContextBuilder → (analyst desk) → Decider → (Confirm) 
   = nyse). Cooldowns start on dispatch, not evaluation
   ([cooldowns-start-on-dispatch](lessons.md#cooldowns-start-on-dispatch)).
 - **ContextBuilder** — fetch ~100 bars/interval from Alpaca Data, compute indicators locally,
-  attach the Macro View slice + X-sentiment + open positions + recent journal. No LLM tool
-  calls in this hot path (v1 bound 28 MCP tools here → 120 s timeouts;
+  attach the recent journal, and read every **Source** the Bot version subscribes to, each in
+  its own budgeted lane. No LLM tool calls in this hot path (v1 bound 28 MCP tools here →
+  120 s timeouts;
   [indicators-over-mcp-returned-null](lessons.md#indicators-over-mcp-returned-null)).
+- **Sources** (#124, `loop/sources.py`) — `read(symbol, as_of=None, params) -> SourceSlice`.
+  `macro_view`, `brief`, `fred`, `sentiment` and `held_position` (the exit-review block,
+  which carries the latest sentiment). A Source only reads what a producer already wrote
+  (the compilers, the sentiment poller, FRED on use, the positions row), so the live path
+  stores no market data. `as_of=None` reads current; a timestamp pins the read to the state
+  that existed then. Each slice carries a **Source version**: `macro_views.version`,
+  `briefs.version`, `sentiment_scores.id`, `series@obs_date` for FRED, a content hash for
+  the held position. A Bot's spec lists `sources: [{source, params}]`; Bot #1's comes from
+  the lane flags (FRED and the Macro View always, the brief with `TRADER_BRIEFS_ENABLED`, the
+  held position with `TRADER_EXIT_REVIEW_ENABLED`). RiskGuard never imports Sources
+  (asserted by test).
 - **Decider** — one Nemotron completion, JSON-schema-validated, 1 retry with the validation
   errors fed back. Transient (infra) vs crash errors classified so infra blips don't arm
   backoff ([transient-vs-crash-backoff](lessons.md#transient-vs-crash-backoff)). Runs in
@@ -128,11 +140,13 @@ SignalScheduler → ContextBuilder → (analyst desk) → Decider → (Confirm) 
   are best-effort + journaled ([closes-must-land](lessons.md#closes-must-land),
   [crypto-fees-from-asset](lessons.md#crypto-fees-from-asset)).
 - **Journal** — every wakeup (including suppressed/shadow) writes a row: trigger, full
-  prompt, raw output, risk verdicts, desk verdicts, the Confirm, `macro_view_version`,
-  cost, latency, `bot_id` and `bot_version`. Replay-ready.
+  prompt, raw output, risk verdicts, desk verdicts, the Confirm, `macro_view_version` and
+  `brief_version`, `source_versions` (`{source: {version, as_of}}` for every Source read),
+  cost, latency, `bot_id` and `bot_version`. Replay-ready: replay reads the same Sources
+  pinned to each step and records the same `source_versions` on the step.
 - **Bots** (#123, `loop/bots.py`) — the loop runs as **Bot #1** (`bot-1`). A Bot's spec
   (each symbol with its Symbol mode — `live`, or `shadow` under `TRADER_SHADOW_MODE` /
-  `TRADER_SHADOW_SYMBOLS` — the trigger config, the briefs/desk/exit-review lanes, the decide
+  `TRADER_SHADOW_SYMBOLS` — the trigger config, its Sources, the desk lane, the decide
   prompt's digest and `account_id`) lives in `bots` and append-only `bot_versions`. Bot #1's
   spec is derived from Settings and seeded at boot: a new, audited version only when it
   differs. Every decision (stop-loss and shadow rows included), order and parked approval
