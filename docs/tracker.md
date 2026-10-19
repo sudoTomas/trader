@@ -77,6 +77,18 @@ Deployed to the Spark 2026-10-08 with `TRADER_SECRETS_KEY` in its `.env`; no Pro
 | [#108](https://github.com/sudoTomas/trader/issues/108) **closed 2026-10-08 (PR #114)** | 5/6 Per-Role daily Spend caps | #107, #105 |
 | [#106](https://github.com/sudoTomas/trader/issues/106) **closed 2026-10-08 (PR #115; main-process fix in PR #100)** | 6/6 Desk Models page | #107, #108 |
 
+## Filed 2026-10-18 (multiple Bots)
+
+PRD [#122](https://github.com/sudoTomas/trader/issues/122); glossary `CONTEXT.md` ("Bots"); ADR `docs/adr/0003`.
+
+| GitHub | Slice | Blocked by |
+|---|---|---|
+| [#123](https://github.com/sudoTomas/trader/issues/123) | 1/5 Bot #1: bots, bot versions and `bot_id` on the journal | — |
+| [#124](https://github.com/sudoTomas/trader/issues/124) | 2/5 Sources with recorded Source versions | #123 |
+| [#125](https://github.com/sudoTomas/trader/issues/125) | 3/5 Sleeve ledger and two-tier RiskGuard | #123 |
+| [#126](https://github.com/sudoTomas/trader/issues/126) | 4/5 Supervisor and a second Bot in shadow | #124, #125 |
+| [#127](https://github.com/sudoTomas/trader/issues/127) | 5/5 Second Bot live on symbols it owns | #126 |
+
 Batch one (2026-09-29) merged as PRs #36 (D), #39 (B), #38 (C), #37 (E), #40 (A); report in
 `docs/reports/2026-09-29-batch-one.md`. Deployed only after the operator restarts `trader-api`.
 
