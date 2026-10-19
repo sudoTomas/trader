@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from trader.llm.caps import CapError
 from trader.llm.profiles import ProfileError, ProfileNotFound
 from trader.llm.providers import ProviderError, ProviderNotFound
+from trader.loop.bots import BOT_ONE, BotDesk, BotNotFound, bot_one_spec, trigger_config
 from trader.ops.config import Settings, get_settings
 from trader.store.db import Database
 from trader.store.migrate import run_migrations
@@ -164,6 +165,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         await db.open()
         await run_migrations(db)  # fails closed: a bad migration refuses boot
+        # Bot #1's spec follows Settings: a changed one is a new, audited Bot version.
+        bot = await BotDesk(db).seed(BOT_ONE, bot_one_spec(settings))
+        if runner is not None:
+            runner.bot_id, runner.bot_version = bot["id"], bot["version"]
         async with mcp.session_manager.run(), capture_mcp.session_manager.run():
             if runner is not None:
                 await runner.start()  # background task; never blocks /health
@@ -236,6 +241,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/decisions")
     async def decisions(limit: int = Query(default=20, ge=1, le=200)) -> list[dict]:
         return await registry.get("decisions").handler(limit=limit)
+
+    @app.exception_handler(BotNotFound)
+    async def bot_not_found(_: Request, exc: BotNotFound) -> JSONResponse:
+        return JSONResponse({"detail": f"no Bot {exc.args[0]!r}"}, status_code=404)
+
+    @app.get("/bots")
+    async def bots() -> list[dict]:
+        return await registry.get("bots").handler()
+
+    @app.get("/bots/{name}")
+    async def bot(name: str) -> dict:
+        return await registry.get("bot").handler(name=name)
 
     @app.get("/decisions/{decision_id}")
     async def decision(decision_id: int) -> dict | None:
@@ -704,7 +721,7 @@ def build_runner(
     from trader.loop.confirm import Confirmer
     from trader.loop.executor import Executor
     from trader.loop.runner import LoopRunner
-    from trader.loop.scheduler import SignalScheduler, TriggerConfig
+    from trader.loop.scheduler import SignalScheduler
     from trader.risk.guard import RiskGuard
     from trader.risk.limits import limits_from_settings
 
@@ -734,14 +751,8 @@ def build_runner(
         tick_seconds=settings.loop_tick_seconds,
         equity=settings.shadow_equity,
         broker=broker,
-        scheduler=SignalScheduler(
-            symbols,
-            TriggerConfig(
-                max_heartbeats_per_tick=settings.loop_max_heartbeats_per_tick,
-                sentiment_enabled=settings.sentiment_trigger_enabled,
-                sentiment_swing=settings.sentiment_swing_threshold,
-            ),
-        ),
+        # The same triggers Bot #1's spec records.
+        scheduler=SignalScheduler(symbols, trigger_config(settings)),
         executor=executor,
         sentiment=sentiment,
         sentiment_poll_seconds=settings.sentiment_poll_seconds,

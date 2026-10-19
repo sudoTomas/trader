@@ -99,6 +99,8 @@ ALL_TABLES = (
     "llm_profile_versions",
     "llm_profiles",
     "llm_providers",
+    "bot_versions",
+    "bots",
 )
 
 # risk_state is a singleton row, not a collection: restore it to the migration's

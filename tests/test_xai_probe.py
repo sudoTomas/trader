@@ -489,7 +489,8 @@ def test_probe_xai_round_trip_api_mcp_cli(clean_db: None, monkeypatch: pytest.Mo
         assert tc.post("/xai/probe", json={"endpoints": ["messages"]}).status_code == 422
         audit_rows = tc.get("/audit").json()
     assert via_api["status"] == "ok" and via_api["summary"]["probes"] == 2
-    assert [r["action"] for r in audit_rows] == ["probe_xai"]
+    # Boot seeds Bot #1 (#123) and audits that; only the probe is under test here.
+    assert [r["action"] for r in audit_rows if r["category"] != "bots"] == ["probe_xai"]
 
     async def via_mcp() -> dict:
         db = Database(min_size=1, max_size=1)
