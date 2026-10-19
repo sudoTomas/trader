@@ -120,6 +120,7 @@ class Executor:
         *,
         price: float,
         decision_id: int | None = None,
+        bot_id: int | None = None,
     ) -> ExecutionResult:
         """Submit an APPROVED intent. Raises ``RiskDenied`` if it was not approved."""
         intent = outcome.executable()  # the chokepoint: no approval, no order
@@ -143,6 +144,7 @@ class Executor:
             limit_price=intent.limit_price,
             time_in_force=tif,
             decision_id=decision_id,
+            bot_id=bot_id,
         )
 
         try:

@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from mcp.client import Client
 from typer.testing import CliRunner
 
+from trader.loop.bots import BOT_ONE, BotDesk, bot_one_spec
 from trader.ops.config import Settings
 from trader.store.audit import audit
 from trader.store.db import Database
@@ -97,6 +98,8 @@ def test_audit_parity_across_all_surfaces(clean_db: None, monkeypatch: pytest.Mo
         db = Database(min_size=1, max_size=1)
         await db.open()
         try:
+            # Seed Bot #1 as boot will (#123), so the app's boot audits nothing new.
+            await BotDesk(db).seed(BOT_ONE, bot_one_spec(DEV_SETTINGS))
             await audit(
                 db,
                 actor="test",
@@ -131,8 +134,7 @@ def test_audit_parity_across_all_surfaces(clean_db: None, monkeypatch: pytest.Mo
     assert result.exit_code == 0, result.output
     via_cli = json.loads(result.output)
 
-    assert len(via_registry) == 1
-    assert via_registry[0]["action"] == "parity_probe"
+    assert [r["action"] for r in via_registry] == ["parity_probe", "seed_bot_version"]
     assert via_registry == via_api == via_mcp == via_cli
 
 

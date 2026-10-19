@@ -48,12 +48,19 @@ class ApprovalService:
         self._repo = ApprovalsRepo(db)
 
     async def park(
-        self, intent: OrderIntent, *, price: float, reason: str, decision_id: int | None = None
+        self,
+        intent: OrderIntent,
+        *,
+        price: float,
+        reason: str,
+        decision_id: int | None = None,
+        bot_id: int | None = None,
     ) -> int:
         approval_id = await self._repo.create(
             order_intent=intent_to_payload(intent, price),
             reason=reason,
             decision_id=decision_id,
+            bot_id=bot_id,
         )
         log.info(
             "order_parked_for_approval",

@@ -423,12 +423,14 @@ class RiskGuard:
         decision_id: int | None = None,
         shadow: bool = False,
         human_approved: bool = False,
+        bot_id: int | None = None,
     ) -> RiskOutcome:
         """Run the chain. Returns the (possibly clamped) intent only when approved.
 
         ``shadow`` runs the identical chain but parks nothing: a human must never be
         asked to approve an order that was never going to be submitted. The verdicts are
-        still produced and audited, which is the point of shadow mode.
+        still produced and audited, which is the point of shadow mode. ``bot_id`` only
+        names the Bot on a parked approval; no check reads it.
         """
         state = await self.breakers.observe(
             equity=account.equity,
@@ -455,7 +457,11 @@ class RiskGuard:
 
         if outcome.approval_required and outcome.intent is not None and not shadow:
             approval_id = await self.approvals.park(
-                outcome.intent, price=price, reason=outcome.reason, decision_id=decision_id
+                outcome.intent,
+                price=price,
+                reason=outcome.reason,
+                decision_id=decision_id,
+                bot_id=bot_id,
             )
             outcome = replace(outcome, approval_id=approval_id)
 

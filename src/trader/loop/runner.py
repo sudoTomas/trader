@@ -196,6 +196,10 @@ class LoopRunner:
     # answer is journaled beside it. Journal-only: it never changes the decision.
     # Absent = no Confirm (TRADER_CONFIRM_PROVIDER empty).
     confirm: Any | None = None  # loop.confirm.Confirmer
+    # The Bot this loop runs (#123): every decision, order and parked approval it writes
+    # names it. Set at boot once the Bot's version is seeded; None journals no Bot.
+    bot_id: int | None = None
+    bot_version: int | None = None
     stats: LoopStats = field(default_factory=LoopStats)
 
     def __post_init__(self) -> None:
@@ -433,7 +437,7 @@ class LoopRunner:
             used = self.equity
             source = "shadow_equity_constant"
         if not self._equity_fallback_open:
-            await self._journal.record(
+            await self._record(
                 trigger=EQUITY_FALLBACK,
                 status=ERROR,
                 raw_output=f"{source} equity={used:.2f}: {exc}",
@@ -442,6 +446,10 @@ class LoopRunner:
             self._equity_fallback_open = True
         log.warning("equity_fallback", source=source, used=used, error=str(exc))
         return used
+
+    async def _record(self, **row: Any) -> int:
+        """Journal a row as this loop's Bot and Bot version."""
+        return await self._journal.record(bot_id=self.bot_id, bot_version=self.bot_version, **row)
 
     async def _trades_today(self, symbol: Symbol, now: datetime) -> int:
         return await count_trades_today(self.db, symbol, now)
@@ -664,6 +672,7 @@ class LoopRunner:
             now=now,
             realized_vol=mark.realized_vol,
             shadow=self.shadow,
+            bot_id=self.bot_id,
         )
         record = {
             "trigger": STOP_LOSS,
@@ -675,9 +684,9 @@ class LoopRunner:
         if outcome.approved and not (
             self.shadow or self.executor is None or ticker in self.shadow_symbols
         ):
-            decision_id = await self._journal.record(status=PENDING, **record)
+            decision_id = await self._record(status=PENDING, **record)
             execution = await self.executor.execute(
-                outcome, symbol, price=mark.price, decision_id=decision_id
+                outcome, symbol, price=mark.price, decision_id=decision_id, bot_id=self.bot_id
             )
             status = EXECUTED if execution.submitted else ERROR
             reason = execution.reason or outcome.reason
@@ -687,7 +696,7 @@ class LoopRunner:
             reason = outcome.reason
             if self._stop_last.get(ticker) == (status, reason):
                 return None
-            decision_id = await self._journal.record(status=status, **record)
+            decision_id = await self._record(status=status, **record)
         self._stop_last[ticker] = (status, reason)
         log.warning("stop_loss", symbol=ticker, loss=loss, status=status, reason=reason)
         return WakeupResult(
@@ -695,7 +704,7 @@ class LoopRunner:
         )
 
     async def _journal_unprotected(self, symbol: Symbol) -> WakeupResult:
-        decision_id = await self._journal.record(
+        decision_id = await self._record(
             trigger=STOP_LOSS,
             status=SUPPRESSED,
             symbol=symbol.ticker,
@@ -748,7 +757,7 @@ class LoopRunner:
         brief_version = ctx.brief.version if ctx.brief else None
         if ctx.price <= 0:
             # No usable market data: journal the wakeup, decide nothing.
-            decision_id = await self._journal.record(
+            decision_id = await self._record(
                 trigger=trigger_label,
                 status=SUPPRESSED,
                 symbol=symbol.ticker,
@@ -771,7 +780,7 @@ class LoopRunner:
         try:
             result = await self._decider.decide(ctx)
         except DeciderError as exc:
-            decision_id = await self._journal.record(
+            decision_id = await self._record(
                 trigger=trigger_label,
                 status=ERROR,
                 symbol=symbol.ticker,
@@ -818,6 +827,7 @@ class LoopRunner:
                 now=now,
                 realized_vol=ctx.primary_vol,
                 shadow=self.shadow,
+                bot_id=self.bot_id,
             )
             verdicts = outcome.verdict_dicts
             reason = outcome.reason
@@ -828,7 +838,7 @@ class LoopRunner:
             else:
                 # Persist the decision BEFORE submit so orders.decision_id can point
                 # at it. The executor still receives only outcome.executable().
-                decision_id = await self._journal.record(
+                decision_id = await self._record(
                     trigger=trigger_label,
                     status=PENDING,
                     symbol=symbol.ticker,
@@ -846,7 +856,11 @@ class LoopRunner:
                     **served(result.completion),
                 )
                 execution = await self.executor.execute(
-                    outcome, symbol, price=ctx.price, decision_id=decision_id
+                    outcome,
+                    symbol,
+                    price=ctx.price,
+                    decision_id=decision_id,
+                    bot_id=self.bot_id,
                 )
                 status = EXECUTED if execution.submitted else ERROR
                 reason = execution.reason or reason
@@ -861,7 +875,7 @@ class LoopRunner:
                     reason=reason,
                 )
 
-        decision_id = await self._journal.record(
+        decision_id = await self._record(
             trigger=trigger_label,
             status=status,
             symbol=symbol.ticker,

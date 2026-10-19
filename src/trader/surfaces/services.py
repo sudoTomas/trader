@@ -283,13 +283,14 @@ def build_registry(
             decision_id=row["decision_id"],
             shadow=False,
             human_approved=True,
+            bot_id=row["bot_id"],
         )
         if not outcome.approved:
             return {"redeemed": False, "reason": outcome.reason or "risk chain denied the intent"}
         try:
             # execute() calls outcome.executable() — the only door to the broker.
             execution = await runner.executor.execute(
-                outcome, symbol, price=price, decision_id=row["decision_id"]
+                outcome, symbol, price=price, decision_id=row["decision_id"], bot_id=row["bot_id"]
             )
         except RiskDenied as exc:
             return {"redeemed": False, "reason": str(exc)}
@@ -339,6 +340,22 @@ def build_registry(
 
         assert db is not None, "decision requires a store"
         return await Journal(db).get(decision_id)
+
+    # --- bots (#123) ------------------------------------------------------
+
+    @reg.register("bots", kind="query", summary="Bots: each one's current version and spec.")
+    async def list_bots() -> list[dict[str, Any]]:
+        from trader.loop.bots import BotDesk
+
+        assert db is not None, "bots requires a store"
+        return await BotDesk(db).list()
+
+    @reg.register("bot", kind="query", summary="One Bot with every version, newest first.")
+    async def get_bot(name: str) -> dict[str, Any]:
+        from trader.loop.bots import BotDesk
+
+        assert db is not None, "bot requires a store"
+        return await BotDesk(db).get(name)
 
     @reg.register("loop_status", kind="query", summary="Decide-loop counters and mode.")
     async def loop_status() -> dict[str, Any]:

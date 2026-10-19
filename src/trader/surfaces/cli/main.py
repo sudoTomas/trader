@@ -821,6 +821,22 @@ def seat_report(
     typer.echo(seat_runner.render_report(rows))
 
 
+bot_app = typer.Typer(help="Bots: each one's symbols, triggers, lanes and prompt, versioned.")
+app.add_typer(bot_app, name="bot")
+
+
+@bot_app.command("list")
+def bot_list() -> None:
+    """Bots and their current versions."""
+    typer.echo(json.dumps(_get("/bots"), indent=2))
+
+
+@bot_app.command("show")
+def bot_show(name: str = typer.Argument(..., help="Bot name, e.g. bot-1.")) -> None:
+    """One Bot with every version."""
+    typer.echo(json.dumps(_get(f"/bots/{name}"), indent=2))
+
+
 if __name__ == "__main__":
     app()
 
