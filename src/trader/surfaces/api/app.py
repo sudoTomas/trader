@@ -169,6 +169,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         bot = await BotDesk(db).seed(BOT_ONE, bot_one_spec(settings))
         if runner is not None:
             runner.bot_id, runner.bot_version = bot["id"], bot["version"]
+            runner.sources = bot["spec"]["sources"]  # the Sources that version names
         async with mcp.session_manager.run(), capture_mcp.session_manager.run():
             if runner is not None:
                 await runner.start()  # background task; never blocks /health

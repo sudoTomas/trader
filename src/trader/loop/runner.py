@@ -59,9 +59,10 @@ from trader.loop.journal import (
     Journal,
 )
 from trader.loop.scheduler import HEARTBEAT, Mark, SignalScheduler, Trigger
+from trader.loop.sources import bot_one_subscriptions, build_sources
 from trader.risk.guard import AccountState, RiskGuard
 from trader.store.db import Database
-from trader.store.repos import BriefsRepo, MacroViewsRepo, PositionsRepo, SentimentRepo
+from trader.store.repos import PositionsRepo, SentimentRepo
 
 log = structlog.get_logger(__name__)
 
@@ -200,6 +201,9 @@ class LoopRunner:
     # names it. Set at boot once the Bot's version is seeded; None journals no Bot.
     bot_id: int | None = None
     bot_version: int | None = None
+    # The Bot version's Source subscriptions (#124), set at boot from its spec. None
+    # derives them from the lane flags above, as Bot #1's spec does.
+    sources: list[dict[str, Any]] | None = None
     stats: LoopStats = field(default_factory=LoopStats)
 
     def __post_init__(self) -> None:
@@ -208,12 +212,12 @@ class LoopRunner:
         self._journal = Journal(self.db)
         self._positions = PositionsRepo(self.db)
         self._sentiment_repo = SentimentRepo(self.db)
+        if self.sources is None:
+            self.sources = bot_one_subscriptions(
+                briefs=self.briefs_enabled, exit_review=self.exit_review_enabled
+            )
         self._context = ContextBuilder(
-            self.market_data,
-            macro_views=MacroViewsRepo(self.db),
-            briefs=BriefsRepo(self.db) if self.briefs_enabled else None,
-            exit_review_enabled=self.exit_review_enabled,
-            sentiment=self._sentiment_repo if self.exit_review_enabled else None,
+            self.market_data, sources=build_sources(self.db, self.market_data)
         )
         self._last_sentiment_poll: dict[str, datetime] = {}
         # Symbols whose last-poll stamp was seeded from the journal (see _poll_sentiment).
@@ -752,6 +756,7 @@ class LoopRunner:
             equity=equity,
             recent_decisions=recent,
             position=position_row,
+            subscriptions=self.sources,
         )
         macro_view_version = ctx.macro_view.version if ctx.macro_view else None
         brief_version = ctx.brief.version if ctx.brief else None
@@ -765,6 +770,7 @@ class LoopRunner:
                 prompt=ctx.to_prompt(),
                 macro_view_version=macro_view_version,
                 brief_version=brief_version,
+                source_versions=ctx.source_versions,
             )
             return WakeupResult(
                 symbol.ticker, names, SUPPRESSED, decision_id, reason="no usable price"
@@ -790,6 +796,7 @@ class LoopRunner:
                 desk_verdicts=desk_verdicts,
                 macro_view_version=macro_view_version,
                 brief_version=brief_version,
+                source_versions=ctx.source_versions,
                 latency_ms=int((time.perf_counter() - started) * 1000),
             )
             self.stats.errors += 1
@@ -851,6 +858,7 @@ class LoopRunner:
                     confirm=confirm,
                     macro_view_version=macro_view_version,
                     brief_version=brief_version,
+                    source_versions=ctx.source_versions,
                     cost_usd=result.completion.cost_usd,
                     latency_ms=int((time.perf_counter() - started) * 1000),
                     **served(result.completion),
@@ -888,6 +896,7 @@ class LoopRunner:
             confirm=confirm,
             macro_view_version=macro_view_version,
             brief_version=brief_version,
+            source_versions=ctx.source_versions,
             cost_usd=result.completion.cost_usd,
             latency_ms=int((time.perf_counter() - started) * 1000),
             **served(result.completion),

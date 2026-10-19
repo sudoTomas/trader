@@ -17,13 +17,15 @@ Scoring is deliberately crude and labeled as such: mark-to-bars, no costs, no sl
 (Alpaca paper fills are optimistic already — v1 findings). It ranks configurations; it
 does not predict live PnL.
 
-Research lanes are part of the replayed prompt, pinned to the step: the Macro View
-whose ``created_at`` is at or before that timestamp (never today's ``current()``),
-and the symbol's brief whose ``ts`` is likewise. ``config={"briefs": false}`` drops
-the brief lane so a baseline can still match the dark live path, and
-``config={"macro_view": false}`` drops the Macro View lane the same way, so either
-lane can be scored alone. Replay writes ``eval_runs`` / ``eval_steps`` only — it
-does not flip briefs into the live loop.
+Replay reads the same Sources the live loop does (#124), every one pinned to the step
+(``as_of``): the Macro View whose ``created_at`` is at or before that timestamp (never
+today's ``current()``), the symbol's brief whose ``ts`` is likewise, and so on; each
+step's decision records its ``source_versions``. ``config={"sources": [...]}`` replays
+exactly a Bot version's subscriptions. Without it the run reads Bot #1's lanes:
+``config={"briefs": false}`` drops the brief lane so a baseline can still match the dark
+live path, and ``config={"macro_view": false}`` drops the Macro View lane the same way,
+so either lane can be scored alone. Replay writes ``eval_runs`` / ``eval_steps`` only —
+it does not flip briefs into the live loop.
 
 The exit-review lane (#34) is replayed the same way: ``config={"exit_review": true}``
 renders the held-position block (absent → the harness default, which follows
@@ -51,8 +53,9 @@ from trader.data.base import MarketData, MarketDataError
 from trader.loop.context import ContextBuilder
 from trader.loop.decider import Decider, DeciderError
 from trader.loop.scheduler import Trigger
+from trader.loop.sources import bot_one_subscriptions, build_sources, subscriptions
 from trader.store.db import Database
-from trader.store.repos import BriefsRepo, EvalRepo, MacroViewsRepo, SentimentRepo
+from trader.store.repos import EvalRepo
 
 log = structlog.get_logger(__name__)
 
@@ -134,24 +137,14 @@ class ReplayHarness:
         self._repo = EvalRepo(db)
         self._decider = Decider(llm)
         self._market = ReplayMarketData(BarsCache(db, provider))
-        # Own builders: the live runner keeps briefs dark unless TRADER_BRIEFS_ENABLED.
-        # Attaching the repos here only affects replayed prompts. The builder has a
-        # per-call brief switch but no macro one, so a macro-less run gets a builder
-        # with no Macro View repo at all — the lane is absent, not blanked.
-        self._contexts = {
-            include_macro_view: ContextBuilder(
-                self._market,
-                macro_views=MacroViewsRepo(db) if include_macro_view else None,
-                briefs=BriefsRepo(db),
-                # ReplayMarketData is the bars view. Macro series stay on the real
-                # provider and are capped at the step's date inside ContextBuilder.
-                fred=getattr(provider, "fred", None),
-                # The exit-review lane is a per-call switch; the sentiment read is
-                # pinned to the step (research_as_of) like the research lanes.
-                sentiment=SentimentRepo(db),
-            )
-            for include_macro_view in (True, False)
-        }
+        # The same Sources the live loop reads, every one wired; each run's subscriptions
+        # pick its lanes, and every read is pinned to the step (as_of).
+        self._context = ContextBuilder(
+            self._market,
+            # ReplayMarketData is the bars view. Macro series stay on the real provider
+            # and are capped at the step's date by the FRED Source.
+            sources=build_sources(db, provider),
+        )
         self._step = timedelta(seconds=step_seconds)
         self._max_steps = max_steps
         self._equity = equity
@@ -177,6 +170,14 @@ class ReplayHarness:
             )
         if (config or {}).get("desk") and self._desk is None:
             raise ValueError("desk replay requested but no desk is wired into this harness")
+        if config and config.get("sources") is not None:
+            try:
+                config = {
+                    **config,
+                    "sources": [s.as_spec() for s in subscriptions(config["sources"])],
+                }
+            except (KeyError, TypeError, AttributeError) as exc:
+                raise ValueError("sources must be a list of {source, params} objects") from exc
         if config and config.get("exit_review_seed") is not None:
             config = {**config, "exit_review_seed": validate_seed(config["exit_review_seed"])}
         return await self._repo.create_run(
@@ -202,6 +203,13 @@ class ReplayHarness:
         # The exit-review lane defaults to the harness setting (live: dark). A seed is
         # independent of the flag so baseline and candidate share the same held book.
         exit_review = bool(config.get("exit_review", self._exit_review_default))
+        # A run that names its Sources (a Bot version's list) reads exactly those; the
+        # lane switches above only shape the default.
+        sources = config.get("sources")
+        if sources is None:
+            sources = bot_one_subscriptions(
+                macro_view=include_macro_view, briefs=include_briefs, exit_review=exit_review
+            )
         seed = config.get("exit_review_seed")
         try:
             summary = await self._walk(
@@ -210,8 +218,7 @@ class ReplayHarness:
                 run["start_ts"],
                 run["end_ts"],
                 use_desk=use_desk,
-                include_briefs=include_briefs,
-                include_macro_view=include_macro_view,
+                sources=sources,
                 exit_review=exit_review,
                 seed=validate_seed(seed) if seed is not None else None,
             )
@@ -245,12 +252,11 @@ class ReplayHarness:
         end: datetime,
         *,
         use_desk: bool,
-        include_briefs: bool,
-        include_macro_view: bool = True,
+        sources: list[dict[str, Any]],
         exit_review: bool = False,
         seed: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        context = self._contexts[include_macro_view]
+        context = self._context
         actions: dict[str, int] = {}
         desk_tally = {"approve": 0, "shrink": 0, "veto": 0, "pass_through": 0, "skipped": 0}
         recent: list[dict[str, Any]] = []
@@ -284,9 +290,8 @@ class ReplayHarness:
                 position_qty=qty,
                 equity=self._equity + realized,
                 recent_decisions=list(recent),
-                research_as_of=as_of,
-                include_briefs=include_briefs,
-                exit_review=exit_review,
+                as_of=as_of,
+                subscriptions=sources,
                 position=(
                     {"qty": qty, "avg_entry_price": entry, "opened_at": opened_at}
                     if qty != 0.0
@@ -357,6 +362,7 @@ class ReplayHarness:
                 decision_row["brief"] = ctx.brief.entries
             if ctx.held_position is not None:
                 decision_row["held_position"] = ctx.held_position.entries
+            decision_row["source_versions"] = ctx.source_versions
             if desk_info is not None:
                 decision_row["desk"] = desk_info
             await self._repo.add_step(

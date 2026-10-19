@@ -32,7 +32,7 @@ def settings(**kwargs) -> Settings:
 # --- the spec ---------------------------------------------------------------------------
 
 
-def test_the_spec_names_each_symbol_s_mode_the_triggers_lanes_and_account():
+def test_the_spec_names_each_symbol_s_mode_the_triggers_sources_and_account():
     spec = bot_one_spec(
         settings(
             shadow_mode=False,
@@ -45,7 +45,8 @@ def test_the_spec_names_each_symbol_s_mode_the_triggers_lanes_and_account():
     )
     assert spec["account_id"] == "alpaca-paper"
     assert spec["symbols"] == {"ETH/USD": "live", "SPY": "live", "AAPL": "shadow"}
-    assert spec["lanes"] == {"briefs": True, "desk": False, "exit_review": False}
+    assert spec["lanes"] == {"desk": False}
+    assert [s["source"] for s in spec["sources"]] == ["fred", "macro_view", "brief"]
     assert spec["triggers"]["sentiment_enabled"] is True
     assert spec["triggers"]["heartbeat_seconds"]["crypto"] == 900
     assert spec["prompt"]["variant"] == "default" and spec["prompt"]["sha256"]
@@ -118,6 +119,8 @@ def test_boot_seeds_bot_one_and_hands_it_to_the_runner(clean_db: None, monkeypat
     with TestClient(app_module.create_app(settings(loop_enabled=True))) as tc:
         assert tc.get("/bots").json()[0]["version"] == 1
     assert (runner.bot_id, runner.bot_version) == (1, 1)
+    # The loop reads the Sources that version names (#124).
+    assert runner.sources == bot_one_spec(settings(loop_enabled=True))["sources"]
 
 
 # --- the journal ------------------------------------------------------------------------

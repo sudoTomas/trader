@@ -19,6 +19,7 @@ from trader.data.composite import CompositeMarketData, build_market_data
 from trader.data.fred import Fred
 from trader.eval.replay import ReplayHarness
 from trader.loop.context import ContextBuilder
+from trader.loop.sources import build_sources
 from trader.ops.config import Settings
 from trader.store.db import Database
 from trader.surfaces.services import build_registry
@@ -103,9 +104,18 @@ async def test_fred_observation_end_is_part_of_the_request_and_the_cache_key():
 # --- context ----------------------------------------------------------------
 
 
+def fred_builder(data, fred=None) -> ContextBuilder:
+    """A builder subscribed to the FRED Source only, over the live Source wiring."""
+    return ContextBuilder(
+        data,
+        sources=build_sources(None, data, fred=fred),
+        subscriptions=[{"source": "fred", "params": {"series": ["VIXCLS"]}}],
+    )
+
+
 async def test_context_attaches_the_latest_fred_print_on_or_before_now():
     fred = RecordingFred(_prints())
-    ctx = await ContextBuilder(StubMarketData(), fred=fred).build(BTC, now=NOW, triggers=[])
+    ctx = await fred_builder(StubMarketData(), fred).build(BTC, now=NOW, triggers=[])
 
     assert [(p.series_id, p.obs_date, p.value) for p in ctx.fred_series] == [
         ("VIXCLS", NOW.date(), 18.2)
@@ -119,8 +129,8 @@ async def test_context_attaches_the_latest_fred_print_on_or_before_now():
 
 
 async def test_context_reads_fred_from_the_market_data_provider():
-    """The live runner builds ContextBuilder(market_data) and does not grow a fred kwarg.
-    Composite exposes the client; the builder has to pick it up from there."""
+    """The live runner wires Sources over its market data and does not grow a fred kwarg.
+    Composite exposes the client; the FRED Source has to pick it up from there."""
     fred = RecordingFred(_prints())
 
     class _WithFred(StubMarketData):
@@ -128,20 +138,18 @@ async def test_context_reads_fred_from_the_market_data_provider():
 
     data = _WithFred()
     data.fred = fred
-    ctx = await ContextBuilder(data).build(BTC, now=NOW, triggers=[])
+    ctx = await fred_builder(data).build(BTC, now=NOW, triggers=[])
     assert [p.value for p in ctx.fred_series] == [18.2]
     assert fred.calls  # fetched, not a stored window
 
 
 async def test_context_degrades_when_fred_fails_and_omits_the_lane_when_absent():
-    failed = await ContextBuilder(StubMarketData(), fred=BoomFred()).build(
-        BTC, now=NOW, triggers=[]
-    )
+    failed = await fred_builder(StubMarketData(), BoomFred()).build(BTC, now=NOW, triggers=[])
     assert failed.price > 0
     assert failed.fred_series == ()
     assert "VIXCLS" not in failed.to_prompt()
 
-    plain = await ContextBuilder(StubMarketData()).build(BTC, now=NOW, triggers=[])
+    plain = await fred_builder(StubMarketData()).build(BTC, now=NOW, triggers=[])
     assert plain.fred_series == ()
     assert "FRED" not in plain.to_prompt()
 

@@ -1,7 +1,7 @@
 """Bots (#123): one trading strategy each, versioned append-only like Profiles.
 
 A Bot is the symbols it trades (each with its Symbol mode), the triggers it wakes on,
-its prompt lanes and prompt, and the account it trades on. Every change to that spec
+the Sources it reads (#124), its prompt, and the account it trades on. Every change to that spec
 appends a Bot version and moves the Bot's current pointer; a journaled decision names
 the Bot and the Bot version that made it.
 
@@ -21,6 +21,7 @@ from psycopg.types.json import Jsonb
 
 from trader.loop.decider import SYSTEM_PROMPT
 from trader.loop.scheduler import TriggerConfig
+from trader.loop.sources import bot_one_subscriptions
 from trader.ops.config import Settings
 from trader.store.audit import CALLER, SURFACE, audit
 from trader.store.db import Database
@@ -60,11 +61,12 @@ def bot_one_spec(settings: Settings) -> dict[str, Any]:
         "account_id": ALPACA_PAPER,
         "symbols": {t: SHADOW if settings.shadow_mode or t in shadowed else LIVE for t in tickers},
         "triggers": triggers,
-        "lanes": {
-            "briefs": settings.briefs_enabled,
-            "desk": settings.desk_enabled,
-            "exit_review": settings.exit_review_enabled,
-        },
+        # The Sources it reads (#124), from the lane flags it had before Sources.
+        "sources": bot_one_subscriptions(
+            briefs=settings.briefs_enabled, exit_review=settings.exit_review_enabled
+        ),
+        # The desk is not a Source: it reads the finished context, not a producer's rows.
+        "lanes": {"desk": settings.desk_enabled},
         # The decide rules are code, so a change to them is a new version too.
         "prompt": {
             "variant": "default",

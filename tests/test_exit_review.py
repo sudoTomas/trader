@@ -25,6 +25,7 @@ from trader.loop.context import (
 )
 from trader.loop.decider import SYSTEM_PROMPT, Decider
 from trader.loop.journal import Journal
+from trader.loop.sources import HeldPositionSource, SentimentSource, Subscription
 from trader.store.db import Database
 from trader.store.repos import PositionsRepo, SentimentRepo
 
@@ -45,6 +46,19 @@ class StubSentiment:
     async def recent(self, symbol: str | None = None, limit: int = 50) -> list[dict]:
         rows = [r for r in self._rows if symbol is None or r["symbol"] == symbol]
         return sorted(rows, key=lambda r: r["ts"], reverse=True)[:limit]
+
+
+HELD_SUB = Subscription("held_position")
+
+
+def held_builder(*, subscribed: bool = True, sentiment: StubSentiment | None = None):
+    """A builder wired with the held-position Source; subscribed = the lane is on."""
+    reads = SentimentSource(sentiment) if sentiment is not None else None
+    return ContextBuilder(
+        StubMarketData(),
+        sources={"held_position": HeldPositionSource(reads)},
+        subscriptions=[HELD_SUB] if subscribed else (),
+    )
 
 
 def sentiment_row(ts: datetime, score: float, symbol: str = "BTC/USD") -> dict:
@@ -72,8 +86,8 @@ def test_unrealized_pnl_frac_is_signed_against_the_position():
 
 
 async def test_block_present_only_with_flag_and_a_held_position():
-    dark = ContextBuilder(StubMarketData())
-    lit = ContextBuilder(StubMarketData(), exit_review_enabled=True)
+    dark = held_builder(subscribed=False)
+    lit = held_builder()
     kwargs = dict(now=NOW, triggers=[], equity=100_000.0)
 
     off = await dark.build(BTC, position_qty=1.0, position=HELD, **kwargs)
@@ -98,11 +112,11 @@ async def test_block_present_only_with_flag_and_a_held_position():
 
 async def test_per_call_switch_overrides_the_builder_default():
     """Replay flips the lane per run without rebuilding the harness."""
-    dark = ContextBuilder(StubMarketData())
+    dark = held_builder(subscribed=False)
     kwargs = dict(now=NOW, triggers=[], equity=100_000.0, position_qty=1.0, position=HELD)
-    assert (await dark.build(BTC, exit_review=True, **kwargs)).held_position is not None
-    lit = ContextBuilder(StubMarketData(), exit_review_enabled=True)
-    assert (await lit.build(BTC, exit_review=False, **kwargs)).held_position is None
+    assert (await dark.build(BTC, subscriptions=[HELD_SUB], **kwargs)).held_position is not None
+    lit = held_builder()
+    assert (await lit.build(BTC, subscriptions=[], **kwargs)).held_position is None
 
 
 async def test_block_carries_the_latest_sentiment_pinned_to_the_step():
@@ -111,9 +125,7 @@ async def test_block_carries_the_latest_sentiment_pinned_to_the_step():
         sentiment_row(NOW - timedelta(hours=1), 0.4),
         sentiment_row(NOW - timedelta(hours=1), 0.9, symbol="ETH/USD"),  # another symbol
     ]
-    builder = ContextBuilder(
-        StubMarketData(), exit_review_enabled=True, sentiment=StubSentiment(rows)
-    )
+    builder = held_builder(sentiment=StubSentiment(rows))
     kwargs = dict(triggers=[], equity=100_000.0, position_qty=1.0, position=HELD)
 
     live = await builder.build(BTC, now=NOW, **kwargs)
@@ -121,14 +133,12 @@ async def test_block_carries_the_latest_sentiment_pinned_to_the_step():
 
     # A replayed step sees the sentiment that existed then, never a later poll.
     then = NOW - timedelta(days=1)
-    pinned = await builder.build(BTC, now=then, research_as_of=then, **kwargs)
+    pinned = await builder.build(BTC, now=then, as_of=then, **kwargs)
     assert "Latest X sentiment: -0.60" in pinned.to_prompt()
     assert "+0.40" not in pinned.to_prompt()
 
     # No sentiment row → the line is simply absent; the block still asks its question.
-    none = await ContextBuilder(StubMarketData(), exit_review_enabled=True).build(
-        BTC, now=NOW, **kwargs
-    )
+    none = await held_builder().build(BTC, now=NOW, **kwargs)
     assert "Latest X sentiment" not in none.to_prompt()
     assert BLOCK in none.to_prompt()
 
@@ -192,9 +202,7 @@ def test_riskguard_is_structurally_firewalled_from_the_exit_review():
 async def test_system_prompt_describes_exits_only_when_reviewing():
     kwargs = dict(now=NOW, triggers=[], equity=100_000.0, position_qty=1.0, position=HELD)
     plain = await ContextBuilder(StubMarketData()).build(BTC, **kwargs)
-    reviewing = await ContextBuilder(StubMarketData(), exit_review_enabled=True).build(
-        BTC, **kwargs
-    )
+    reviewing = await held_builder().build(BTC, **kwargs)
 
     llm = StubLLM([HOLD, HOLD])
     await Decider(llm).decide(plain)

@@ -42,14 +42,17 @@ class DecisionsRepo:
         served_by: str | None = None,
         bot_id: int | None = None,
         bot_version: int | None = None,
+        source_versions: dict[str, Any] | None = None,
     ) -> int:
         row = await self._db.fetch_one(
             """
             INSERT INTO decisions (trigger, status, symbol, asset_class, prompt, raw_output,
                                    decision, risk_verdicts, desk_verdicts, confirm,
                                    macro_view_version, brief_version, cost_usd, latency_ms,
-                                   profile_version, served_by, bot_id, bot_version)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                   profile_version, served_by, bot_id, bot_version,
+                                   source_versions)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s)
             RETURNING id
             """,
             (
@@ -71,6 +74,7 @@ class DecisionsRepo:
                 served_by,
                 bot_id,
                 bot_version,
+                Jsonb(source_versions) if source_versions is not None else None,
             ),
         )
         assert row is not None
