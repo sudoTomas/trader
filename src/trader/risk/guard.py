@@ -28,6 +28,14 @@ Risk-reducing intents (closing//reducing an existing position) skip 5-9: a limit
 trapped an open position would be a larger risk than the one it guards. Exits are
 never clamped to the approval cap — closes must land.
 
+**Two tiers, one chain** (#125, ADR 0003). The Bot's ``Sleeve`` rides in the context
+beside the account, as data: sizing and Kelly read the Sleeve's equity; "is this
+reducing", the full close and the position cap read the Sleeve's position (a Bot cannot
+close what another Bot holds); concurrency and trades per day are checked for the Bot
+and for the account; the account's pause/drift/breaker is the Account halt every Bot
+reads, a Bot's own pause/breaker binds only that Bot. No Sleeve = the account is the
+Sleeve (Bot #1's whole-account Sleeve gives identical verdicts).
+
 **The Macro View / research is never an input here** (advisory firewall): research shapes
 direction and conviction, never sizing or breakers. A test asserts this module tree never
 imports ``trader.research``.
@@ -37,7 +45,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import structlog
@@ -48,6 +56,7 @@ from trader.risk.approvals import ApprovalService
 from trader.risk.breakers import BreakerStore, RiskState
 from trader.risk.kelly import vol_adjusted_kelly
 from trader.risk.limits import RiskLimits
+from trader.risk.sleeves import UNATTRIBUTED_BOT_ID, Sleeve, SleeveLedger
 from trader.store.audit import audit
 from trader.store.db import Database
 
@@ -91,7 +100,7 @@ class RiskContext:
     symbol: Symbol
     price: float
     account: AccountState
-    state: RiskState
+    state: RiskState  # the account's: the Account halt
     limits: RiskLimits
     now: datetime
     realized_vol: float | None = None  # measured locally; None → no vol scaling
@@ -99,10 +108,26 @@ class RiskContext:
     live_enabled: bool = False  # TRADER_ALPACA_LIVE_ENABLED
     human_approved: bool = False  # a human already cleared the park band; do not re-clamp it
     stopped_at: datetime | None = None  # when the deterministic stop last closed this symbol
+    sleeve: Sleeve | None = None  # the Bot's share of the account; None = the whole account
+
+    @property
+    def sizing_equity(self) -> float:
+        return self.sleeve.equity if self.sleeve is not None else self.account.equity
 
     @property
     def position_qty(self) -> float:
+        """What this Bot holds of the symbol: its Sleeve's position."""
+        if self.sleeve is not None:
+            return self.sleeve.positions.get(self.symbol.ticker, 0.0)
+        return self.account_position_qty
+
+    @property
+    def account_position_qty(self) -> float:
         return self.account.positions.get(self.symbol.ticker, 0.0)
+
+    @property
+    def bot_label(self) -> str:
+        return f"bot {self.sleeve.bot_id}" if self.sleeve is not None else "account"
 
     @property
     def is_reducing(self) -> bool:
@@ -213,6 +238,8 @@ def evaluate_chain(ctx: RiskContext) -> RiskOutcome:
         return deny("input_sanity", "price is missing or not a positive finite number")
     if not _finite_positive(ctx.account.equity):
         return deny("input_sanity", "account equity is missing or not positive")
+    if ctx.sleeve is not None and not _finite_positive(ctx.sleeve.equity):
+        return deny("input_sanity", f"{ctx.bot_label} sleeve equity is missing or not positive")
     if not _finite_positive(notional):
         return deny("input_sanity", "order size is missing or not a positive finite number")
     if ctx.intent.limit_price is not None and not _finite_positive(ctx.intent.limit_price):
@@ -231,6 +258,8 @@ def evaluate_chain(ctx: RiskContext) -> RiskOutcome:
     blocked = ctx.state.blocked_reason
     if blocked and (ctx.state.trading_paused or ctx.state.drift_detected):
         return deny("kill_switch", blocked)
+    if ctx.sleeve is not None and ctx.sleeve.state.trading_paused:
+        return deny("kill_switch", f"{ctx.bot_label}: {ctx.sleeve.state.blocked_reason}")
     allow("kill_switch", notional)
 
     # --- 4. per-asset-class policy ------------------------------------------
@@ -266,7 +295,7 @@ def evaluate_chain(ctx: RiskContext) -> RiskOutcome:
     allow("stop_cooldown", notional)
 
     # --- 6. sizing clamps ----------------------------------------------------
-    cap = ctx.account.equity * ctx.limits.max_position_frac
+    cap = ctx.sizing_equity * ctx.limits.max_position_frac
     held = abs(ctx.position_qty) * ctx.price
     headroom = cap - held
     if headroom <= 0:
@@ -298,7 +327,7 @@ def evaluate_chain(ctx: RiskContext) -> RiskOutcome:
             ctx.limits.kelly_fraction,
             ctx.limits.kelly_max_bet_frac,
         )
-    kelly_cap = ctx.account.equity * kelly_frac
+    kelly_cap = ctx.sizing_equity * kelly_frac
     if kelly_cap <= 0:
         return deny("kelly_cap", "configured edge implies no position")
     if notional > kelly_cap:
@@ -313,22 +342,34 @@ def evaluate_chain(ctx: RiskContext) -> RiskOutcome:
     allow("min_notional", notional)
 
     # --- 7. throughput -------------------------------------------------------
-    open_count = sum(1 for qty in ctx.account.positions.values() if qty != 0)
-    if ctx.position_qty == 0 and open_count >= ctx.limits.max_concurrent_positions:
-        return deny(
-            "max_concurrent",
-            f"{open_count} open positions >= {ctx.limits.max_concurrent_positions}",
+    # The account first, then the Bot: the same limits bind at both levels.
+    levels = [("", ctx.account.positions, ctx.account_position_qty, ctx.account.trades_today)]
+    if ctx.sleeve is not None:
+        levels.append(
+            (f"{ctx.bot_label}: ", ctx.sleeve.positions, ctx.position_qty, ctx.sleeve.trades_today)
         )
-    if ctx.account.trades_today >= ctx.limits.max_trades_per_day:
-        return deny(
-            "max_trades_per_day",
-            f"{ctx.account.trades_today} trades today >= {ctx.limits.max_trades_per_day}",
-        )
+    for who, positions, held_qty, trades_today in levels:
+        open_count = sum(1 for qty in positions.values() if qty != 0)
+        if held_qty == 0 and open_count >= ctx.limits.max_concurrent_positions:
+            return deny(
+                "max_concurrent",
+                f"{who}{open_count} open positions >= {ctx.limits.max_concurrent_positions}",
+            )
+        if trades_today >= ctx.limits.max_trades_per_day:
+            return deny(
+                "max_trades_per_day",
+                f"{who}{trades_today} trades today >= {ctx.limits.max_trades_per_day}",
+            )
     allow("throughput", notional)
 
     # --- 8. breakers (opens only; exits already returned above) --------------
     if ctx.state.halted_reason:
         return deny("breaker", f"halted: {ctx.state.halted_reason} (exits still allowed)")
+    if ctx.sleeve is not None and ctx.sleeve.state.halted_reason:
+        return deny(
+            "breaker",
+            f"{ctx.bot_label} halted: {ctx.sleeve.state.halted_reason} (exits still allowed)",
+        )
     allow("breaker", notional)
 
     # --- 9. approval threshold ----------------------------------------------
@@ -392,22 +433,37 @@ class RiskGuard:
         self._db = db
         self._limits = limits
         self._live_enabled = live_enabled
-        self.breakers = BreakerStore(db)
+        self.breakers = BreakerStore(db)  # the account's: the Account halt
+        self.sleeves = SleeveLedger(db)
         self.approvals = ApprovalService(db)
 
     @property
     def limits(self) -> RiskLimits:
         return self._limits
 
-    async def _last_stop(self, ticker: str, now: datetime) -> datetime | None:
-        """When the deterministic stop last sent a close for ``ticker``. A stop that was
-        blocked or ran in shadow sent nothing, so it starts no cooldown."""
-        row = await self._db.fetch_one(
+    async def _last_stop(self, ticker: str, now: datetime, bot_id: int | None) -> datetime | None:
+        """When the deterministic stop last sent a close for ``ticker`` (this Bot's, when
+        one is named). A stop that was blocked or ran in shadow sent nothing, so it starts
+        no cooldown."""
+        sql = (
             "SELECT max(ts) AS ts FROM decisions WHERE symbol = %s AND trigger = 'stop_loss'"
-            " AND status = 'executed' AND ts <= %s",
-            (ticker, now),
+            " AND status = 'executed' AND ts <= %s"
         )
+        params: tuple[Any, ...] = (ticker, now)
+        if bot_id is not None:
+            sql += " AND coalesce(bot_id, %s) = %s"
+            params += (UNATTRIBUTED_BOT_ID, bot_id)
+        row = await self._db.fetch_one(sql, params)
         return row["ts"] if row else None
+
+    async def observe_sleeve(
+        self, bot_id: int | None, *, session_day: date, prices: dict[str, float]
+    ) -> None:
+        """Keep a fixed Sleeve's breaker windows fresh between trades (the tick's job)."""
+        if bot_id is not None:
+            await self.sleeves.observe(
+                bot_id, session_day=session_day, prices=prices, limits=self._limits
+            )
 
     async def evaluate(
         self,
@@ -429,8 +485,9 @@ class RiskGuard:
 
         ``shadow`` runs the identical chain but parks nothing: a human must never be
         asked to approve an order that was never going to be submitted. The verdicts are
-        still produced and audited, which is the point of shadow mode. ``bot_id`` only
-        names the Bot on a parked approval; no check reads it.
+        still produced and audited, which is the point of shadow mode. ``bot_id`` names
+        the Bot whose Sleeve the chain checks (and the Bot on a parked approval); None
+        checks the account alone.
         """
         state = await self.breakers.observe(
             equity=account.equity,
@@ -438,6 +495,16 @@ class RiskGuard:
             daily_loss_limit_frac=self._limits.daily_loss_limit_frac,
             weekly_drawdown_limit_frac=self._limits.weekly_drawdown_limit_frac,
         )
+        sleeve = None
+        if bot_id is not None:
+            sleeve = await self.sleeves.load(
+                bot_id,
+                account_equity=account.equity,
+                symbol=symbol,
+                price=price,
+                now=now,
+                limits=self._limits,
+            )
         outcome = evaluate_chain(
             RiskContext(
                 intent=intent,
@@ -451,7 +518,8 @@ class RiskGuard:
                 live=live,
                 live_enabled=self._live_enabled,
                 human_approved=human_approved,
-                stopped_at=await self._last_stop(symbol.ticker, now),
+                stopped_at=await self._last_stop(symbol.ticker, now, bot_id),
+                sleeve=sleeve,
             )
         )
 

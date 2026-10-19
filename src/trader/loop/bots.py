@@ -1,7 +1,9 @@
 """Bots (#123): one trading strategy each, versioned append-only like Profiles.
 
 A Bot is the symbols it trades (each with its Symbol mode), the triggers it wakes on,
-the Sources it reads (#124), its prompt, and the account it trades on. Every change to that spec
+the Sources it reads (#124), its prompt, the account it trades on, and its Sleeve's
+capital (#125: a fixed dollar amount, or null for the whole account). Every change to
+that spec
 appends a Bot version and moves the Bot's current pointer; a journaled decision names
 the Bot and the Bot version that made it.
 
@@ -23,8 +25,11 @@ from trader.loop.decider import SYSTEM_PROMPT
 from trader.loop.scheduler import TriggerConfig
 from trader.loop.sources import bot_one_subscriptions
 from trader.ops.config import Settings
+from trader.risk.breakers import BreakerStore
+from trader.risk.sleeves import sleeve_capital
 from trader.store.audit import CALLER, SURFACE, audit
 from trader.store.db import Database
+from trader.store.repos import BotPositionsRepo
 
 #: The agent that ran before Bots existed (the migration creates it as id 1).
 BOT_ONE = "bot-1"
@@ -72,6 +77,9 @@ def bot_one_spec(settings: Settings) -> dict[str, Any]:
             "variant": "default",
             "sha256": hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest(),
         },
+        # Bot #1's Sleeve is the whole account (ADR 0003): it sizes against account
+        # equity, so its verdicts are what they were before Sleeves.
+        "sleeve": {"capital_usd": None},
     }
     return json.loads(json.dumps(spec))
 
@@ -91,7 +99,7 @@ class BotDesk:
             ORDER BY b.id
             """
         )
-        return [self._out(r) for r in rows]
+        return [await self._with_sleeve(self._out(r)) for r in rows]
 
     async def get(self, name: str) -> dict[str, Any]:
         """One Bot with every version, newest first."""
@@ -105,7 +113,7 @@ class BotDesk:
         )
         current = next(v for v in versions if v["version"] == bot["version"])
         return {
-            **self._out({**bot, "spec": current["spec"]}),
+            **await self._with_sleeve(self._out({**bot, "spec": current["spec"]})),
             "versions": [
                 {
                     "version": v["version"],
@@ -118,10 +126,16 @@ class BotDesk:
 
     async def seed(self, name: str, spec: dict[str, Any]) -> dict[str, Any]:
         """Make ``spec`` the Bot's current version: a new version only when it differs
-        from the current one. Returns the Bot as ``list`` shows it."""
+        from the current one. Returns the Bot as ``list`` shows it, less its Sleeve."""
         async with self._db.connection() as conn:
             await conn.execute(
                 "INSERT INTO bots (name) VALUES (%s) ON CONFLICT (name) DO NOTHING", (name,)
+            )
+            # The Bot's own pause and breakers (#125); a missing row is fail-closed.
+            await conn.execute(
+                "INSERT INTO risk_state (scope) SELECT 'bot:' || id FROM bots WHERE name = %s"
+                " ON CONFLICT (scope) DO NOTHING",
+                (name,),
             )
             cur = await conn.execute(
                 """
@@ -167,6 +181,37 @@ class BotDesk:
         return await self._db.fetch_one(
             "SELECT id, name, current_version AS version FROM bots WHERE name = %s", (name,)
         )
+
+    async def _with_sleeve(self, bot: dict[str, Any]) -> dict[str, Any]:
+        """The Bot's Sleeve: its capital, what its fills built, and its own risk state."""
+        state = await BreakerStore(self._db, bot_id=bot["id"]).load()
+        rows = await BotPositionsRepo(self._db).for_bot(bot["id"])
+        return {
+            **bot,
+            "sleeve": {
+                "capital_usd": sleeve_capital(bot["spec"]),
+                "positions": [
+                    {
+                        "symbol": r["symbol"],
+                        "qty": float(r["qty"]),
+                        "avg_entry_price": (
+                            float(r["avg_entry_price"])
+                            if r["avg_entry_price"] is not None
+                            else None
+                        ),
+                        "realized_pnl": float(r["realized_pnl"]),
+                    }
+                    for r in rows
+                    if float(r["qty"]) != 0 or float(r["realized_pnl"]) != 0
+                ],
+                "risk": {
+                    "trading_paused": state.trading_paused,
+                    "pause_reason": state.pause_reason,
+                    "halted_reason": state.halted_reason,
+                    "blocked_reason": state.blocked_reason,
+                },
+            },
+        }
 
     @staticmethod
     def _out(row: dict[str, Any]) -> dict[str, Any]:

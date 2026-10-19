@@ -154,6 +154,21 @@ SignalScheduler → ContextBuilder → (analyst desk) → Decider → (Confirm) 
   to Bot #1 with no version; `eval_runs` and `usage_daily` have the column but new rows are
   not stamped yet. Read-only on every surface: `trader bot list|show`, `/bots`, MCP
   `get_bots`/`get_bot` ([ADR 0003](adr/0003-bots-share-one-account-through-sleeves.md)).
+- **Sleeves** (#125, `risk/sleeves.py`) — each Bot trades a Sleeve: `sleeve.capital_usd`
+  in its spec (a fixed dollar amount, or null = the whole account, which is Bot #1's) and
+  `bot_positions`, folded from fills through `orders.bot_id` by the same delta the account
+  takes (an unattributed order is Bot #1's), with realized P&L. RiskGuard reads it as data
+  (`RiskContext.sleeve`): sizing and Kelly against the Sleeve's equity (capital + realized +
+  marked; the account's for a whole-account Sleeve), "is this reducing", full close, the
+  position cap and the executor's crypto held-qty clamp against the Sleeve's position (a Bot
+  cannot close another Bot's holding), concurrency and trades/day for the Bot and for the
+  account, in-flight orders and stop cooldown per (Bot, symbol). `risk_state` is scoped:
+  `account` (pause, drift, breakers: the **Account halt**, every Bot) and `bot:<id>` (that
+  Bot's pause, and breakers on a fixed Sleeve's equity; a whole-account Sleeve's breakers
+  are the account's). `pause`/`resume`/`resume_breaker` take an optional `bot`; the Bot read
+  shows its Sleeve (capital, positions, risk). Reconcile also checks that the Sleeves sum to
+  `positions`; a mismatch sets drift (Account halt), and adopting the venue puts each
+  difference into the one Sleeve that holds the symbol, else Bot #1's.
 
 ### Universe
 
@@ -316,7 +331,9 @@ capability, defined once, three doors.
 
 - Live client construction refuses unless `ALPACA_LIVE_ENABLED=true` (default absent).
 - No order path exists outside RiskGuard; unreadable risk input = deny, never allow.
-- Breaker + pause state is DB-backed and survives restart.
+- Breaker + pause state is DB-backed and survives restart, per scope (account, each Bot).
+- A Bot can reduce or close only what its own Sleeve holds; the Sleeves sum to the
+  account positions, which match the venue, or the account halts.
 - `audit_events` is append-only (no UPDATE/DELETE in code).
 - API auth mandatory outside explicit dev mode.
 - Blocking I/O (broker/data fetches) runs off the event loop so `/health` stays responsive

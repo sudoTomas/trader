@@ -143,24 +143,34 @@ def risk_deny(
 
 
 @risk_app.command("pause")
-def risk_pause(reason: str = typer.Option("operator", help="Why trading is being paused.")) -> None:
+def risk_pause(
+    reason: str = typer.Option("operator", help="Why trading is being paused."),
+    bot: str = typer.Option(None, help="Pause only this Bot (default: the whole account)."),
+) -> None:
     """Pause trading (kill switch — blocks every order, exits included)."""
-    typer.echo(json.dumps(_post("/risk/pause", params={"reason": reason}), indent=2))
+    params = {"reason": reason, **({"bot": bot} if bot else {})}
+    typer.echo(json.dumps(_post("/risk/pause", params=params), indent=2))
 
 
 @risk_app.command("resume")
-def risk_resume() -> None:
+def risk_resume(
+    bot: str = typer.Option(None, help="Clear only this Bot's pause (default: the account's)."),
+) -> None:
     """Clear the operator pause."""
-    typer.echo(json.dumps(_post("/risk/resume"), indent=2))
+    typer.echo(json.dumps(_post("/risk/resume", params={"bot": bot} if bot else None), indent=2))
 
 
 @risk_app.command("resume-breaker")
 def risk_resume_breaker(
     equity: float = typer.Option(None, help="Re-baseline the breaker windows to this equity."),
+    bot: str = typer.Option(None, help="Clear only this Bot's halt (default: the account's)."),
 ) -> None:
     """Clear a breaker halt and re-baseline its windows."""
-    params = {"equity": equity} if equity is not None else None
-    typer.echo(json.dumps(_post("/risk/resume-breaker", params=params), indent=2))
+    params = {
+        **({"equity": equity} if equity is not None else {}),
+        **({"bot": bot} if bot else {}),
+    }
+    typer.echo(json.dumps(_post("/risk/resume-breaker", params=params or None), indent=2))
 
 
 @app.command()

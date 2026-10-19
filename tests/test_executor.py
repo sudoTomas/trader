@@ -497,9 +497,11 @@ async def test_position_drift_pauses_routing_instead_of_crashing(db: Database):
 
 async def test_clean_reconcile_leaves_routing_alone(db: Database):
     from trader.risk.breakers import BreakerStore
-    from trader.store.repos import PositionsRepo
+    from trader.store.repos import BotPositionsRepo, PositionsRepo
 
     await PositionsRepo(db).upsert(symbol="BTC/USD", asset_class="crypto", qty=0.25)
+    # Bot #1's Sleeve holds it all, as its fills would have built it (#125).
+    await BotPositionsRepo(db).upsert(bot_id=1, symbol="BTC/USD", qty=0.25)
     broker = FakeAlpaca(positions=[BrokerPosition("BTC/USD", qty=0.25, qty_available=0.25)])
     assert (await Executor(db, broker).reconcile_positions())["drift"] == {}
     assert not (await BreakerStore(db).load()).drift_detected

@@ -22,7 +22,7 @@ from trader.ops.config import Settings
 from trader.risk.guard import RiskGuard
 from trader.risk.limits import RiskLimits
 from trader.store.db import Database
-from trader.store.repos import PositionsRepo
+from trader.store.repos import BotPositionsRepo, PositionsRepo
 
 
 def settings(**kwargs) -> Settings:
@@ -165,6 +165,10 @@ async def test_stop_loss_closes_carry_the_bot(db: Database):
     bot = await seeded(db)
     await PositionsRepo(db).upsert(
         symbol="BTC/USD", asset_class="crypto", qty=0.5, avg_entry_price=200.0
+    )
+    # Bot #1's own fills built it, so its Sleeve holds it (#125): the stop may close it.
+    await BotPositionsRepo(db).upsert(
+        bot_id=bot["id"], symbol="BTC/USD", qty=0.5, avg_entry_price=200.0
     )
     runner = build_runner(
         db,

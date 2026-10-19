@@ -58,16 +58,29 @@ def _to_float(value) -> float | None:
     return None if value is None else float(value)
 
 
-class BreakerStore:
-    """Owns ``risk_state``. All mutations go through here."""
+ACCOUNT_SCOPE = "account"
 
-    def __init__(self, db: Database) -> None:
+
+def scope_for(bot_id: int | None) -> str:
+    """The ``risk_state`` row a Bot's own pause and breakers live in; None = the account."""
+    return ACCOUNT_SCOPE if bot_id is None else f"bot:{bot_id}"
+
+
+class BreakerStore:
+    """Owns ``risk_state``. All mutations go through here.
+
+    One store per scope (ADR 0003): the account's (``bot_id`` None) is the Account halt
+    every Bot reads; a Bot's own scope pauses or halts only that Bot.
+    """
+
+    def __init__(self, db: Database, *, bot_id: int | None = None) -> None:
         self._db = db
+        self._scope = scope_for(bot_id)
 
     async def load(self) -> RiskState:
-        row = await self._db.fetch_one("SELECT * FROM risk_state WHERE id = 1")
-        if row is None:  # migration guarantees the row; treat absence as fail-closed
-            log.error("risk_state_missing")
+        row = await self._db.fetch_one("SELECT * FROM risk_state WHERE scope = %s", (self._scope,))
+        if row is None:  # migration/seed guarantees the row; treat absence as fail-closed
+            log.error("risk_state_missing", scope=self._scope)
             return RiskState(trading_paused=True, pause_reason="risk_state row missing")
         return RiskState(
             trading_paused=row["trading_paused"],
@@ -82,17 +95,17 @@ class BreakerStore:
     async def _update(self, **fields) -> None:
         assignments = ", ".join(f"{name} = %s" for name in fields)
         await self._db.execute(
-            f"UPDATE risk_state SET {assignments}, updated_at = now() WHERE id = 1",
-            tuple(fields.values()),
+            f"UPDATE risk_state SET {assignments}, updated_at = now() WHERE scope = %s",
+            (*fields.values(), self._scope),
         )
 
     async def pause(self, reason: str) -> None:
         await self._update(trading_paused=True, pause_reason=reason)
-        log.warning("trading_paused", reason=reason)
+        log.warning("trading_paused", scope=self._scope, reason=reason)
 
     async def unpause(self) -> None:
         await self._update(trading_paused=False, pause_reason=None)
-        log.info("trading_unpaused")
+        log.info("trading_unpaused", scope=self._scope)
 
     async def set_drift(self, detected: bool) -> None:
         await self._update(drift_detected=detected)
@@ -106,7 +119,7 @@ class BreakerStore:
             week_high_equity=equity,
             day_start_equity=equity,
         )
-        log.info("breakers_resumed", equity=equity)
+        log.info("breakers_resumed", scope=self._scope, equity=equity)
 
     async def observe(
         self,
@@ -151,8 +164,10 @@ class BreakerStore:
     async def _halt(self, reason: str, *, equity: float, baseline: float) -> RiskState:
         await self._db.execute(
             "UPDATE risk_state SET halted_reason = %s, halted_at = now(),"
-            " updated_at = now() WHERE id = 1",
-            (reason,),
+            " updated_at = now() WHERE scope = %s",
+            (reason, self._scope),
         )
-        log.error("breaker_tripped", reason=reason, equity=equity, baseline=baseline)
+        log.error(
+            "breaker_tripped", scope=self._scope, reason=reason, equity=equity, baseline=baseline
+        )
         return await self.load()

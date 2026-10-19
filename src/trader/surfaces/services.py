@@ -215,10 +215,10 @@ def build_registry(
         from datetime import UTC, datetime
 
         from trader.data.base import MarketDataError
-        from trader.loop.runner import count_trades_today
         from trader.ops.config import get_settings
         from trader.risk.approvals import payload_to_intent
         from trader.risk.guard import AccountState, RiskDenied
+        from trader.risk.sleeves import count_trades_today
         from trader.store.repos import ApprovalsRepo, PositionsRepo
 
         if runner is None or getattr(runner, "executor", None) is None:
@@ -381,34 +381,52 @@ def build_registry(
         await _audit_command("wake_trader", {"wakeups": len(results)})
         return {"woken": True, "results": [r.as_dict() for r in results]}
 
-    @reg.register("pause", kind="command", summary="Pause trading (kill switch).")
-    async def pause(reason: str = "operator") -> dict[str, Any]:
+    async def _bot_id(bot: str | None) -> int | None:
+        """A Bot name → its id (None = the account). Unknown names raise BotNotFound."""
+        from trader.loop.bots import BotDesk
+
+        assert db is not None
+        return None if bot is None else (await BotDesk(db).get(bot))["id"]
+
+    def _scoped(out: dict[str, Any], bot: str | None) -> dict[str, Any]:
+        return out if bot is None else {**out, "bot": bot}
+
+    @reg.register(
+        "pause",
+        kind="command",
+        summary="Pause trading (kill switch): the account, or with bot only that Bot.",
+    )
+    async def pause(reason: str = "operator", bot: str | None = None) -> dict[str, Any]:
         from trader.risk.breakers import BreakerStore
 
         assert db is not None, "pause requires a store"
-        await BreakerStore(db).pause(reason)
-        await _audit_command("pause", {"reason": reason})
-        return {"trading_paused": True, "reason": reason}
+        await BreakerStore(db, bot_id=await _bot_id(bot)).pause(reason)
+        await _audit_command("pause", _scoped({"reason": reason}, bot))
+        return _scoped({"trading_paused": True, "reason": reason}, bot)
 
-    @reg.register("resume", kind="command", summary="Clear the operator pause.")
-    async def resume() -> dict[str, Any]:
+    @reg.register(
+        "resume", kind="command", summary="Clear the operator pause (the account's, or a Bot's)."
+    )
+    async def resume(bot: str | None = None) -> dict[str, Any]:
         from trader.risk.breakers import BreakerStore
 
         assert db is not None, "resume requires a store"
-        await BreakerStore(db).unpause()
-        await _audit_command("resume", {})
-        return {"trading_paused": False}
+        await BreakerStore(db, bot_id=await _bot_id(bot)).unpause()
+        await _audit_command("resume", _scoped({}, bot))
+        return _scoped({"trading_paused": False}, bot)
 
     @reg.register(
         "resume_breaker",
         kind="command",
-        summary="Clear a breaker halt and re-baseline its windows.",
+        summary="Clear a breaker halt (the account's, or a Bot's) and re-baseline its windows.",
     )
-    async def resume_breaker(equity: float | None = None) -> dict[str, Any]:
+    async def resume_breaker(equity: float | None = None, bot: str | None = None) -> dict[str, Any]:
         from trader.ops.config import get_settings
         from trader.risk.breakers import BreakerStore
+        from trader.risk.sleeves import SleeveLedger
 
         assert db is not None, "resume_breaker requires a store"
+        bot_id = await _bot_id(bot)
         if equity is not None:
             baseline = equity
         else:
@@ -420,9 +438,12 @@ def build_registry(
                 if isinstance(live, (int, float)) and not isinstance(live, bool) and live > 0
                 else get_settings().shadow_equity
             )
-        await BreakerStore(db).resume(equity=baseline)
-        await _audit_command("resume_breaker", {"rebaselined_to": baseline})
-        return {"halted_reason": None, "rebaselined_to": baseline}
+            if bot_id is not None:
+                # A Bot's windows re-baseline to its Sleeve's equity (holdings at entry).
+                baseline = await SleeveLedger(db).equity(bot_id, account_equity=baseline, prices={})
+        await BreakerStore(db, bot_id=bot_id).resume(equity=baseline)
+        await _audit_command("resume_breaker", _scoped({"rebaselined_to": baseline}, bot))
+        return _scoped({"halted_reason": None, "rebaselined_to": baseline}, bot)
 
     # --- broker / ledger --------------------------------------------------
 
