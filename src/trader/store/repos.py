@@ -83,15 +83,27 @@ class DecisionsRepo:
     async def get(self, decision_id: int) -> Row | None:
         return await self._db.fetch_one("SELECT * FROM decisions WHERE id = %s", (decision_id,))
 
-    async def recent(self, limit: int = 50, *, symbol: str | None = None) -> list[Row]:
-        if symbol is None:
+    async def recent(
+        self, limit: int = 50, *, symbol: str | None = None, bot_id: int | None = None
+    ) -> list[Row]:
+        """Newest first; ``symbol`` and ``bot_id`` narrow it (a row with no Bot is
+        Bot #1's, as in the Sleeves)."""
+        if symbol is None and bot_id is None:
             return await self._db.fetch_all(
                 "SELECT * FROM decisions ORDER BY ts DESC, id DESC LIMIT %s", (limit,)
             )
-        # decisions_symbol_ts_idx serves this.
+        where: list[str] = []
+        params: list[Any] = []
+        if symbol is not None:
+            where.append("symbol = %s")  # decisions_symbol_ts_idx serves this
+            params.append(symbol)
+        if bot_id is not None:
+            where.append("coalesce(bot_id, 1) = %s")
+            params.append(bot_id)
         return await self._db.fetch_all(
-            "SELECT * FROM decisions WHERE symbol = %s ORDER BY ts DESC, id DESC LIMIT %s",
-            (symbol, limit),
+            f"SELECT * FROM decisions WHERE {' AND '.join(where)}"
+            " ORDER BY ts DESC, id DESC LIMIT %s",
+            (*params, limit),
         )
 
 

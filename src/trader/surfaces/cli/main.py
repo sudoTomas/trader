@@ -174,9 +174,11 @@ def risk_resume_breaker(
 
 
 @app.command()
-def wake() -> None:
+def wake(
+    bot: str = typer.Option(None, help="Wake only this Bot (default: Bot #1)."),
+) -> None:
     """Force a decide pass now, ignoring cooldowns."""
-    typer.echo(json.dumps(_post("/loop/wake"), indent=2))
+    typer.echo(json.dumps(_post("/loop/wake", params={"bot": bot} if bot else None), indent=2))
 
 
 @app.command()
@@ -251,9 +253,11 @@ app.add_typer(loop_app, name="loop")
 
 
 @loop_app.command("status")
-def loop_status() -> None:
+def loop_status(
+    bot: str = typer.Option(None, help="This Bot's loop (default: Bot #1)."),
+) -> None:
     """Print loop mode (shadow/live) and counters."""
-    typer.echo(json.dumps(_get("/loop/status"), indent=2))
+    typer.echo(json.dumps(_get("/loop/status", params={"bot": bot} if bot else None), indent=2))
 
 
 note_app = typer.Typer(help="Research Desk capture — operator research notes.")
@@ -845,6 +849,118 @@ def bot_list() -> None:
 def bot_show(name: str = typer.Argument(..., help="Bot name, e.g. bot-1.")) -> None:
     """One Bot with every version."""
     typer.echo(json.dumps(_get(f"/bots/{name}"), indent=2))
+
+
+def _symbol_modes(raw: str) -> dict[str, str]:
+    """``AAPL,MSFT=live``: each ticker in shadow unless ``=mode`` says otherwise."""
+    modes: dict[str, str] = {}
+    for item in (part.strip() for part in raw.split(",")):
+        if item:
+            ticker, _, mode = item.partition("=")
+            modes[ticker.strip()] = mode.strip() or "shadow"
+    return modes
+
+
+def _triggers(raw: list[str] | None) -> dict | None:
+    """``key=value`` pairs; a value is read as JSON when it parses (numbers, booleans)."""
+    if not raw:
+        return None
+    out: dict = {}
+    for pair in raw:
+        key, sep, value = pair.partition("=")
+        if not sep:
+            raise typer.BadParameter(f"{pair!r} is not key=value")
+        try:
+            out[key.strip()] = json.loads(value)
+        except json.JSONDecodeError:
+            out[key.strip()] = value
+    return out
+
+
+@bot_app.command("create")
+def bot_create(
+    name: str = typer.Argument(..., help="New Bot's name, e.g. bot-2-largecap."),
+    symbols: str = typer.Option(
+        ..., help="Comma-separated tickers, each in shadow unless TICKER=live|replay."
+    ),
+    capital: float = typer.Option(..., help="The Sleeve's fixed capital, USD."),
+    source: Annotated[
+        list[str] | None,
+        typer.Option("--source", help="A Source to read (repeatable): macro_view, brief, …"),
+    ] = None,
+    prompt: str = typer.Option("default", help="Prompt variant, e.g. equity-largecap."),
+    trigger: Annotated[
+        list[str] | None,
+        typer.Option("--trigger", help="Override one trigger setting, key=value (repeatable)."),
+    ] = None,
+    account: str = typer.Option("alpaca-paper", help="The account the Bot trades on."),
+    desk: bool = typer.Option(False, help="Run the decision desk for this Bot."),
+) -> None:
+    """Create a Bot at version 1 (audited). Live refuses a symbol another Bot owns."""
+    body = {
+        "name": name,
+        "symbols": _symbol_modes(symbols),
+        "capital_usd": capital,
+        "sources": source or [],
+        "prompt_variant": prompt,
+        "triggers": _triggers(trigger),
+        "account_id": account,
+        "desk": desk,
+    }
+    typer.echo(json.dumps(_post("/bots", json_body=body), indent=2))
+
+
+@bot_app.command("version")
+def bot_version(
+    name: str = typer.Argument(..., help="Bot name."),
+    symbols: str = typer.Option(None, help="Replace the symbols (TICKER[=mode],…)."),
+    source: Annotated[
+        list[str] | None,
+        typer.Option("--source", help="Replace the Sources (repeatable)."),
+    ] = None,
+    prompt: str = typer.Option(None, help="Replace the prompt variant."),
+    trigger: Annotated[
+        list[str] | None,
+        typer.Option("--trigger", help="Change one trigger setting, key=value (repeatable)."),
+    ] = None,
+    capital: float = typer.Option(None, help="Replace the Sleeve's capital, USD."),
+) -> None:
+    """Make a new version of a Bot from the fields given (audited; unchanged writes nothing)."""
+    body = {
+        "symbols": _symbol_modes(symbols) if symbols else None,
+        "sources": source,
+        "prompt_variant": prompt,
+        "triggers": _triggers(trigger),
+        "capital_usd": capital,
+    }
+    typer.echo(json.dumps(_post(f"/bots/{name}/versions", json_body=body), indent=2))
+
+
+@bot_app.command("mode")
+def bot_mode(
+    name: str = typer.Argument(..., help="Bot name."),
+    symbol: str = typer.Argument(..., help="One of the Bot's symbols."),
+    mode: str = typer.Argument(..., help="replay, shadow or live."),
+) -> None:
+    """Set one symbol's Symbol mode (a new version). Live refuses another Bot's symbol."""
+    body = {"symbol": symbol, "mode": mode}
+    typer.echo(json.dumps(_post(f"/bots/{name}/symbol-mode", json_body=body), indent=2))
+
+
+@bot_app.command("pause")
+def bot_pause(
+    name: str = typer.Argument(..., help="Bot name."),
+    reason: str = typer.Option("operator", help="Why (recorded in the audit trail)."),
+) -> None:
+    """Pause one Bot (same as `trader risk pause --bot`)."""
+    params = {"reason": reason, "bot": name}
+    typer.echo(json.dumps(_post("/risk/pause", params=params), indent=2))
+
+
+@bot_app.command("resume")
+def bot_resume(name: str = typer.Argument(..., help="Bot name.")) -> None:
+    """Clear one Bot's pause (same as `trader risk resume --bot`)."""
+    typer.echo(json.dumps(_post("/risk/resume", params={"bot": name}), indent=2))
 
 
 if __name__ == "__main__":

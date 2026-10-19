@@ -20,6 +20,7 @@ folder holds everything behind it.
 | [`runbooks/deploy.md`](runbooks/deploy.md) | Standing the service up: compose with the published image, or the API as a host systemd user unit over the compose Postgres. Post-deploy checks. |
 | [`runbooks/decide-change-gate.md`](runbooks/decide-change-gate.md) | Before any prompt edit, model swap, new prompt lane, desk change, or new live symbol: replay, then a shadow window, then one flip. One gate at a time. |
 | [`runbooks/first-live-paper-trade.md`](runbooks/first-live-paper-trade.md) | Flipping shadow off for the first time, deliberately, with paper keys, and verifying the first round trip against the venue. |
+| [`runbooks/second-bot.md`](runbooks/second-bot.md) | Creating Bot #2 (`bot-2-largecap`) in shadow with one command, checking it, and changing it later through new Bot versions. |
 | [`runbooks/research-capture.md`](runbooks/research-capture.md) | Feeding the research desk: notes through CLI, API, or MCP; the compiled Macro View; the one-way markdown mirror. |
 
 ## Deploy appendix

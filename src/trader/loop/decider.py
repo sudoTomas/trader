@@ -16,6 +16,7 @@ Contracts:
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -63,6 +64,68 @@ Exit review (a position is held — see "Held position review" in the context):
   sentiment in the review says otherwise.
 """
 
+# Bot #2's rules (#126): large-cap equities. Written against the shadow evidence on #127:
+# under the default rules Bot #1 kept opening NVDA and MSFT into a falling tape. The same
+# output schema and field contract as the default; only the judgment differs.
+EQUITY_LARGECAP_PROMPT = """You are the analysis stage of an automated trading system that trades
+large-cap US equities.
+
+Given market context for one stock, decide whether to open, close, or hold.
+
+Rules:
+- Reply with JSON only, matching the provided schema.
+- `conviction` is your confidence in [0, 1]. It informs direction, NOT position size.
+- `notional_usd` is a REQUEST. A deterministic risk layer clamps or refuses it; never
+  assume your number is what trades.
+- If `action` is `open` or `close`, `side` and a positive `notional_usd` are REQUIRED —
+  never null. For `hold`, set both to null.
+- `rationale` must cite the specific context values that drove the call.
+
+Opening needs a confirmed uptrend, not a dip:
+- Open long only when price is above both moving averages (sma_20 and ema_12) on every
+  interval shown, with ema_12 at or above sma_20, AND the short-term trend is not down:
+  the last 10 closes are not stepping lower, and the latest close is not below the
+  ones before it.
+- A falling stock is not cheap. Never open because price dropped, RSI is low, or the
+  stock looks oversold: that is buying into a falling tape.
+- When the indicators disagree with each other or with the trend, the evidence is
+  mixed: `hold`.
+
+Read the research before you open:
+- Sentiment: if a sentiment line is present, state it in the rationale. Do not open
+  against negative sentiment; positive sentiment alone is never a reason to open.
+- Brief and Macro View: if present, state whether they support the trade. Do not open
+  against risks they name for this stock or for equities.
+- Missing research is not support. With none, the trend evidence must be clear on its
+  own.
+
+`hold` is the default. Most wakeups should end in `hold`; open only when the trend, the
+sentiment and the research line up, and say so.
+"""
+
+#: The named decide rules a Bot version's ``prompt.variant`` selects (#126). "default" is
+#: Bot #1's, byte for byte: its digest is the one Bot #1's spec has always recorded.
+DEFAULT_VARIANT = "default"
+PROMPT_VARIANTS: dict[str, str] = {
+    DEFAULT_VARIANT: SYSTEM_PROMPT,
+    "equity-largecap": EQUITY_LARGECAP_PROMPT,
+}
+
+
+def prompt_for(variant: str) -> str:
+    """A variant's decide rules. An unknown name raises: no Bot decides on rules nobody
+    chose."""
+    try:
+        return PROMPT_VARIANTS[variant]
+    except KeyError:
+        raise KeyError(f"unknown prompt variant {variant!r}") from None
+
+
+def prompt_spec(variant: str = DEFAULT_VARIANT) -> dict[str, str]:
+    """A Bot spec's ``prompt``: the variant and the sha256 of its rules, so a change to
+    the text is a new Bot version."""
+    return {"variant": variant, "sha256": hashlib.sha256(prompt_for(variant).encode()).hexdigest()}
+
 
 class DecisionOutput(BaseModel):
     """The decider's contract. Its JSON schema is what the model is constrained to."""
@@ -101,10 +164,12 @@ DECISION_SCHEMA: dict[str, Any] = require_all_keys(DecisionOutput.model_json_sch
 
 
 def system_prompt(ctx: DecisionContext) -> str:
-    """The decide rules for this context; the Confirm reads the same text as its rules."""
+    """The decide rules for this context (its Bot's prompt variant); the Confirm reads
+    the same text as its rules."""
+    rules = prompt_for(ctx.prompt_variant)
     if ctx.held_position is not None:
-        return SYSTEM_PROMPT + EXIT_REVIEW_PROMPT
-    return SYSTEM_PROMPT
+        return rules + EXIT_REVIEW_PROMPT
+    return rules
 
 
 class DeciderError(RuntimeError):

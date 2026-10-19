@@ -152,8 +152,36 @@ SignalScheduler → ContextBuilder → (analyst desk) → Decider → (Confirm) 
   differs. Every decision (stop-loss and shadow rows included), order and parked approval
   carries `bot_id`; decisions also carry `bot_version`. Rows from before Bots are backfilled
   to Bot #1 with no version; `eval_runs` and `usage_daily` have the column but new rows are
-  not stamped yet. Read-only on every surface: `trader bot list|show`, `/bots`, MCP
+  not stamped yet. Read on every surface: `trader bot list|show`, `/bots`, MCP
   `get_bots`/`get_bot` ([ADR 0003](adr/0003-bots-share-one-account-through-sleeves.md)).
+  Every other Bot is defined in the store only (#126): `create_bot`, `new_bot_version`
+  (symbols with their Symbol modes — `replay`, `shadow`, `live` — Sources, prompt variant,
+  trigger overrides, a fixed `sleeve.capital_usd`) and `set_symbol_mode`, each a new
+  append-only, audited version; the version commands refuse Bot #1, which follows Settings.
+  **The Owner rule**: a write (Bot #1's boot seed included) that would make a second Bot
+  live on a symbol is refused, under one advisory lock so two writes cannot race.
+- **Prompt variants** (#126, `loop/decider.py` `PROMPT_VARIANTS`) — the decide rules are
+  named variants in code; a Bot spec's `prompt.variant` selects one and `prompt.sha256`
+  records its digest, so a text change is a new Bot version. `default` is Bot #1's rules
+  byte for byte; `equity-largecap` (Bot #2) requires a confirmed uptrend before an open
+  (price above sma_20 and ema_12, no falling closes), prefers `hold` on mixed evidence and
+  reads sentiment, the brief and the Macro View explicitly. The Confirm judges by the
+  same variant. Same output schema for every variant.
+- **Supervisor** (#126, `loop/supervisor.py`) — runs every Bot, Bot #1 (built from
+  Settings) first, the rest loaded from the store and rebuilt from the next tick when their
+  version moves. It owns what the Bots share: market data read through a per-tick,
+  in-memory cache (each symbol's quote and bars fetched once per tick however many Bots
+  read it; nothing stored), the one LLM registry, a semaphore so at most
+  `TRADER_LOOP_MAX_CONCURRENT_DECIDES` (default 2) Bots call the decide model at once, the
+  one executor and its one fills stream. Each tick runs the due Bots with `asyncio.gather`.
+  Each **BotRunner** (`loop/runner.py`; `LoopRunner` is its old name) keeps its own
+  triggers and cooldowns, journal history (its own rows on the symbol), single-flight
+  lock, crash backoff, pause, Sources, prompt and Sleeve: a fixed-Sleeve Bot marks, stops
+  and prompts on its own ledger and its Sleeve's equity, never another Bot's holding. Only
+  Bot #1 rolls the account's breakers. A Bot with no live symbol gets no executor; replay
+  symbols are not run. `loop_status` / `wake_trader` take an optional `bot` (default
+  Bot #1). Bot #2 (`bot-2-largecap`, six large caps in shadow) is created once by an
+  operator command: `docs/runbooks/second-bot.md`.
 - **Sleeves** (#125, `risk/sleeves.py`) — each Bot trades a Sleeve: `sleeve.capital_usd`
   in its spec (a fixed dollar amount, or null = the whole account, which is Bot #1's) and
   `bot_positions`, folded from fills through `orders.bot_id` by the same delta the account
@@ -323,8 +351,8 @@ capability, defined once, three doors.
   registry. Deliberately **no raw place-order tool** — orders exist only through the
   RiskGuarded loop. Tools: health, portfolio, positions, decisions, wake_trader,
   pause/resume, risk status, resume_breaker, approvals (list/approve/deny), briefs, sentiment,
-  bars, usage, research (submit/list/retire note, get_macro_view), bots (read-only),
-  flatten_all (confirm-gated).
+  bars, usage, research (submit/list/retire note, get_macro_view), bots (read, create, new
+  version, set Symbol mode), flatten_all (confirm-gated).
 - **CLI** (typer, `trader ...`): wraps the same services over the API for operator use.
 
 ## Safety invariants (summary)

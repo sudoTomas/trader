@@ -116,6 +116,10 @@ class DecisionContext:
     sentiment: SourceSlice | None = None  # its own lane, for a Bot that subscribes to it
     # Every Source slice this context read, for the journal's source_versions.
     sources: tuple[SourceSlice, ...] = ()
+    # The decide rules this context is judged by (#126): its Bot version's prompt variant.
+    prompt_variant: str = "default"
+    # What ``equity`` is: the account's, or a fixed Sleeve's for a Bot that has one.
+    equity_label: str = "Account equity"
 
     @property
     def primary_vol(self) -> float | None:
@@ -135,7 +139,7 @@ class DecisionContext:
             f"Time: {self.now.isoformat()}",
             f"Last price: {self.price:,.6g}",
             f"Open position: {self.position_qty:g} units",
-            f"Account equity: {self.equity:,.2f} USD",
+            f"{self.equity_label}: {self.equity:,.2f} USD",
             "",
             "Wake triggers:",
         ]
