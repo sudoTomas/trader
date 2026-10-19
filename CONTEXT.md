@@ -52,3 +52,37 @@ _Avoid_: budget, quota
 A model served by a local Provider. It costs nothing to call, whatever its license; the same open-weight model on a hosted Provider is paid.
 _Avoid_: free model, open-source model
 
+
+### Bots
+
+**Bot**:
+One trading strategy run by the agent: the symbols it trades, the prompt and triggers it wakes on, the Sources it reads, and its Sleeve. Every Draft, order and approval belongs to exactly one Bot. The agent that ran before Bots existed is Bot #1.
+_Avoid_: strategy (a Bot carries one), agent, sleeve
+
+**Bot version**:
+One saved state of a Bot. Every edit makes a new version; a journaled decision names the Bot version that made it, so the decision can be replayed with the same prompt and Sources.
+_Avoid_: revision, config
+
+**Symbol mode**:
+How a Bot treats one of its symbols: replay (scored only against history), shadow (decides and journals, never orders) or live (orders through RiskGuard). A symbol moves from replay to shadow to live only through the decide-change gate.
+_Avoid_: stage, status
+
+**Owner**:
+The one Bot that is live on a symbol. Other Bots may shadow that symbol but may not order it.
+_Avoid_: holder
+
+**Sleeve**:
+The share of the broker account that one Bot trades with: a fixed dollar amount of capital and the positions that Bot's own fills built. A Bot sizes against its Sleeve and can only reduce or close what its Sleeve holds. The Sleeves together add up to the account.
+_Avoid_: sub-account, budget (a budget is a Spend cap), allocation
+
+**Account halt**:
+A breaker trip or a position drift on the whole account. It stops every Bot from opening; exits stay managed. A Bot's own breaker or pause stops only that Bot.
+_Avoid_: global kill, panic
+
+**Source**:
+A body of information a Bot reads when it decides: the Macro View, a brief, sentiment, an economic series, a held position. A Bot subscribes to the Sources it wants. A Source only reads what has already been produced; it never fetches into storage on the live path.
+_Avoid_: feed, lane (a lane is one section of the prompt), input
+
+**Source version**:
+The exact state of a Source a decision read. Every decision records one per Source it used, so replay reads the same information.
+_Avoid_: snapshot
