@@ -129,7 +129,17 @@ SignalScheduler → ContextBuilder → (analyst desk) → Decider → (Confirm) 
   [crypto-fees-from-asset](lessons.md#crypto-fees-from-asset)).
 - **Journal** — every wakeup (including suppressed/shadow) writes a row: trigger, full
   prompt, raw output, risk verdicts, desk verdicts, the Confirm, `macro_view_version`,
-  cost, latency. Replay-ready.
+  cost, latency, `bot_id` and `bot_version`. Replay-ready.
+- **Bots** (#123, `loop/bots.py`) — the loop runs as **Bot #1** (`bot-1`). A Bot's spec
+  (each symbol with its Symbol mode — `live`, or `shadow` under `TRADER_SHADOW_MODE` /
+  `TRADER_SHADOW_SYMBOLS` — the trigger config, the briefs/desk/exit-review lanes, the decide
+  prompt's digest and `account_id`) lives in `bots` and append-only `bot_versions`. Bot #1's
+  spec is derived from Settings and seeded at boot: a new, audited version only when it
+  differs. Every decision (stop-loss and shadow rows included), order and parked approval
+  carries `bot_id`; decisions also carry `bot_version`. Rows from before Bots are backfilled
+  to Bot #1 with no version; `eval_runs` and `usage_daily` have the column but new rows are
+  not stamped yet. Read-only on every surface: `trader bot list|show`, `/bots`, MCP
+  `get_bots`/`get_bot` ([ADR 0003](adr/0003-bots-share-one-account-through-sleeves.md)).
 
 ### Universe
 
@@ -284,7 +294,8 @@ capability, defined once, three doors.
   registry. Deliberately **no raw place-order tool** — orders exist only through the
   RiskGuarded loop. Tools: health, portfolio, positions, decisions, wake_trader,
   pause/resume, risk status, resume_breaker, approvals (list/approve/deny), briefs, sentiment,
-  bars, usage, research (submit/list/retire note, get_macro_view), flatten_all (confirm-gated).
+  bars, usage, research (submit/list/retire note, get_macro_view), bots (read-only),
+  flatten_all (confirm-gated).
 - **CLI** (typer, `trader ...`): wraps the same services over the API for operator use.
 
 ## Safety invariants (summary)
