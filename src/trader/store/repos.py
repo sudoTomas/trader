@@ -225,6 +225,49 @@ class PositionsRepo:
         return await self._db.fetch_all("SELECT * FROM positions ORDER BY symbol")
 
 
+class BotPositionsRepo:
+    """Each Bot's Sleeve ledger (ADR 0003): the positions its own fills built. The Sleeves
+    together must equal ``positions``; reconcile checks it."""
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def upsert(
+        self,
+        *,
+        bot_id: int,
+        symbol: str,
+        qty: float,
+        avg_entry_price: float | None = None,
+        realized_pnl: float = 0.0,
+    ) -> None:
+        await self._db.execute(
+            """
+            INSERT INTO bot_positions (bot_id, symbol, qty, avg_entry_price, realized_pnl)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (bot_id, symbol) DO UPDATE
+            SET qty = EXCLUDED.qty,
+                avg_entry_price = EXCLUDED.avg_entry_price,
+                realized_pnl = EXCLUDED.realized_pnl,
+                updated_at = now()
+            """,
+            (bot_id, symbol, qty, avg_entry_price, realized_pnl),
+        )
+
+    async def get(self, bot_id: int, symbol: str) -> Row | None:
+        return await self._db.fetch_one(
+            "SELECT * FROM bot_positions WHERE bot_id = %s AND symbol = %s", (bot_id, symbol)
+        )
+
+    async def for_bot(self, bot_id: int) -> list[Row]:
+        return await self._db.fetch_all(
+            "SELECT * FROM bot_positions WHERE bot_id = %s ORDER BY symbol", (bot_id,)
+        )
+
+    async def all(self) -> list[Row]:
+        return await self._db.fetch_all("SELECT * FROM bot_positions ORDER BY symbol, bot_id")
+
+
 class ResearchNotesRepo:
     """Research Desk notes (M4). Content is immutable; only lifecycle fields change."""
 

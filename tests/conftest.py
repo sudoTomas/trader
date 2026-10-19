@@ -99,18 +99,25 @@ ALL_TABLES = (
     "llm_profile_versions",
     "llm_profiles",
     "llm_providers",
+    "bot_positions",
     "bot_versions",
     "bots",
 )
 
-# risk_state is a singleton row, not a collection: restore it to the migration's
-# defaults rather than truncating it away (a missing row is fail-closed by design).
+# risk_state's account row is not a collection: restore it to the migration's defaults
+# rather than truncating it away (a missing row is fail-closed by design). Bot rows go
+# with the truncated Bots; seeding a Bot creates its row again. Bot #1 itself is put back
+# as the migrations leave it (no version yet): unattributed fills fold into its Sleeve.
 RESET_RISK_STATE = """
+    INSERT INTO bots (id, name) VALUES (1, 'bot-1');
+    SELECT setval(pg_get_serial_sequence('bots', 'id'), 1);
+    DELETE FROM risk_state WHERE scope <> 'account';
+    INSERT INTO risk_state (scope) VALUES ('bot:1');
     UPDATE risk_state SET
         trading_paused = false, pause_reason = NULL, drift_detected = false,
         halted_reason = NULL, halted_at = NULL, day_session = NULL,
         day_start_equity = NULL, week_high_equity = NULL, updated_at = now()
-    WHERE id = 1
+    WHERE scope = 'account'
 """
 
 

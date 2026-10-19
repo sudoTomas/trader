@@ -37,9 +37,10 @@ from trader.core.symbols import AssetClass, Symbol
 from trader.core.types import OrderIntent, Side
 from trader.risk.breakers import BreakerStore
 from trader.risk.guard import RiskOutcome
+from trader.risk.sleeves import UNATTRIBUTED_BOT_ID
 from trader.store.audit import audit
 from trader.store.db import Database
-from trader.store.repos import OrdersRepo, PositionsRepo
+from trader.store.repos import BotPositionsRepo, OrdersRepo, PositionsRepo
 
 log = structlog.get_logger(__name__)
 
@@ -78,6 +79,22 @@ class ExecutionResult:
         }
 
 
+def _sleeve_of(bot_id: int | None) -> int:
+    """The Sleeve an order folds into: an unattributed order is Bot #1's."""
+    return UNATTRIBUTED_BOT_ID if bot_id is None else bot_id
+
+
+def _fold_entry(
+    held: float, avg: float | None, signed: float, new_qty: float, price: float | None
+) -> float | None:
+    """Weighted average entry while adding; a reduction keeps the existing basis."""
+    if held == 0 or (held > 0) != (signed > 0):
+        return price if held == 0 else avg
+    if price is not None and new_qty != 0:
+        return ((held * (avg or price)) + (signed * price)) / new_qty
+    return avg
+
+
 def new_client_order_id() -> str:
     """Fresh per intent. Alpaca only guarantees uniqueness against *active* orders, so
     reusing an id from a dead order is undefined — never reuse (findings §3)."""
@@ -109,6 +126,7 @@ class Executor:
         self._broker = broker
         self._orders = OrdersRepo(db)
         self._positions = PositionsRepo(db)
+        self._sleeves = BotPositionsRepo(db)
         self._breakers = BreakerStore(db)
 
     # -- submit ------------------------------------------------------------
@@ -127,7 +145,8 @@ class Executor:
         client_order_id = new_client_order_id()
         held_qty = None
         if intent.side is Side.SELL:
-            row = await self._positions.get(symbol.ticker)
+            # The Sleeve's holding: a Bot can sell only what its own fills built.
+            row = await self._sleeves.get(_sleeve_of(bot_id), symbol.ticker)
             if row is not None:
                 held_qty = abs(float(row["qty"]))
         qty, notional, tif = venue_order_params(intent, symbol, price, held_qty=held_qty)
@@ -255,13 +274,8 @@ class Executor:
         # so accumulating gross fill qty overstates the position by the fee (~25 bps —
         # the ledger's first ETH fill drifted exactly that much, 2026-09-14).
         new_qty = event.position_qty if event.position_qty is not None else held + signed
-
-        # Weighted average entry while adding; a reduction keeps the existing basis.
         avg = float(current["avg_entry_price"]) if current and current["avg_entry_price"] else None
-        if held == 0 or (held > 0) != (signed > 0):
-            avg = event.fill_price if held == 0 else avg
-        elif event.fill_price is not None and new_qty != 0:
-            avg = ((held * (avg or event.fill_price)) + (signed * event.fill_price)) / new_qty
+        avg = _fold_entry(held, avg, signed, new_qty, event.fill_price)
 
         await self._positions.upsert(
             symbol=symbol,
@@ -269,7 +283,32 @@ class Executor:
             qty=new_qty,
             avg_entry_price=avg,
         )
+        await self._apply_fill_to_sleeve(order_row, signed, new_qty - held, event.fill_price)
         log.info("fill_applied", symbol=symbol, qty=event.filled_qty, position=new_qty)
+
+    async def _apply_fill_to_sleeve(
+        self, order_row: dict, signed: float, delta: float, price: float | None
+    ) -> None:
+        """Fold the fill into the ordering Bot's Sleeve by the same ``delta`` the account
+        took (venue-corrected for crypto fees), so the Sleeves keep summing to positions.
+        A reduction realizes P&L against the Sleeve's own entry."""
+        bot_id = _sleeve_of(order_row["bot_id"])
+        symbol = order_row["symbol"]
+        current = await self._sleeves.get(bot_id, symbol)
+        held = float(current["qty"]) if current else 0.0
+        avg = float(current["avg_entry_price"]) if current and current["avg_entry_price"] else None
+        realized = float(current["realized_pnl"]) if current else 0.0
+        new_qty = held + delta
+        if held != 0 and (held > 0) != (signed > 0) and avg is not None and price is not None:
+            closed = min(abs(signed), abs(held))
+            realized += closed * (price - avg) * (1.0 if held > 0 else -1.0)
+        await self._sleeves.upsert(
+            bot_id=bot_id,
+            symbol=symbol,
+            qty=new_qty,
+            avg_entry_price=_fold_entry(held, avg, signed, new_qty, price),
+            realized_pnl=realized,
+        )
 
     # -- recovery / reconcile ---------------------------------------------
 
@@ -313,7 +352,9 @@ class Executor:
         """Compare the local ledger against the venue. Drift PAUSES routing, never crashes.
 
         A mismatch means we do not know the true book, so the kill switch blocks every
-        order (including exits) until an operator clears it.
+        order (including exits) until an operator clears it. The Sleeves must also add
+        up to the local positions (ADR 0003); when they do not, no Bot knows what it
+        holds, so that is the same Account halt.
         """
         try:
             venue = {p.symbol: p.qty for p in await self._broker.get_positions()}
@@ -327,18 +368,59 @@ class Executor:
             for symbol in set(local) | set(venue)
             if abs(local.get(symbol, 0.0) - venue.get(symbol, 0.0)) > DRIFT_TOLERANCE
         }
+        sleeves = await self._sleeve_totals()
+        sleeve_drift = {
+            symbol: {"positions": local.get(symbol, 0.0), "sleeves": sleeves.get(symbol, 0.0)}
+            for symbol in set(local) | set(sleeves)
+            if abs(local.get(symbol, 0.0) - sleeves.get(symbol, 0.0)) > DRIFT_TOLERANCE
+        }
 
         await audit(
             self._db,
             actor="executor",
             category="risk",
             action="reconcile",
-            payload={"drift": drift, "venue_positions": venue},
+            payload={"drift": drift, "sleeve_drift": sleeve_drift, "venue_positions": venue},
         )
-        if drift:
+        if drift or sleeve_drift:
             await self._breakers.set_drift(True)
-            log.error("position_drift_detected", drift=drift)
-        return {"reconciled": True, "drift": drift}
+            log.error("position_drift_detected", drift=drift, sleeve_drift=sleeve_drift)
+        return {"reconciled": True, "drift": drift, "sleeve_drift": sleeve_drift}
+
+    async def _sleeve_totals(self) -> dict[str, float]:
+        totals: dict[str, float] = {}
+        for row in await self._sleeves.all():
+            totals[row["symbol"]] = totals.get(row["symbol"], 0.0) + float(row["qty"])
+        return totals
+
+    async def _rebalance_sleeves(self, venue: dict[str, Any]) -> dict[str, dict[str, float]]:
+        """After adopting the venue, put each symbol's difference into the one Sleeve that
+        holds it, or Bot #1's (the whole-account Sleeve) when none or several do."""
+        rows = await self._sleeves.all()
+        moved: dict[str, dict[str, float]] = {}
+        for symbol in {r["symbol"] for r in rows} | set(venue):
+            held = [r for r in rows if r["symbol"] == symbol]
+            target_qty = float(venue[symbol].qty) if symbol in venue else 0.0
+            delta = target_qty - sum(float(r["qty"]) for r in held)
+            if abs(delta) <= DRIFT_TOLERANCE:
+                continue
+            holders = [r for r in held if float(r["qty"]) != 0]
+            row = holders[0] if len(holders) == 1 else None
+            bot_id = int(row["bot_id"]) if row else UNATTRIBUTED_BOT_ID
+            row = row or next((r for r in held if int(r["bot_id"]) == bot_id), None)
+            qty = (float(row["qty"]) if row else 0.0) + delta
+            entry = row["avg_entry_price"] if row and row["avg_entry_price"] is not None else None
+            if entry is None and symbol in venue:
+                entry = venue[symbol].avg_entry_price
+            await self._sleeves.upsert(
+                bot_id=bot_id,
+                symbol=symbol,
+                qty=qty,
+                avg_entry_price=None if entry is None else float(entry),
+                realized_pnl=float(row["realized_pnl"]) if row else 0.0,
+            )
+            moved[symbol] = {"bot_id": bot_id, "delta": delta}
+        return moved
 
     async def adopt_venue_positions(self) -> int:
         """Make the local ledger match the venue, then clear the drift flag.
@@ -360,13 +442,14 @@ class Executor:
                 await self._positions.upsert(
                     symbol=row["symbol"], asset_class=row["asset_class"], qty=0.0
                 )
+        sleeves = await self._rebalance_sleeves({p.symbol: p for p in venue})
         await self._breakers.set_drift(False)
         await audit(
             self._db,
             actor="operator",
             category="risk",
             action="adopt_venue_positions",
-            payload={"positions": {p.symbol: p.qty for p in venue}},
+            payload={"positions": {p.symbol: p.qty for p in venue}, "sleeves": sleeves},
         )
         return len(venue)
 

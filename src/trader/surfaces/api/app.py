@@ -228,16 +228,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     @app.post("/risk/pause")
-    async def pause(reason: str = Query(default="operator")) -> dict:
-        return await registry.get("pause").handler(reason=reason)
+    async def pause(
+        reason: str = Query(default="operator"), bot: str | None = Query(default=None)
+    ) -> dict:
+        return await registry.get("pause").handler(reason=reason, bot=bot)
 
     @app.post("/risk/resume")
-    async def resume() -> dict:
-        return await registry.get("resume").handler()
+    async def resume(bot: str | None = Query(default=None)) -> dict:
+        return await registry.get("resume").handler(bot=bot)
 
     @app.post("/risk/resume-breaker")
-    async def resume_breaker(equity: float | None = Query(default=None)) -> dict:
-        return await registry.get("resume_breaker").handler(equity=equity)
+    async def resume_breaker(
+        equity: float | None = Query(default=None), bot: str | None = Query(default=None)
+    ) -> dict:
+        return await registry.get("resume_breaker").handler(equity=equity, bot=bot)
 
     @app.get("/decisions")
     async def decisions(limit: int = Query(default=20, ge=1, le=200)) -> list[dict]:

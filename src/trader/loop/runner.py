@@ -27,10 +27,8 @@ import asyncio
 import math
 import time
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime, timedelta
-from datetime import time as dt_time
+from datetime import UTC, datetime
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import structlog
 
@@ -61,6 +59,7 @@ from trader.loop.journal import (
 from trader.loop.scheduler import HEARTBEAT, Mark, SignalScheduler, Trigger
 from trader.loop.sources import bot_one_subscriptions, build_sources
 from trader.risk.guard import AccountState, RiskGuard
+from trader.risk.sleeves import UNATTRIBUTED_BOT_ID, count_trades_today
 from trader.store.db import Database
 from trader.store.repos import PositionsRepo, SentimentRepo
 
@@ -80,34 +79,6 @@ MARK_VOL_FALLBACK_TTL_SECONDS = 300.0
 STOP_LOSS = "stop_loss"
 STOP_CONFIRM_TICKS = 2
 UNPROTECTED = "no stop: entry unknown"
-
-
-async def count_trades_today(db: Database, symbol: Symbol, now: datetime) -> int:
-    """Orders already recorded in this symbol's session day.
-
-    Every order row counts, including rejects: a failed submit still consumed an
-    attempt, and the cap is there to limit churn. Shared by the wakeup path and the
-    approval-redeem door so both see the same daily cap.
-    """
-    start, end = _session_window(symbol, now)
-    row = await db.fetch_one(
-        "SELECT count(*) AS n FROM orders WHERE created_at >= %s AND created_at < %s",
-        (start, end),
-    )
-    return int(row["n"]) if row else 0
-
-
-def _session_window(symbol: Symbol, now: datetime) -> tuple[datetime, datetime]:
-    """``[start, end)`` covering the venue session day that contains ``now``.
-
-    Crypto sessions are UTC dates; NYSE sessions are America/New_York dates.
-    ``session_day`` never crosses local midnight, so midnight-to-midnight is the
-    whole daily trade window.
-    """
-    day = symbol.market_calendar.session_day(now)
-    tz = ZoneInfo("America/New_York") if symbol.market_calendar.name == "nyse" else UTC
-    start = datetime.combine(day, dt_time.min, tzinfo=tz)
-    return start, start + timedelta(days=1)
 
 
 @dataclass
@@ -353,9 +324,6 @@ class LoopRunner:
             self.stats.last_tick_at = now.isoformat()
 
             equity = await self._resolve_equity(now)
-            # Holds never reach RiskGuard.evaluate, so the session would otherwise
-            # stay frozen until the model wants to trade (#24).
-            await self._observe_breakers(now, equity)
             rows = await self._positions.all()
             position_rows = {row["symbol"]: row for row in rows}
             positions = {row["symbol"]: float(row["qty"]) for row in rows}
@@ -367,6 +335,9 @@ class LoopRunner:
             }
             await self._poll_sentiment(now, positions)
             marks = await self._marks(now, positions, entries)
+            # Holds never reach RiskGuard.evaluate, so the session would otherwise
+            # stay frozen until the model wants to trade (#24).
+            await self._observe_breakers(now, equity, marks)
             # The stop runs before the model and pre-empts it for the symbols it holds.
             stopping, stop_results = await self._stops(now, marks, positions, entries, equity)
             assert self.scheduler is not None
@@ -458,11 +429,12 @@ class LoopRunner:
     async def _trades_today(self, symbol: Symbol, now: datetime) -> int:
         return await count_trades_today(self.db, symbol, now)
 
-    async def _observe_breakers(self, now: datetime, equity: float) -> None:
-        """Roll the session and trip loss breakers off this tick's equity.
+    async def _observe_breakers(self, now: datetime, equity: float, marks: dict[str, Mark]) -> None:
+        """Roll the session and trip loss breakers off this tick's equity: the
+        account's, and a fixed Sleeve's off its holdings at this tick's marks (#125).
 
         The guard still observes again when an intent arrives, so a trade sees
-        state at least as fresh as this tick. One row per process: use the latest
+        state at least as fresh as this tick. One row per scope: use the latest
         session day among venues that are actually open.
         """
         open_days = [
@@ -479,6 +451,12 @@ class LoopRunner:
             daily_loss_limit_frac=limits.daily_loss_limit_frac,
             weekly_drawdown_limit_frac=limits.weekly_drawdown_limit_frac,
         )
+        if self.bot_id is not None:
+            await self.guard.observe_sleeve(
+                self.bot_id,
+                session_day=max(open_days),
+                prices={ticker: mark.price for ticker, mark in marks.items()},
+            )
 
     async def _poll_sentiment(self, now: datetime, positions: dict[str, float]) -> None:
         """Collect X sentiment for held, open symbols. Never blocks a tick on failure.
@@ -719,11 +697,16 @@ class LoopRunner:
         return WakeupResult(symbol.ticker, [STOP_LOSS], SUPPRESSED, decision_id, reason=UNPROTECTED)
 
     async def _order_in_flight(self, ticker: str) -> bool:
-        row = await self.db.fetch_one(
+        """An order of this Bot's (#125: keyed by Bot and symbol) is still open."""
+        sql = (
             "SELECT 1 AS open FROM orders WHERE symbol = %s"
-            " AND status IN ('new', 'submitted', 'partially_filled') LIMIT 1",
-            (ticker,),
+            " AND status IN ('new', 'submitted', 'partially_filled')"
         )
+        params: tuple[Any, ...] = (ticker,)
+        if self.bot_id is not None:
+            sql += " AND coalesce(bot_id, %s) = %s"
+            params += (UNATTRIBUTED_BOT_ID, self.bot_id)
+        row = await self.db.fetch_one(sql + " LIMIT 1", params)
         return row is not None
 
     async def _wakeup(
