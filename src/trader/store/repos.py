@@ -40,14 +40,16 @@ class DecisionsRepo:
         latency_ms: int | None = None,
         profile_version: int | None = None,
         served_by: str | None = None,
+        bot_id: int | None = None,
+        bot_version: int | None = None,
     ) -> int:
         row = await self._db.fetch_one(
             """
             INSERT INTO decisions (trigger, status, symbol, asset_class, prompt, raw_output,
                                    decision, risk_verdicts, desk_verdicts, confirm,
                                    macro_view_version, brief_version, cost_usd, latency_ms,
-                                   profile_version, served_by)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                   profile_version, served_by, bot_id, bot_version)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
             (
@@ -67,6 +69,8 @@ class DecisionsRepo:
                 latency_ms,
                 profile_version,
                 served_by,
+                bot_id,
+                bot_version,
             ),
         )
         assert row is not None
@@ -106,12 +110,13 @@ class OrdersRepo:
         limit_price: float | None = None,
         time_in_force: str = "gtc",
         decision_id: int | None = None,
+        bot_id: int | None = None,
     ) -> int:
         row = await self._db.fetch_one(
             """
             INSERT INTO orders (client_order_id, symbol, asset_class, side, qty, notional,
-                                order_type, limit_price, time_in_force, decision_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                order_type, limit_price, time_in_force, decision_id, bot_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
             (
@@ -125,6 +130,7 @@ class OrdersRepo:
                 limit_price,
                 time_in_force,
                 decision_id,
+                bot_id,
             ),
         )
         assert row is not None
@@ -406,15 +412,20 @@ class ApprovalsRepo:
         self._db = db
 
     async def create(
-        self, *, order_intent: dict[str, Any], reason: str, decision_id: int | None = None
+        self,
+        *,
+        order_intent: dict[str, Any],
+        reason: str,
+        decision_id: int | None = None,
+        bot_id: int | None = None,
     ) -> int:
         row = await self._db.fetch_one(
             """
-            INSERT INTO approvals (order_intent, reason, decision_id)
-            VALUES (%s, %s, %s)
+            INSERT INTO approvals (order_intent, reason, decision_id, bot_id)
+            VALUES (%s, %s, %s, %s)
             RETURNING id
             """,
-            (Jsonb(order_intent), reason, decision_id),
+            (Jsonb(order_intent), reason, decision_id, bot_id),
         )
         assert row is not None
         return row["id"]
