@@ -357,29 +357,122 @@ def build_registry(
         assert db is not None, "bot requires a store"
         return await BotDesk(db).get(name)
 
-    @reg.register("loop_status", kind="query", summary="Decide-loop counters and mode.")
-    async def loop_status() -> dict[str, Any]:
+    def _bot_runner(bot: str | None) -> Any:
+        """The runner of one Bot (None = Bot #1). A Supervisor knows every Bot it runs;
+        a bare runner is Bot #1 alone. A Bot the loop does not run raises BotNotFound."""
+        from trader.loop.bots import BOT_ONE, BotNotFound
+
+        if hasattr(runner, "bot"):
+            return runner.bot(bot)
+        if bot is not None and bot != BOT_ONE:
+            raise BotNotFound(bot)
+        return runner
+
+    @reg.register(
+        "loop_status",
+        kind="query",
+        summary="Decide-loop counters and mode: Bot #1's, or with bot that Bot's.",
+    )
+    async def loop_status(bot: str | None = None) -> dict[str, Any]:
         from trader.ops.config import get_settings
 
         settings = get_settings()
         if runner is None:
-            return {"running": False, "shadow": settings.shadow_mode, "stats": None}
-        return {
-            "running": True,
-            "shadow": runner.shadow,
-            "shadow_symbols": sorted(runner.shadow_symbols),
-            "stats": runner.stats.as_dict(),
-        }
+            return _scoped({"running": False, "shadow": settings.shadow_mode, "stats": None}, bot)
+        loop = _bot_runner(bot)
+        return _scoped(
+            {
+                "running": True,
+                "shadow": loop.shadow,
+                "shadow_symbols": sorted(loop.shadow_symbols),
+                "stats": loop.stats.as_dict(),
+            },
+            bot,
+        )
 
     @reg.register(
-        "wake_trader", kind="command", summary="Force a decide pass now (ignores cooldowns)."
+        "wake_trader",
+        kind="command",
+        summary="Force a decide pass now (ignores cooldowns): Bot #1, or with bot that Bot.",
     )
-    async def wake_trader() -> dict[str, Any]:
+    async def wake_trader(bot: str | None = None) -> dict[str, Any]:
         if runner is None:
-            return {"woken": False, "reason": "no decide loop in this build"}
-        results = await runner.tick(force=True)
-        await _audit_command("wake_trader", {"wakeups": len(results)})
-        return {"woken": True, "results": [r.as_dict() for r in results]}
+            return _scoped({"woken": False, "reason": "no decide loop in this build"}, bot)
+        if hasattr(runner, "wake"):
+            results = await runner.wake(bot)
+        else:
+            results = await _bot_runner(bot).tick(force=True)
+        await _audit_command("wake_trader", _scoped({"wakeups": len(results)}, bot))
+        return _scoped({"woken": True, "results": [r.as_dict() for r in results]}, bot)
+
+    @reg.register(
+        "create_bot",
+        kind="command",
+        summary="Create a Bot (version 1): symbols {ticker: replay|shadow|live}, a fixed"
+        " Sleeve capital_usd, Sources, a prompt variant and trigger overrides. Live refuses"
+        " a symbol another Bot is live on. Audited.",
+    )
+    async def create_bot(
+        name: str,
+        symbols: dict[str, str],
+        capital_usd: float,
+        sources: list[str] | None = None,
+        prompt_variant: str = "default",
+        triggers: dict[str, Any] | None = None,
+        account_id: str = "alpaca-paper",
+        desk: bool = False,
+    ) -> dict[str, Any]:
+        from trader.loop.bots import BotDesk, bot_spec
+
+        assert db is not None, "create_bot requires a store"
+        spec = bot_spec(
+            symbols=symbols,
+            capital_usd=capital_usd,
+            sources=sources or [],
+            prompt_variant=prompt_variant,
+            triggers=triggers,
+            account_id=account_id,
+            desk=desk,
+        )
+        return await BotDesk(db).create(name, spec)
+
+    @reg.register(
+        "new_bot_version",
+        kind="command",
+        summary="A new version of a Bot: replace any of its symbols, Sources, prompt variant"
+        " or Sleeve capital_usd; trigger settings merge. Unchanged writes nothing. Audited.",
+    )
+    async def new_bot_version(
+        name: str,
+        symbols: dict[str, str] | None = None,
+        sources: list[str] | None = None,
+        prompt_variant: str | None = None,
+        triggers: dict[str, Any] | None = None,
+        capital_usd: float | None = None,
+    ) -> dict[str, Any]:
+        from trader.loop.bots import BotDesk
+
+        assert db is not None, "new_bot_version requires a store"
+        return await BotDesk(db).new_version(
+            name,
+            symbols=symbols,
+            sources=sources,
+            prompt_variant=prompt_variant,
+            triggers=triggers,
+            capital_usd=capital_usd,
+        )
+
+    @reg.register(
+        "set_symbol_mode",
+        kind="command",
+        summary="Move one of a Bot's symbols to replay, shadow or live (a new version)."
+        " Live refuses when another Bot is live on it. Audited.",
+    )
+    async def set_symbol_mode(name: str, symbol: str, mode: str) -> dict[str, Any]:
+        from trader.loop.bots import BotDesk
+
+        assert db is not None, "set_symbol_mode requires a store"
+        return await BotDesk(db).set_symbol_mode(name, symbol, mode)
 
     async def _bot_id(bot: str | None) -> int | None:
         """A Bot name → its id (None = the account). Unknown names raise BotNotFound."""

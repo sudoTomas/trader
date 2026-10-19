@@ -13,9 +13,14 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from mcp.server import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
+from trader.loop.bots import BotNotFound, BotSpecError
 from trader.store.audit import SURFACE
 from trader.surfaces.services import ServiceRegistry
+
+# Refusals whose reason reaches the MCP caller (a Bot command's Owner rule, say).
+REFUSALS = (BotSpecError, BotNotFound)
 
 # The capture surface (#8): what an external research agent holding the capture key may
 # do. Capability names (registry keys); the tool names derive from them
@@ -56,6 +61,10 @@ def _as_mcp(handler: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[A
         token = SURFACE.set("mcp")
         try:
             return await handler(*args, **kwargs)
+        except REFUSALS as exc:
+            # A refusal the caller should read (the API answers it 404/422): its reason
+            # goes back as the tool error, not the SDK's generic crash text.
+            raise ToolError(str(exc)) from exc
         finally:
             SURFACE.reset(token)
 

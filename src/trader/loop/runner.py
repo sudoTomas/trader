@@ -46,7 +46,7 @@ from trader.loop.context import (
     compute_indicators,
     unrealized_pnl_frac,
 )
-from trader.loop.decider import Decider, DeciderError
+from trader.loop.decider import DEFAULT_VARIANT, Decider, DeciderError
 from trader.loop.journal import (
     DENIED,
     ERROR,
@@ -59,9 +59,14 @@ from trader.loop.journal import (
 from trader.loop.scheduler import HEARTBEAT, Mark, SignalScheduler, Trigger
 from trader.loop.sources import bot_one_subscriptions, build_sources
 from trader.risk.guard import AccountState, RiskGuard
-from trader.risk.sleeves import UNATTRIBUTED_BOT_ID, count_trades_today
+from trader.risk.sleeves import (
+    UNATTRIBUTED_BOT_ID,
+    SleeveLedger,
+    count_trades_today,
+    sleeve_equity,
+)
 from trader.store.db import Database
-from trader.store.repos import PositionsRepo, SentimentRepo
+from trader.store.repos import BotPositionsRepo, PositionsRepo, SentimentRepo
 
 log = structlog.get_logger(__name__)
 
@@ -133,7 +138,12 @@ def served(completion: Completion) -> dict[str, Any]:
 
 
 @dataclass
-class LoopRunner:
+class BotRunner:
+    """One Bot's loop (#126): its triggers and cooldowns, journal history, single-flight
+    lock, Sleeve, Sources and prompt. Run alone it is the whole decide loop (its own task
+    and fills stream); under a ``Supervisor`` the supervisor owns the tick, the shared
+    market data, the executor and the fills stream."""
+
     db: Database
     market_data: MarketData
     llm: LLMRegistry
@@ -175,6 +185,14 @@ class LoopRunner:
     # The Bot version's Source subscriptions (#124), set at boot from its spec. None
     # derives them from the lane flags above, as Bot #1's spec does.
     sources: list[dict[str, Any]] | None = None
+    # The Bot version's decide rules (#126): a named variant in loop/decider.py.
+    prompt_variant: str = DEFAULT_VARIANT
+    # Shared by every Bot under a Supervisor: at most N decide calls at once.
+    decide_slots: asyncio.Semaphore | None = None
+    # Whether this loop rolls the ACCOUNT's breakers. Under a Supervisor only Bot #1
+    # does (its equity is the account's); a second Bot observes only its own Sleeve.
+    observes_account: bool = True
+    name: str | None = None  # the Bot's name, for status
     stats: LoopStats = field(default_factory=LoopStats)
 
     def __post_init__(self) -> None:
@@ -182,6 +200,8 @@ class LoopRunner:
         self._decider = Decider(self.llm)
         self._journal = Journal(self.db)
         self._positions = PositionsRepo(self.db)
+        self._bot_positions = BotPositionsRepo(self.db)
+        self._sleeves = SleeveLedger(self.db)
         self._sentiment_repo = SentimentRepo(self.db)
         if self.sources is None:
             self.sources = bot_one_subscriptions(
@@ -271,39 +291,49 @@ class LoopRunner:
         log.info("loop_stopped")
 
     async def run_forever(self) -> None:
-        backoff = 0.0
         while not self._stopping.is_set():
-            try:
-                await self.tick()
-                backoff = 0.0
-                self.stats.consecutive_crashes = 0
-            except asyncio.CancelledError:
-                raise
-            except DeciderError as exc:
-                # Infra blip: back off gently, do NOT arm the crash counter — v1 crashed
-                # the trader on these (see docs/lessons.md#transient-vs-crash-backoff).
-                backoff = TRANSIENT_BACKOFF_SECONDS if exc.transient else 0.0
-                self.stats.last_error = str(exc)
-                log.warning("loop_transient_error", error=str(exc), backoff=backoff)
-            except Exception as exc:  # noqa: BLE001 - the loop must never die
-                self.stats.consecutive_crashes += 1
-                self.stats.errors += 1
-                self.stats.last_error = str(exc)
-                backoff = min(
-                    TRANSIENT_BACKOFF_SECONDS * (2 ** (self.stats.consecutive_crashes - 1)),
-                    MAX_CRASH_BACKOFF_SECONDS,
-                )
-                log.exception(
-                    "loop_crashed",
-                    consecutive=self.stats.consecutive_crashes,
-                    backoff=backoff,
-                )
+            backoff = await self.guarded_tick()
             try:
                 await asyncio.wait_for(
                     self._stopping.wait(), timeout=max(backoff, self.tick_seconds)
                 )
             except TimeoutError:
                 pass
+
+    async def guarded_tick(self, now: datetime | None = None) -> float:
+        """One tick that never raises (bar cancellation); returns the backoff it earned.
+
+        Each Bot keeps its own crash counter, so one Bot's crash loop backs off that Bot
+        only.
+        """
+        try:
+            await self.tick(now)
+        except asyncio.CancelledError:
+            raise
+        except DeciderError as exc:
+            # Infra blip: back off gently, do NOT arm the crash counter — v1 crashed
+            # the trader on these (see docs/lessons.md#transient-vs-crash-backoff).
+            backoff = TRANSIENT_BACKOFF_SECONDS if exc.transient else 0.0
+            self.stats.last_error = str(exc)
+            log.warning("loop_transient_error", bot=self.name, error=str(exc), backoff=backoff)
+            return backoff
+        except Exception as exc:  # noqa: BLE001 - the loop must never die
+            self.stats.consecutive_crashes += 1
+            self.stats.errors += 1
+            self.stats.last_error = str(exc)
+            backoff = min(
+                TRANSIENT_BACKOFF_SECONDS * (2 ** (self.stats.consecutive_crashes - 1)),
+                MAX_CRASH_BACKOFF_SECONDS,
+            )
+            log.exception(
+                "loop_crashed",
+                bot=self.name,
+                consecutive=self.stats.consecutive_crashes,
+                backoff=backoff,
+            )
+            return backoff
+        self.stats.consecutive_crashes = 0
+        return 0.0
 
     # -- one pass ----------------------------------------------------------
 
@@ -324,7 +354,15 @@ class LoopRunner:
             self.stats.last_tick_at = now.isoformat()
 
             equity = await self._resolve_equity(now)
-            rows = await self._positions.all()
+            account_rows = await self._positions.all()
+            account_positions = {row["symbol"]: float(row["qty"]) for row in account_rows}
+            # What this Bot holds (#126): a fixed Sleeve's own ledger, so a second Bot
+            # never marks, stops or reviews another Bot's holding. A whole-account
+            # Sleeve (Bot #1) holds the account, exactly as before Bots.
+            capital = await self._sleeve_capital()
+            rows = (
+                account_rows if capital is None else await self._bot_positions.for_bot(self.bot_id)  # type: ignore[arg-type]
+            )
             position_rows = {row["symbol"]: row for row in rows}
             positions = {row["symbol"]: float(row["qty"]) for row in rows}
             entries = {
@@ -338,8 +376,18 @@ class LoopRunner:
             # Holds never reach RiskGuard.evaluate, so the session would otherwise
             # stay frozen until the model wants to trade (#24).
             await self._observe_breakers(now, equity, marks)
+            # The prompt shows what this Bot sizes against: its Sleeve's equity.
+            book_equity = (
+                None
+                if capital is None
+                else sleeve_equity(
+                    capital, rows, {t: m.price for t, m in marks.items() if m.price > 0}
+                )
+            )
             # The stop runs before the model and pre-empts it for the symbols it holds.
-            stopping, stop_results = await self._stops(now, marks, positions, entries, equity)
+            stopping, stop_results = await self._stops(
+                now, marks, positions, entries, equity, account_positions
+            )
             assert self.scheduler is not None
             if force:
                 triggers = [
@@ -367,6 +415,8 @@ class LoopRunner:
                     positions,
                     equity,
                     position_row=position_rows.get(symbol.ticker),
+                    account_positions=account_positions,
+                    book_equity=book_equity,
                 )
                 for symbol in self.symbols
                 if (fired := by_symbol.get(symbol.ticker))
@@ -426,6 +476,12 @@ class LoopRunner:
         """Journal a row as this loop's Bot and Bot version."""
         return await self._journal.record(bot_id=self.bot_id, bot_version=self.bot_version, **row)
 
+    async def _sleeve_capital(self) -> float | None:
+        """This Bot's fixed Sleeve capital; None for a whole-account Sleeve or no Bot."""
+        if self.bot_id is None:
+            return None
+        return await self._sleeves.capital(self.bot_id)
+
     async def _trades_today(self, symbol: Symbol, now: datetime) -> int:
         return await count_trades_today(self.db, symbol, now)
 
@@ -445,12 +501,13 @@ class LoopRunner:
         if not open_days:
             return
         limits = self.guard._limits
-        await self.guard.breakers.observe(
-            equity=equity,
-            session_day=max(open_days),
-            daily_loss_limit_frac=limits.daily_loss_limit_frac,
-            weekly_drawdown_limit_frac=limits.weekly_drawdown_limit_frac,
-        )
+        if self.observes_account:
+            await self.guard.breakers.observe(
+                equity=equity,
+                session_day=max(open_days),
+                daily_loss_limit_frac=limits.daily_loss_limit_frac,
+                weekly_drawdown_limit_frac=limits.weekly_drawdown_limit_frac,
+            )
         if self.bot_id is not None:
             await self.guard.observe_sleeve(
                 self.bot_id,
@@ -575,6 +632,7 @@ class LoopRunner:
         positions: dict[str, float],
         entries: dict[str, float | None],
         equity: float,
+        account_positions: dict[str, float] | None = None,
     ) -> tuple[set[str], list[WakeupResult]]:
         """The deterministic stop (#74): no model, just the loss against the entry.
 
@@ -615,7 +673,16 @@ class LoopRunner:
             stopping.add(ticker)
             if await self._order_in_flight(ticker):
                 continue
-            result = await self._stop(symbol, qty, mark, loss, ticks, now, positions, equity)
+            result = await self._stop(
+                symbol,
+                qty,
+                mark,
+                loss,
+                ticks,
+                now,
+                positions if account_positions is None else account_positions,
+                equity,
+            )
             if result is not None:
                 results.append(result)
         return stopping, results
@@ -719,16 +786,21 @@ class LoopRunner:
         equity: float,
         *,
         position_row: dict[str, Any] | None = None,  # the exit-review lane's input (#34)
+        account_positions: dict[str, float] | None = None,  # the account's, for RiskGuard
+        book_equity: float | None = None,  # a fixed Sleeve's equity; None = the account's
     ) -> WakeupResult:
         names = [t.type for t in triggers]
         trigger_label = ",".join(names)
         started = time.perf_counter()
+        if account_positions is None:
+            account_positions = positions
 
-        # This symbol's own history only: another symbol's holds are not evidence about
-        # this one. Equity-fallback rows are an outage audit, not decide context.
+        # This symbol's own history, and this Bot's (#126): another symbol's holds, or
+        # another Bot's calls on the same symbol, are not evidence about this one.
+        # Equity-fallback rows are an outage audit, not decide context.
         recent = [
             row
-            for row in await self._journal.recent(8, symbol=symbol.ticker)
+            for row in await self._journal.recent(8, symbol=symbol.ticker, bot_id=self.bot_id)
             if row.get("trigger") != EQUITY_FALLBACK
         ][:5]
         ctx = await self._context.build(
@@ -736,11 +808,15 @@ class LoopRunner:
             now=now,
             triggers=triggers,
             position_qty=positions.get(symbol.ticker, 0.0),
-            equity=equity,
+            equity=equity if book_equity is None else book_equity,
             recent_decisions=recent,
             position=position_row,
             subscriptions=self.sources,
         )
+        if self.prompt_variant != DEFAULT_VARIANT:
+            ctx = replace(ctx, prompt_variant=self.prompt_variant)
+        if book_equity is not None:
+            ctx = replace(ctx, equity_label="Sleeve equity")
         macro_view_version = ctx.macro_view.version if ctx.macro_view else None
         brief_version = ctx.brief.version if ctx.brief else None
         if ctx.price <= 0:
@@ -767,7 +843,12 @@ class LoopRunner:
                 log.warning("desk_enrich_failed", symbol=symbol.ticker, error=str(exc))
 
         try:
-            result = await self._decider.decide(ctx)
+            if self.decide_slots is None:
+                result = await self._decider.decide(ctx)
+            else:
+                # The decide model is shared: at most N Bots call it at once (#126).
+                async with self.decide_slots:
+                    result = await self._decider.decide(ctx)
         except DeciderError as exc:
             decision_id = await self._record(
                 trigger=trigger_label,
@@ -811,7 +892,7 @@ class LoopRunner:
                 price=ctx.price,
                 account=AccountState(
                     equity=equity,
-                    positions=positions,
+                    positions=account_positions,
                     trades_today=await self._trades_today(symbol, now),
                 ),
                 now=now,
@@ -888,3 +969,7 @@ class LoopRunner:
         return WakeupResult(
             symbol.ticker, names, status, decision_id, action=decision.action, reason=reason
         )
+
+
+#: The name the single-Bot loop had before Supervisors (#126); tests and replay use it.
+LoopRunner = BotRunner

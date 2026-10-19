@@ -108,8 +108,10 @@ class Journal:
         )
         log.info("decision_status_set", decision_id=decision_id, status=status)
 
-    async def recent(self, limit: int = 20, *, symbol: str | None = None) -> list[dict[str, Any]]:
-        rows = await self._repo.recent(limit, symbol=symbol)
+    async def recent(
+        self, limit: int = 20, *, symbol: str | None = None, bot_id: int | None = None
+    ) -> list[dict[str, Any]]:
+        rows = await self._repo.recent(limit, symbol=symbol, bot_id=bot_id)
         return [{**r, "ts": r["ts"].isoformat()} for r in rows]
 
     async def get(self, decision_id: int) -> dict[str, Any] | None:

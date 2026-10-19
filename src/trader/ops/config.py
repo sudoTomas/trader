@@ -152,6 +152,17 @@ class Settings(BaseSettings):
             "limit. Price-move, vol-spike and sentiment triggers are never capped."
         ),
     )
+    loop_max_concurrent_decides: int = setting(
+        2,
+        category=TUNING,
+        section="Decide loop",
+        description=(
+            "How many Bots may call the decide model at once (at least 1). The Supervisor "
+            "runs every Bot each tick; the rest wait for a free slot, so adding a Bot does "
+            "not multiply the load on a self-hosted model."
+        ),
+        ge=1,
+    )
     loop_symbols: str = setting(
         "BTC/USD,ETH/USD",
         category=TUNING,

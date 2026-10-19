@@ -116,6 +116,7 @@ def test_boot_seeds_bot_one_and_hands_it_to_the_runner(clean_db: None, monkeypat
 
     runner = IdleRunner()
     monkeypatch.setattr(app_module, "build_runner", lambda *a, **kw: runner)
+    monkeypatch.setattr(app_module, "build_supervisor", lambda runner, *a, **kw: runner)
     with TestClient(app_module.create_app(settings(loop_enabled=True))) as tc:
         assert tc.get("/bots").json()[0]["version"] == 1
     assert (runner.bot_id, runner.bot_version) == (1, 1)

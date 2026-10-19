@@ -10,6 +10,7 @@ research-capture tools; the capture key's only MCP door — #8).
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
@@ -19,7 +20,15 @@ from pydantic import BaseModel, Field
 from trader.llm.caps import CapError
 from trader.llm.profiles import ProfileError, ProfileNotFound
 from trader.llm.providers import ProviderError, ProviderNotFound
-from trader.loop.bots import BOT_ONE, BotDesk, BotNotFound, bot_one_spec, trigger_config
+from trader.loop.bots import (
+    ALPACA_PAPER,
+    BOT_ONE,
+    BotDesk,
+    BotNotFound,
+    BotSpecError,
+    bot_one_spec,
+    trigger_config,
+)
 from trader.ops.config import Settings, get_settings
 from trader.store.db import Database
 from trader.store.migrate import run_migrations
@@ -101,6 +110,34 @@ class CapIn(BaseModel):
     daily_usd: float
 
 
+class BotIn(BaseModel):
+    """``POST /bots``: a new Bot. ``symbols`` maps ticker to Symbol mode."""
+
+    name: str
+    symbols: dict[str, str]
+    capital_usd: float
+    sources: list[str] | None = None
+    prompt_variant: str = "default"
+    triggers: dict[str, Any] | None = None
+    account_id: str = ALPACA_PAPER
+    desk: bool = False
+
+
+class BotVersionIn(BaseModel):
+    """``POST /bots/{name}/versions``: the fields to change; omitted ones stay."""
+
+    symbols: dict[str, str] | None = None
+    sources: list[str] | None = None
+    prompt_variant: str | None = None
+    triggers: dict[str, Any] | None = None
+    capital_usd: float | None = None
+
+
+class SymbolModeIn(BaseModel):
+    symbol: str
+    mode: str
+
+
 class XaiProbeIn(BaseModel):
     """``POST /xai/probe`` body. Every field optional: the service fills the #7 matrix
     defaults (models × both endpoints × none/x_search/web_search, credential auto)."""
@@ -130,6 +167,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     sentiment = build_sentiment(db, settings, xai_manager=xai_manager, profiles=profiles)
     desk = build_desk(db, settings, llm=llm)
     runner = build_runner(db, settings, sentiment, desk, llm=llm) if settings.loop_enabled else None
+    # Bot #1's runner leads the Supervisor (#126), which loads every other Bot from the
+    # store and owns what they share. The surfaces speak to the Supervisor.
+    supervisor = build_supervisor(runner, settings, desk) if runner is not None else None
     mirror = build_mirror(db, settings)
     compiler = build_compiler(db, settings, mirror, llm=llm)
     briefs = build_briefs(db, settings, llm=llm)
@@ -137,7 +177,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     xai_http = build_xai_http(settings, xai_manager=xai_manager)
     registry = build_registry(
         db,
-        runner,
+        supervisor,
         compiler,
         mirror,
         sentiment,
@@ -170,20 +210,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if runner is not None:
             runner.bot_id, runner.bot_version = bot["id"], bot["version"]
             runner.sources = bot["spec"]["sources"]  # the Sources that version names
+            runner.name = BOT_ONE
         async with mcp.session_manager.run(), capture_mcp.session_manager.run():
-            if runner is not None:
-                await runner.start()  # background task; never blocks /health
+            if supervisor is not None:
+                await supervisor.start()  # background task; never blocks /health
             try:
                 yield
             finally:
-                if runner is not None:
-                    await runner.stop()
+                if supervisor is not None:
+                    await supervisor.stop()
         await db.close()
 
     app = FastAPI(title="trader", version=VERSION, lifespan=lifespan)
     app.state.db = db
     app.state.registry = registry
-    app.state.runner = runner
+    app.state.runner = supervisor
     app.state.xai_manager = xai_manager
     app.state.xai_http = xai_http
     app.add_middleware(
@@ -259,13 +300,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def bot(name: str) -> dict:
         return await registry.get("bot").handler(name=name)
 
+    @app.exception_handler(BotSpecError)
+    async def bot_refused(_: Request, exc: BotSpecError) -> JSONResponse:
+        return JSONResponse({"detail": str(exc)}, status_code=422)
+
+    @app.post("/bots")
+    async def create_bot(body: BotIn) -> dict:
+        return await registry.get("create_bot").handler(**body.model_dump())
+
+    @app.post("/bots/{name}/versions")
+    async def new_bot_version(name: str, body: BotVersionIn) -> dict:
+        return await registry.get("new_bot_version").handler(name=name, **body.model_dump())
+
+    @app.post("/bots/{name}/symbol-mode")
+    async def set_symbol_mode(name: str, body: SymbolModeIn) -> dict:
+        return await registry.get("set_symbol_mode").handler(
+            name=name, symbol=body.symbol, mode=body.mode
+        )
+
     @app.get("/decisions/{decision_id}")
     async def decision(decision_id: int) -> dict | None:
         return await registry.get("decision").handler(decision_id=decision_id)
 
     @app.get("/loop/status")
-    async def loop_status() -> dict:
-        return await registry.get("loop_status").handler()
+    async def loop_status(bot: str | None = Query(default=None)) -> dict:
+        return await registry.get("loop_status").handler(bot=bot)
 
     @app.get("/positions")
     async def positions() -> list[dict]:
@@ -416,8 +475,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return await registry.get("flatten_all").handler(confirm=confirm)
 
     @app.post("/loop/wake")
-    async def wake() -> dict:
-        return await registry.get("wake_trader").handler()
+    async def wake(bot: str | None = Query(default=None)) -> dict:
+        return await registry.get("wake_trader").handler(bot=bot)
 
     @app.post("/research/notes")
     async def submit_research_note(note: ResearchNoteIn) -> dict:
@@ -725,8 +784,9 @@ def build_runner(
     from trader.data.composite import build_market_data
     from trader.loop.confirm import Confirmer
     from trader.loop.executor import Executor
-    from trader.loop.runner import LoopRunner
+    from trader.loop.runner import BotRunner
     from trader.loop.scheduler import SignalScheduler
+    from trader.loop.supervisor import SharedMarketData
     from trader.risk.guard import RiskGuard
     from trader.risk.limits import limits_from_settings
 
@@ -744,9 +804,10 @@ def build_runner(
         executor = Executor(db, broker)
 
     llm = llm or build_llm(db, settings, xai_manager=xai_manager)
-    return LoopRunner(
+    return BotRunner(
         db=db,
-        market_data=build_market_data(settings),
+        # Read through the per-tick cache every Bot shares (#126); still nothing stored.
+        market_data=SharedMarketData(build_market_data(settings)),
         llm=llm,
         guard=RiskGuard(
             db, limits_from_settings(settings), live_enabled=settings.alpaca_live_enabled
@@ -768,6 +829,25 @@ def build_runner(
         # Always present: with nothing serving the confirm Role (no .env Jev, no Profile
         # Chain, or switched off) it returns no record and the column stays NULL.
         confirm=Confirmer(llm),
+    )
+
+
+def build_supervisor(runner, settings: Settings, desk=None):
+    """The Supervisor over Bot #1's runner (#126). Every other Bot is loaded from the
+    store, sharing Bot #1's store, market data, model registry, RiskGuard and executor;
+    the desk only reaches a Bot whose spec turns it on."""
+    from functools import partial
+
+    from trader.loop.supervisor import Supervisor, runner_for
+
+    return Supervisor(
+        bots=[runner],
+        shared=runner.market_data,
+        tick_seconds=settings.loop_tick_seconds,
+        max_concurrent_decides=settings.loop_max_concurrent_decides,
+        factory=partial(
+            runner_for, template=runner, universe=settings.symbol_registry(), desk=desk
+        ),
     )
 
 
