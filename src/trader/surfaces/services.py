@@ -474,6 +474,19 @@ def build_registry(
         assert db is not None, "set_symbol_mode requires a store"
         return await BotDesk(db).set_symbol_mode(name, symbol, mode)
 
+    @reg.register(
+        "set_sentiment_poll",
+        kind="command",
+        summary="Whether sentiment is also polled for a Bot's symbols it does not hold"
+        " (poll_unheld; off by default, each extra symbol adds LLM spend). A new version;"
+        " Bot #1 follows Settings and is refused. Audited.",
+    )
+    async def set_sentiment_poll(name: str, poll_unheld: bool) -> dict[str, Any]:
+        from trader.loop.bots import BotDesk
+
+        assert db is not None, "set_sentiment_poll requires a store"
+        return await BotDesk(db).set_sentiment_poll(name, poll_unheld=poll_unheld)
+
     async def _bot_id(bot: str | None) -> int | None:
         """A Bot name → its id (None = the account). Unknown names raise BotNotFound."""
         from trader.loop.bots import BotDesk

@@ -57,7 +57,7 @@ from trader.loop.journal import (
     Journal,
 )
 from trader.loop.scheduler import HEARTBEAT, Mark, SignalScheduler, Trigger
-from trader.loop.sources import bot_one_subscriptions, build_sources
+from trader.loop.sources import bot_one_subscriptions, build_sources, polls_unheld
 from trader.risk.guard import AccountState, RiskGuard
 from trader.risk.sleeves import (
     UNATTRIBUTED_BOT_ID,
@@ -159,6 +159,9 @@ class BotRunner:
     executor: Any | None = None  # loop.executor.Executor; absent = shadow-only build
     sentiment: Any | None = None  # research.sentiment.SentimentService; absent = no polling
     sentiment_poll_seconds: float = 10_800.0
+    # Last poll per ticker. A Supervisor hands every Bot Bot #1's dict, so a symbol two
+    # Bots would poll is scored once per cadence, whichever Bot gets there first.
+    sentiment_stamps: dict[str, datetime] = field(default_factory=dict)
     # Per-symbol throttle: these symbols journal as shadow — full decide + risk pass,
     # nothing submitted — while the rest of the build trades live-paper, so a new
     # symbol earns its gate without pausing the proven slice
@@ -207,10 +210,12 @@ class BotRunner:
             self.sources = bot_one_subscriptions(
                 briefs=self.briefs_enabled, exit_review=self.exit_review_enabled
             )
+        # The sentiment subscription's opt-in (#127): poll this Bot's unheld symbols too.
+        self.sentiment_poll_unheld = polls_unheld(self.sources)
         self._context = ContextBuilder(
             self.market_data, sources=build_sources(self.db, self.market_data)
         )
-        self._last_sentiment_poll: dict[str, datetime] = {}
+        self._last_sentiment_poll = self.sentiment_stamps
         # Symbols whose last-poll stamp was seeded from the journal (see _poll_sentiment).
         self._sentiment_seeded: set[str] = set()
         # ticker -> (fetched at, realized vol). See _mark_vol.
@@ -519,8 +524,10 @@ class BotRunner:
         """Collect X sentiment for held, open symbols. Never blocks a tick on failure.
 
         Unheld names are skipped: the scheduler only reads sentiment for positions,
-        so polling the rest is pure cost. The daily call cap inside the service
-        still bounds however short ``sentiment_poll_seconds`` is set.
+        so polling the rest is pure cost. A Bot whose sentiment subscription sets
+        ``poll_unheld`` (#127) opts its other symbols in, at the same cadence. The daily
+        call cap inside the service still bounds however short ``sentiment_poll_seconds``
+        is set.
 
         The cadence survives restarts: the first time a symbol is considered, its
         last-poll stamp is seeded from the latest journaled poll (one query, once per
@@ -532,7 +539,7 @@ class BotRunner:
         for symbol in self.symbols:
             if not symbol.market_calendar.is_open(now):
                 continue
-            if not positions.get(symbol.ticker):
+            if not positions.get(symbol.ticker) and not self.sentiment_poll_unheld:
                 continue
             last = await self._seeded_last_sentiment_poll(symbol.ticker)
             if last is not None and (now - last).total_seconds() < self.sentiment_poll_seconds:

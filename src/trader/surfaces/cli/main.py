@@ -947,6 +947,20 @@ def bot_mode(
     typer.echo(json.dumps(_post(f"/bots/{name}/symbol-mode", json_body=body), indent=2))
 
 
+@bot_app.command("sentiment")
+def bot_sentiment(
+    name: str = typer.Argument(..., help="Bot name."),
+    poll_unheld: bool = typer.Option(
+        ...,
+        "--poll-unheld/--no-poll-unheld",
+        help="Also poll sentiment for the Bot's symbols it does not hold (adds LLM spend).",
+    ),
+) -> None:
+    """Turn sentiment polling for unheld symbols on or off (a new version; not bot-1)."""
+    body = {"poll_unheld": poll_unheld}
+    typer.echo(json.dumps(_post(f"/bots/{name}/sentiment-poll", json_body=body), indent=2))
+
+
 @bot_app.command("pause")
 def bot_pause(
     name: str = typer.Argument(..., help="Bot name."),
