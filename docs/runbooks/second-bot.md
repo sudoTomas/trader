@@ -76,8 +76,23 @@ trader bot resume bot-2-largecap
 `trader bot mode … live` is refused while another Bot is live on that symbol (the Owner
 rule). Promotion to live is #127, through the decide-change gate.
 
-## Known gap
+## Sentiment for symbols it does not hold
 
-The sentiment poller only polls symbols a Bot holds, so an all-shadow Bot often has no
-recent sentiment row for these names; the sentiment lane is then simply absent from its
-prompt, and the `equity-largecap` rules treat missing research as no support.
+By default the sentiment poller only polls symbols a Bot holds, so an all-shadow Bot often
+has no recent sentiment row for these names; the sentiment lane is then simply absent from
+its prompt, and the `equity-largecap` rules treat missing research as no support.
+
+A Bot that subscribes to `sentiment` can opt its unheld symbols (shadow and live) in, at
+the same cadence. It is off by default: sentiment polling is the biggest LLM cost (see
+[the lesson](../lessons.md#sentiment-held-symbols-only)), and each extra symbol adds one
+poll per cadence (`TRADER_SENTIMENT_POLL_SECONDS`, 3 h). Flip it on the desk's **Bots**
+page, or:
+
+```bash
+trader bot sentiment bot-2-largecap --poll-unheld      # --no-poll-unheld turns it off
+```
+
+Each flip is a new, audited version; the spec reads
+`{"source": "sentiment", "params": {"poll_unheld": true}}`. A symbol two Bots would poll
+is still scored once per cadence. Bot #1 follows Settings and is refused. Decision for
+bot-2-largecap: leave it off and revisit after the shadow comparison.

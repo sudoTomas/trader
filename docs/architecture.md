@@ -100,7 +100,11 @@ SignalScheduler → ContextBuilder → (analyst desk) → Decider → (Confirm) 
   the held position. A Bot's spec lists `sources: [{source, params}]`; Bot #1's comes from
   the lane flags (FRED and the Macro View always, the brief with `TRADER_BRIEFS_ENABLED`, the
   held position with `TRADER_EXIT_REVIEW_ENABLED`). RiskGuard never imports Sources
-  (asserted by test).
+  (asserted by test). The sentiment poller scores held symbols only; a store-defined Bot's
+  sentiment subscription may set `params.poll_unheld` (default off, `set_sentiment_poll`
+  on every door and the desk's Bots page) to have its unheld symbols scored too, at the same
+  cadence. Bots under the Supervisor share one poll stamp per symbol, so the polled set is
+  held ∪ opted-in Bots' symbols, each once per cadence.
 - **Decider** — one Nemotron completion, JSON-schema-validated, 1 retry with the validation
   errors fed back. Transient (infra) vs crash errors classified so infra blips don't arm
   backoff ([transient-vs-crash-backoff](lessons.md#transient-vs-crash-backoff)). Runs in

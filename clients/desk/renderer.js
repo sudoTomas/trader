@@ -682,6 +682,7 @@ const NAV = [
   { id: 'research', label: 'Research', ico: 'book' },
   { id: 'risk', label: 'Risk', ico: 'shield' },
   { id: 'models', label: 'Models', ico: 'chip' },
+  { id: 'bots', label: 'Bots', ico: 'bot' },
   { id: 'settings', label: 'Settings', ico: 'gear' },
 ];
 
@@ -751,6 +752,7 @@ function renderAll() {
   renderBrokerPositions(); // its Stop column reads the risk status
   renderBrief();
   renderModels();
+  renderBots();
   renderSettings();
 }
 
@@ -781,6 +783,7 @@ async function refresh() {
     load('/usage?days=7', 'usage'),
     load('/config', 'config'),
     refreshModels(),
+    refreshBots(),
   ]);
   renderAll();
   $('updated').textContent = `Updated ${new Date().toLocaleTimeString()}`;

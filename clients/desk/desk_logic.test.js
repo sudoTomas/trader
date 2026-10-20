@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const {
   deskRequestUrl, approvalToast, resolveAuditLine, criticPill, confirmPill,
   modelChip, priceText, capText, probeText, servedText, errorText, stopText, stopSummary, configSections,
+  botSentiment,
 } = require('./desk_logic');
 
 const BASE = 'http://127.0.0.1:8080';
@@ -241,4 +242,38 @@ test('settings group by section and flag what differs from the default', () => {
   assert.equal(out[1].rows[0].value, 'true');
   assert.equal(out[2].rows[0].changed, true);
   assert.equal(configSections(null).length, 0);
+});
+
+// ---------- Bots page (#127) ----------
+
+test('the Bots page may flip a Bot\'s sentiment toggle and nothing else on /bots', () => {
+  assert.equal(deskRequestUrl(BASE, 'POST', '/bots/bot-2-largecap/sentiment-poll').pathname, '/bots/bot-2-largecap/sentiment-poll');
+  for (const [method, route] of [
+    ['POST', '/bots'],
+    ['POST', '/bots/bot-2-largecap/versions'],
+    ['POST', '/bots/bot-2-largecap/symbol-mode'],
+    ['PUT', '/bots/bot-2-largecap/sentiment-poll'],
+    ['POST', '/bots/bot-2-largecap/sentiment-poll/extra'],
+    ['POST', '/bots/../broker/flatten-all/sentiment-poll'],
+  ]) {
+    assert.throws(() => deskRequestUrl(BASE, method, route), /blocked/, `${method} ${route}`);
+  }
+});
+
+const bot = (name, sources, symbols = { AAPL: 'shadow', MSFT: 'shadow', NVDA: 'replay' }, positions = []) => ({
+  name, version: 3, spec: { symbols, sources }, sleeve: { capital_usd: 5000, positions },
+});
+
+test('the sentiment switch reads the subscription, and says why it cannot move', () => {
+  const off = botSentiment(bot('bot-2', [{ source: 'sentiment', params: {} }]));
+  assert.deepEqual(off, { on: false, enabled: true, why: null, unheld: 2 });
+  const on = botSentiment(bot('bot-2', [{ source: 'sentiment', params: { poll_unheld: true } }], { AAPL: 'live', MSFT: 'shadow' }, [{ symbol: 'AAPL', qty: 3 }]));
+  assert.equal(on.on, true);
+  assert.equal(on.unheld, 1); // AAPL is held, so it is polled anyway
+  const one = botSentiment(bot('bot-1', [{ source: 'macro_view', params: {} }]));
+  assert.equal(one.enabled, false);
+  assert.match(one.why, /follows Settings/);
+  const none = botSentiment(bot('bot-3', [{ source: 'brief', params: {} }]));
+  assert.deepEqual([none.on, none.enabled], [false, false]);
+  assert.match(none.why, /does not read sentiment/);
 });
