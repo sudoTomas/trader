@@ -138,6 +138,10 @@ class SymbolModeIn(BaseModel):
     mode: str
 
 
+class SentimentPollIn(BaseModel):
+    poll_unheld: bool
+
+
 class XaiProbeIn(BaseModel):
     """``POST /xai/probe`` body. Every field optional: the service fills the #7 matrix
     defaults (models × both endpoints × none/x_search/web_search, credential auto)."""
@@ -316,6 +320,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def set_symbol_mode(name: str, body: SymbolModeIn) -> dict:
         return await registry.get("set_symbol_mode").handler(
             name=name, symbol=body.symbol, mode=body.mode
+        )
+
+    @app.post("/bots/{name}/sentiment-poll")
+    async def set_sentiment_poll(name: str, body: SentimentPollIn) -> dict:
+        return await registry.get("set_sentiment_poll").handler(
+            name=name, poll_unheld=body.poll_unheld
         )
 
     @app.get("/decisions/{decision_id}")

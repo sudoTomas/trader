@@ -23,6 +23,8 @@ const ALLOWED_WRITES = [
   ['POST', exact(`/roles/${ROLE}/probe`)],
   ['PUT', exact(`/caps/${ROLE}`)],
   ['DELETE', exact(`/caps/${ROLE}`)],
+  // The Bots page (#127): one switch per Bot. Every other Bot command stays CLI-only.
+  ['POST', exact(`/bots/${NAME}/sentiment-poll`)],
 ];
 
 function deskRequestUrl(base, method, route, allowedWrites = ALLOWED_WRITES) {
@@ -178,9 +180,24 @@ function configSections(fields) {
   return sections;
 }
 
+// The Bots page (#127): the "poll sentiment for symbols not held" switch. `unheld` counts
+// the symbols it would add (shadow or live, not in the Sleeve); held ones are polled anyway.
+function botSentiment(bot) {
+  const sub = (bot?.spec?.sources || []).find((s) => s.source === 'sentiment');
+  const on = !!(sub && sub.params && sub.params.poll_unheld === true);
+  const held = new Set((bot?.sleeve?.positions || []).filter((p) => Number(p.qty) !== 0).map((p) => p.symbol));
+  const unheld = Object.entries(bot?.spec?.symbols || {}).filter(([t, m]) => m !== 'replay' && !held.has(t)).length;
+  if (bot?.name === 'bot-1') {
+    return { on, enabled: false, why: 'bot-1 follows Settings: it polls sentiment for held symbols only.', unheld };
+  }
+  if (!sub) return { on: false, enabled: false, why: 'This Bot does not read sentiment.', unheld };
+  return { on, enabled: true, why: null, unheld };
+}
+
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     ALLOWED_WRITES, deskRequestUrl, approvalToast, resolveAuditLine, criticPill, confirmPill,
     modelChip, priceText, capText, probeText, servedText, errorText, stopText, stopSummary, configSections,
+    botSentiment,
   };
 }

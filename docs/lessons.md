@@ -248,6 +248,9 @@ repricing) for nineteen sentiment wakeups ever.
 **What we do now.** Poll every three hours, held symbols only: the swing trigger exists to
 re-examine an open position, not to chase the feed. The trigger itself stays off until a
 week of journaled scores earns the operator's flip of `TRADER_SENTIMENT_TRIGGER_ENABLED`.
+A store-defined Bot may opt its unheld symbols in, per Bot, with `poll_unheld` on its
+sentiment subscription (#127; default off, flipped on the desk's Bots page or `trader bot
+sentiment`); each extra symbol is one more poll per cadence, so it stays off by default.
 
 **Where.** `src/trader/loop/runner.py` (`_poll_sentiment`), `src/trader/loop/scheduler.py`,
 `TRADER_SENTIMENT_POLL_SECONDS` in `src/trader/ops/config.py`.

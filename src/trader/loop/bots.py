@@ -35,6 +35,7 @@ from trader.loop.sources import (
     FRED,
     HELD_POSITION,
     MACRO_VIEW,
+    POLL_UNHELD,
     SENTIMENT,
     bot_one_subscriptions,
     subscriptions,
@@ -154,6 +155,9 @@ def bot_spec(
     unknown = sorted(str(n) for n in {s.source for s in subs} - SOURCE_NAMES)
     if unknown:
         raise BotSpecError(f"unknown Sources {unknown} (known: {sorted(SOURCE_NAMES)})")
+    for sub in subs:
+        if sub.source == SENTIMENT and not isinstance(sub.params.get(POLL_UNHELD, False), bool):
+            raise BotSpecError(f"sentiment {POLL_UNHELD} must be true or false")
     if prompt_variant not in PROMPT_VARIANTS:
         raise BotSpecError(
             f"unknown prompt variant {prompt_variant!r} (known: {sorted(PROMPT_VARIANTS)})"
@@ -320,7 +324,37 @@ class BotDesk:
 
         return await self._revise(name, "set_symbol_mode", change)
 
-    async def _revise(self, name: str, action: str, change: Any) -> dict[str, Any]:
+    async def set_sentiment_poll(self, name: str, *, poll_unheld: bool) -> dict[str, Any]:
+        """Whether the sentiment poller also scores the Bot's symbols it does not hold
+        (#127), as a new version. Off is the default and drops the setting, so turning
+        off what is off writes nothing. Bot #1 is refused: it follows Settings and polls
+        held symbols only (docs/lessons.md#sentiment-held-symbols-only)."""
+        if name == BOT_ONE:
+            raise BotSpecError(
+                f"{BOT_ONE} follows Settings and polls sentiment for held symbols only;"
+                " the toggle is for Bots defined in the store"
+            )
+
+        def change(spec: dict[str, Any]) -> dict[str, Any]:
+            sources = []
+            for sub in spec["sources"]:
+                if sub["source"] == SENTIMENT:
+                    params = {k: v for k, v in sub["params"].items() if k != POLL_UNHELD}
+                    if poll_unheld:
+                        params[POLL_UNHELD] = True
+                    sub = {**sub, "params": params}
+                sources.append(sub)
+            if poll_unheld and not any(s["source"] == SENTIMENT for s in sources):
+                raise BotSpecError(f"{name} does not read sentiment; subscribe it first")
+            return {**spec, "sources": sources}
+
+        return await self._revise(
+            name, "set_sentiment_poll", change, extra={POLL_UNHELD: bool(poll_unheld)}
+        )
+
+    async def _revise(
+        self, name: str, action: str, change: Any, *, extra: Mapping[str, Any] | None = None
+    ) -> dict[str, Any]:
         if name == BOT_ONE:
             raise BotSpecError(
                 f"{BOT_ONE} follows Settings: change TRADER_LOOP_SYMBOLS, TRADER_SHADOW_SYMBOLS"
@@ -338,7 +372,14 @@ class BotDesk:
             await self._check_owner(conn, bot["id"], spec)
             version = await self._append(conn, bot["id"], spec)
         await self._audit(
-            action, name, {"version": version, "from_version": bot["current_version"], "spec": spec}
+            action,
+            name,
+            {
+                **(extra or {}),
+                "version": version,
+                "from_version": bot["current_version"],
+                "spec": spec,
+            },
         )
         return self._out({"id": bot["id"], "name": name, "version": version, "spec": spec})
 

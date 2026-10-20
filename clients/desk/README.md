@@ -26,20 +26,28 @@ a client of the API: it adds no trading logic, and RiskGuard still decides every
   Profiles (switch, rename, duplicate, history and revert). The header chip names the
   decide model, and a decision's detail names the model and Profile version that served it.
 
+- **Bots:** each Bot with its version, Symbol modes, Sleeve and Sources, and a switch per
+  Bot, "Poll sentiment for symbols not held" (off by default; sentiment is the biggest LLM
+  cost). Each flip is a new, audited Bot version. Bot #1 follows Settings, so its switch is
+  disabled.
 - **Settings:** every setting the trader runs with, by section, with the values that
   differ from their default highlighted. Read-only; credentials show only set or not set.
 
 ![Models](docs/screenshots/models.png)
 
+![Bots](docs/screenshots/bots.png)
+
 ![Stops beside the broker holdings](docs/screenshots/stops-book.png)
 
 ## What it can change
 
-Pause and resume trading, approve or deny a pending approval, and everything on the
-Models page. The main process allows each write by method and exact path
-(`ALLOWED_WRITES` in `desk_logic.js`): the three risk POSTs, plus the model-picker routes
-under `/providers`, `/profiles`, `/roles/{role}/probe` and `/caps`. Every other write is
-refused, so flatten-all, reconcile, adopt and wake can't be triggered from the window. Use
+Pause and resume trading, approve or deny a pending approval, everything on the Models
+page, and a Bot's sentiment switch. The main process allows each write by method and exact
+path (`ALLOWED_WRITES` in `desk_logic.js`): the three risk POSTs, the model-picker routes
+under `/providers`, `/profiles`, `/roles/{role}/probe` and `/caps`, and
+`POST /bots/{name}/sentiment-poll`. Every other write (creating a Bot, its versions and
+Symbol modes included) is refused, so flatten-all, reconcile, adopt and wake can't be
+triggered from the window. Use
 the CLI for those. A Provider key is typed into a password field, sent once in the request
 body, and never returned by the API. Changes are audited with the surface `desk`.
 
@@ -110,5 +118,6 @@ The desk carries the project's Salamander identity ([`docs/brand.md`](../../docs
 - `desk_logic.js`: that route check, plus the approval toast and ledger wording
 - `preload.js`: the only bridge the page gets (`get`, `post`, `put`, `del`, `broker`, backend status)
 - `models.js`: the Models page
+- `bots.js`: the Bots page
 - `index.html`, `renderer.js`, `style.css`, `icons.js`: the dashboard
 - `install-desktop.sh`: launcher entry

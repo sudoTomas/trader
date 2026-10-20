@@ -41,6 +41,8 @@ BRIEF = "brief"
 FRED = "fred"
 SENTIMENT = "sentiment"
 HELD_POSITION = "held_position"
+#: The sentiment subscription's one setting: also poll the Bot's symbols it does not hold.
+POLL_UNHELD = "poll_unheld"
 
 MACRO_BUDGET_CHARS = 2000
 BRIEF_BUDGET_CHARS = 1200
@@ -126,6 +128,16 @@ def bot_one_subscriptions(
     if exit_review:
         subs.append(Subscription(HELD_POSITION))
     return [s.as_spec() for s in subs]
+
+
+def polls_unheld(spec: Iterable[Subscription | Mapping[str, Any]]) -> bool:
+    """Whether the Bot's sentiment subscription asks the poller to score its symbols it
+    does not hold too (``params.poll_unheld``). Off by default: sentiment polling is the
+    biggest LLM cost, so only held symbols are scored (see
+    docs/lessons.md#sentiment-held-symbols-only)."""
+    return any(
+        s.source == SENTIMENT and s.params.get(POLL_UNHELD) is True for s in subscriptions(spec)
+    )
 
 
 def build_sources(db: Any, market_data: Any, *, fred: Any | None = None) -> dict[str, Source]:
