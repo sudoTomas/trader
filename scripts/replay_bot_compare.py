@@ -79,14 +79,20 @@ async def run(out: str, sample: int) -> None:
         await db.close()
 
 
-def _forward(bars: list[Any], ts: datetime, n: int) -> dict[str, float] | None:
-    """Return / worst drawdown from the open of the first bar at or after ``ts`` over the
-    next ``n`` regular-session bars (None if history does not reach that far)."""
+def _forward(bars: list[Any], ts: datetime, n: int, side: str = "buy") -> dict[str, float] | None:
+    """Return / worst drawdown, in the position's direction, from the open of the first
+    bar at or after ``ts`` over the next ``n`` regular-session bars (None if history does
+    not reach that far). A short gains when price falls; its drawdown is the high."""
     after = [b for b in bars if b.ts >= ts]
     if len(after) < n:
         return None
     entry = after[0].open
     window = after[:n]
+    if side == "sell":
+        return {
+            "ret": 1.0 - window[-1].close / entry,
+            "mdd": 1.0 - max(b.high for b in window) / entry,
+        }
     return {
         "ret": window[-1].close / entry - 1.0,
         "mdd": min(b.low for b in window) / entry - 1.0,
@@ -119,19 +125,22 @@ async def score(runs_path: str, out: str) -> None:
         for r in runs:
             run_row = await db.fetch_one("SELECT * FROM eval_runs WHERE id = %s", (r["run_id"],))
             steps = await db.fetch_all(
-                "SELECT ts, status, price, decision FROM eval_steps WHERE run_id = %s ORDER BY ts",
+                "SELECT ts, status, price, decision, raw_output FROM eval_steps"
+                " WHERE run_id = %s ORDER BY ts",
                 (r["run_id"],),
             )
             bars = bars_by[r["symbol"]]
             opens = [s for s in steps if s["decision"] and s["decision"]["action"] == "open"]
             scored = []
             for s in opens:
-                f1 = _forward(bars, s["ts"], SESSION_BARS)
-                f5 = _forward(bars, s["ts"], SESSION_BARS * 5)
-                fe = _forward(bars, s["ts"], len([b for b in bars if b.ts >= s["ts"]]))
+                side = json.loads(s["raw_output"])["side"]
+                f1 = _forward(bars, s["ts"], SESSION_BARS, side)
+                f5 = _forward(bars, s["ts"], SESSION_BARS * 5, side)
+                fe = _forward(bars, s["ts"], len([b for b in bars if b.ts >= s["ts"]]), side)
                 scored.append(
                     {
                         "ts": s["ts"].isoformat(),
+                        "side": side,
                         "conviction": s["decision"]["conviction"],
                         "fwd_1d": f1,
                         "fwd_5d": f5,
