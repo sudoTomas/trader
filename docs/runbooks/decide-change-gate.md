@@ -45,9 +45,11 @@ critic on Grok costs real money per intent step; the hold-skip keeps it small, b
 
 `TRADER_EXIT_REVIEW_ENABLED` (dark) adds a **held-position block** to the decide prompt
 whenever a position is held: entry price, position age, unrealized P&L, the latest X
-sentiment for that symbol, and an explicit ask to state whether the thesis still holds and
-to prefer `close` (full, or partial via a smaller `notional_usd`) over `hold` when it does
-not. The system prompt gains a matching description of `close`/reduce only when the block
+sentiment for that symbol, and an explicit ask to state whether the thesis still holds:
+`close` (full, or partial via a smaller `notional_usd`) when it does not, `hold` when it
+does. The ask is deliberately untilted: the earlier "prefer `close` ... a hold must justify
+staying in" wording closed positions on noise-sized dips
+(`docs/reports/2026-10-22-bot-1-exits.md`). The system prompt gains a matching description of `close`/reduce only when the block
 is present. Advisory: RiskGuard never sees it (asserted structurally in
 `tests/test_exit_review.py`).
 

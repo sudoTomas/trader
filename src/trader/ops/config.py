@@ -196,8 +196,9 @@ class Settings(BaseSettings):
         section="Decide loop",
         description=(
             "Exit-review lane: with a position held, the decide prompt gains a held-position "
-            "block (entry, age, unrealized P&L, latest sentiment) and an explicit ask to "
-            "justify holding versus `close`/reduce. Advisory only, RiskGuard never sees it. "
+            "block (entry, age, unrealized P&L, latest sentiment) and an explicit ask whether "
+            "the thesis still holds: `close`/reduce if not, `hold` if so. Advisory only, "
+            "RiskGuard never sees it. "
             "A decide-behavior change: flip only through `docs/runbooks/decide-change-gate.md` "
             "(replay it with `trader eval run --exit-review --seed-qty --seed-entry`)."
         ),

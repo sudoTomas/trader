@@ -56,12 +56,8 @@ EXIT_REVIEW_PROMPT = """
 Exit review (a position is held — see "Held position review" in the context):
 - `close` exits the held position: `side` opposite to the position, `notional_usd` at or
   above the position's value closes it all; a smaller `notional_usd` reduces it (a partial
-  exit). Use it when the original thesis no longer holds, when the position has moved
-  against you beyond the tolerance you stated at entry, or when sentiment and price now
-  disagree with the reason you are in.
-- `hold` keeps the position and must justify staying in — restate the thesis and why it
-  survives the current context. "Nothing changed" is not a justification when the P&L or
-  sentiment in the review says otherwise.
+  exit). Use it when the original thesis no longer holds.
+- `hold` keeps the position: restate the thesis and why it survives the current context.
 """
 
 # Bot #2's rules (#126): large-cap equities. Written against the shadow evidence on #127:

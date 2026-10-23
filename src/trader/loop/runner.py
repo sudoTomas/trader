@@ -171,7 +171,7 @@ class BotRunner:
     # but only this flag lets them into the decide prompt (a decide-behavior change).
     briefs_enabled: bool = False
     # Exit-review lane (#34), dark by default: a held-position block in the prompt
-    # (entry, age, unrealized P&L, latest sentiment, an explicit ask to justify holding).
+    # (entry, age, unrealized P&L, latest sentiment, and an explicit ask whether the thesis holds).
     # A decide-behavior change; flips only through the decide-change gate.
     exit_review_enabled: bool = False
     # Decision desk: analyst lanes before the decide, critic after it.
