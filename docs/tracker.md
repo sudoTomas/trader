@@ -18,7 +18,7 @@ embry0 stays on GitHub (`sudoTomas/embry0`).
 |---|---|---|
 | [#1](https://github.com/sudoTomas/trader/issues/1) | EAI-192 | Flip briefs into the decide lane |
 | [#2](https://github.com/sudoTomas/trader/issues/2) **closed 2026-09-19** | EAI-176 / epic EAI-164 | First ETH round trip accepted (journal ↔ Alpaca match; flatten skipped) |
-| [#3](https://github.com/sudoTomas/trader/issues/3) | EAI-186 leftover | SPY equity round trip (still held) |
+| [#3](https://github.com/sudoTomas/trader/issues/3) **closed 2026-10-22 (SPY closed live 10/16 and 10/22)** | EAI-186 leftover | SPY equity round trip (still held) |
 | [#4](https://github.com/sudoTomas/trader/issues/4) **closed 2026-09-29 (PR #59; shadow-first)** | EAI-187 | Commodity ETFs |
 | [#5](https://github.com/sudoTomas/trader/issues/5) **closed 2026-09-29 (PR #60)** | EAI-189 | Screener |
 | [#6](https://github.com/sudoTomas/trader/issues/6) **closed 2026-09-29** | EAI-191 | IBKR decision record (deferred; re-file when wanted) |
