@@ -155,6 +155,73 @@ async def test_alpaca_equity_quotes_stay_on_iex():
     assert quote.mid == 769.5
 
 
+# Recorded 2026-10-16T16:03:34.97Z: IEX's top of book for GLD with a stray bid 3% away
+# (consolidated was 381.64 x 381.67). Its mid, 375.805, woke Bot #1 on a phantom -2%
+# price_move and it closed a position that was actually up 2%.
+GLD = make_symbol("GLD", AssetClass.COMMODITY_ETF)
+GLD_WIDE_IEX_QUOTE = {
+    "quotes": {"GLD": {"t": "2026-10-16T16:03:34.970971224Z", "bp": 369.86, "ap": 381.75}}
+}
+GLD_IEX_TRADE = {"trades": {"GLD": {"t": "2026-10-16T16:03:34.5Z", "p": 381.66, "s": 100}}}
+
+
+async def test_alpaca_wide_equity_quote_marks_at_the_last_trade():
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        if request.url.path == "/v2/stocks/trades/latest":
+            assert dict(request.url.params) == {"symbols": "GLD", "feed": "iex"}
+            return httpx.Response(200, json=GLD_IEX_TRADE)
+        return httpx.Response(200, json=GLD_WIDE_IEX_QUOTE)
+
+    data = AlpacaData("k", "s", client=mock_client(handler))
+    quote = await data.get_latest_quote(GLD)
+    assert paths == ["/v2/stocks/quotes/latest", "/v2/stocks/trades/latest"]
+    assert (quote.bid, quote.ask, quote.mid) == (381.66, 381.66, 381.66)
+    assert quote.ts == datetime(2026, 10, 16, 16, 3, 34, 500000, tzinfo=UTC)
+
+
+async def test_alpaca_one_sided_equity_quote_marks_at_the_last_trade():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v2/stocks/trades/latest":
+            return httpx.Response(200, json=GLD_IEX_TRADE)
+        return httpx.Response(
+            200, json={"quotes": {"GLD": {"t": "2026-10-16T16:03:34Z", "bp": 0, "ap": 381.7}}}
+        )
+
+    data = AlpacaData("k", "s", client=mock_client(handler))
+    assert (await data.get_latest_quote(GLD)).mid == 381.66
+
+
+async def test_alpaca_tight_equity_quote_needs_no_trade():
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        return httpx.Response(
+            200, json={"quotes": {"GLD": {"t": "2026-10-16T16:03:33Z", "bp": 381.64, "ap": 381.67}}}
+        )
+
+    data = AlpacaData("k", "s", client=mock_client(handler))
+    assert (await data.get_latest_quote(GLD)).mid == pytest.approx(381.655)
+    assert paths == ["/v2/stocks/quotes/latest"]
+
+
+async def test_alpaca_wide_equity_quote_without_a_trade_is_an_error():
+    """No trustworthy mark is a data error (the chain falls through, the context builder
+    falls back to the last bar) — never the wide quote's mid."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v2/stocks/trades/latest":
+            return httpx.Response(200, json={"trades": {}})
+        return httpx.Response(200, json=GLD_WIDE_IEX_QUOTE)
+
+    data = AlpacaData("k", "s", client=mock_client(handler))
+    with pytest.raises(MarketDataError, match="wide quote"):
+        await data.get_latest_quote(GLD)
+
+
 async def test_alpaca_quote_and_errors():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=ALPACA_CRYPTO_QUOTE)

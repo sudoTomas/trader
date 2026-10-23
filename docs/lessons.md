@@ -323,6 +323,22 @@ backfill the cache at full speed, 429 Alpaca, and starve the live loop.
 
 **Where.** `src/trader/data/alpaca.py`, `tests/test_data.py`.
 
+## iex-wide-quote-phantom-mark
+
+**What broke.** Bot #1's live ETF exits, October 2026. The loop marks equities at the IEX
+latest quote's mid, and IEX's thin book often has one side percent away from the market
+(GLD 369.86 x 381.75 against a consolidated 381.64 x 381.67). About one Bot #1 ETF wakeup
+in five saw a mark more than 0.3% outside that hour's consolidated range, and half of all
+ETF `price_move` wakeups were phantoms. The phantom moves woke the decider, put a false
+loss in the held-position block, and closed a GLD position that was really up 2%
+(`reports/2026-10-22-bot-1-exits.md`). Replay never saw it: replay marks at bar closes.
+
+**What we do now.** An equity quote wider than `MAX_QUOTE_SPREAD_FRAC` (25 bp), or with
+a side missing, does not mark; the last IEX trade does. With no trade the quote is a data
+error and the usual fallbacks apply (next provider, then the last bar's close).
+
+**Where.** `src/trader/data/alpaca.py`, `tests/test_data.py`.
+
 ## fills-stream-must-be-owned
 
 **What broke.** The first live fill (2026-09-11) never reached the ledger. `run_stream()`
