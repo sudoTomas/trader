@@ -77,6 +77,13 @@ def client(server: Claude, model: str = "claude-opus-5-5") -> AnthropicClient:
     )
 
 
+def sent_key(headers: Any) -> str | None:
+    """The key as the SDK sent it: ``x-api-key`` before anthropic 2, a Bearer token from 2 on."""
+    if "x-api-key" in headers:
+        return headers["x-api-key"]
+    return headers.get("authorization", "").removeprefix("Bearer ") or None
+
+
 def keys_of(schema: Any) -> set[str]:
     if isinstance(schema, dict):
         return set(schema) | {k for v in schema.values() for k in keys_of(v)}
@@ -103,7 +110,7 @@ async def test_a_decide_completion_validates_as_a_decision():
     assert (decision.action.value, decision.intent.notional) == ("open", 400)
     path, headers, body = server.requests[0]
     assert path == "/v1/messages"
-    assert headers["x-api-key"] == API_KEY
+    assert sent_key(headers) == API_KEY
     # System goes to `system`, the rest to `messages`; the schema to output_config.format.
     assert body["system"] == SYSTEM_PROMPT
     assert body["messages"] == [{"role": "user", "content": "Symbol: SPY. Price 500."}]
@@ -184,7 +191,7 @@ async def test_an_anthropic_provider_lists_its_models(db: Database):
     listed = await providers.models("claude")
     assert [m["id"] for m in listed] == ["claude-haiku-5-5", "claude-opus-5-5"]
     path, headers, _ = server.requests[0]
-    assert (path, headers["x-api-key"]) == ("/v1/models", API_KEY)
+    assert (path, sent_key(headers)) == ("/v1/models", API_KEY)
     assert providers.presets()["anthropic"]["default_model"] == "claude-opus-5-5"
 
 
