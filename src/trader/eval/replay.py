@@ -35,12 +35,19 @@ position for the window with ``config={"exit_review_seed": {"qty", "avg_entry_pr
 starts from that seed: a close realizes against the seeded entry, and a run that never
 closes carries the seed's mark-to-bars move as ``unrealized_pnl``. Seed the SAME
 position into the baseline and the candidate; only the block should differ.
+
+A Bot version's decide rules and Sleeve replay the same way (#127):
+``config={"prompt_variant": "equity-largecap", "sleeve_usd": 5000}`` judges every step by
+that variant's system prompt and sizes it against a fixed Sleeve (the prompt then reads
+``Sleeve equity``, as the live loop renders it). Absent, a run is Bot #1's: the
+``default`` rules against the harness equity.
 """
 
 from __future__ import annotations
 
 import math
 import time
+from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -51,7 +58,7 @@ from trader.core.types import Bar, Quote
 from trader.data.bars_cache import BarsCache
 from trader.data.base import MarketData, MarketDataError
 from trader.loop.context import ContextBuilder
-from trader.loop.decider import Decider, DeciderError
+from trader.loop.decider import DEFAULT_VARIANT, PROMPT_VARIANTS, Decider, DeciderError
 from trader.loop.scheduler import Trigger
 from trader.loop.sources import bot_one_subscriptions, build_sources, subscriptions
 from trader.store.db import Database
@@ -180,6 +187,19 @@ class ReplayHarness:
                 raise ValueError("sources must be a list of {source, params} objects") from exc
         if config and config.get("exit_review_seed") is not None:
             config = {**config, "exit_review_seed": validate_seed(config["exit_review_seed"])}
+        if config and config.get("prompt_variant", DEFAULT_VARIANT) not in PROMPT_VARIANTS:
+            raise ValueError(
+                f"unknown prompt variant {config['prompt_variant']!r}"
+                f" (known: {sorted(PROMPT_VARIANTS)})"
+            )
+        if config and config.get("sleeve_usd") is not None:
+            try:
+                sleeve = float(config["sleeve_usd"])
+            except (TypeError, ValueError) as exc:
+                raise ValueError("sleeve_usd must be a positive number") from exc
+            if not math.isfinite(sleeve) or sleeve <= 0.0:
+                raise ValueError("sleeve_usd must be a positive number")
+            config = {**config, "sleeve_usd": sleeve}
         return await self._repo.create_run(
             label=label,
             symbol=symbol.ticker,
@@ -211,6 +231,8 @@ class ReplayHarness:
                 macro_view=include_macro_view, briefs=include_briefs, exit_review=exit_review
             )
         seed = config.get("exit_review_seed")
+        prompt_variant = config.get("prompt_variant", DEFAULT_VARIANT)
+        sleeve = config.get("sleeve_usd")
         try:
             summary = await self._walk(
                 run_id,
@@ -221,6 +243,8 @@ class ReplayHarness:
                 sources=sources,
                 exit_review=exit_review,
                 seed=validate_seed(seed) if seed is not None else None,
+                prompt_variant=prompt_variant,
+                sleeve=float(sleeve) if sleeve is not None else None,
             )
             await self._repo.finish_run(run_id, status="done", summary=summary)
         except Exception as exc:  # noqa: BLE001 - a failed run must say so, not hang
@@ -255,8 +279,11 @@ class ReplayHarness:
         sources: list[dict[str, Any]],
         exit_review: bool = False,
         seed: dict[str, Any] | None = None,
+        prompt_variant: str = DEFAULT_VARIANT,
+        sleeve: float | None = None,
     ) -> dict[str, Any]:
         context = self._context
+        equity = self._equity if sleeve is None else sleeve
         actions: dict[str, int] = {}
         desk_tally = {"approve": 0, "shrink": 0, "veto": 0, "pass_through": 0, "skipped": 0}
         recent: list[dict[str, Any]] = []
@@ -288,7 +315,7 @@ class ReplayHarness:
                 now=as_of,
                 triggers=[Trigger(REPLAY_TRIGGER, symbol.ticker)],
                 position_qty=qty,
-                equity=self._equity + realized,
+                equity=equity + realized,
                 recent_decisions=list(recent),
                 as_of=as_of,
                 subscriptions=sources,
@@ -298,6 +325,11 @@ class ReplayHarness:
                     else None
                 ),
             )
+            # The live loop's Bot overrides (runner._wakeup), applied the same way.
+            if prompt_variant != DEFAULT_VARIANT:
+                ctx = replace(ctx, prompt_variant=prompt_variant)
+            if sleeve is not None:
+                ctx = replace(ctx, equity_label="Sleeve equity")
             if ctx.price <= 0:
                 skipped_no_data += 1
                 as_of += self._step
@@ -391,6 +423,8 @@ class ReplayHarness:
             **({"desk": desk_tally} if use_desk else {}),
             **({"exit_review_seed": seed} if seed is not None else {}),
             "exit_review": exit_review,
+            "prompt_variant": prompt_variant,
+            **({"sleeve_usd": sleeve} if sleeve is not None else {}),
             "steps": steps,
             "errors": errors,
             "skipped_closed": skipped_closed,
