@@ -60,7 +60,13 @@ from trader.data.base import MarketData, MarketDataError
 from trader.loop.context import ContextBuilder
 from trader.loop.decider import DEFAULT_VARIANT, PROMPT_VARIANTS, Decider, DeciderError
 from trader.loop.scheduler import Trigger
-from trader.loop.sources import bot_one_subscriptions, build_sources, subscriptions
+from trader.loop.sources import (
+    bot_one_subscriptions,
+    build_sources,
+    subscriptions,
+    unrealized_pnl_frac,
+)
+from trader.risk.limits import RiskLimits, stop_loss_frac_for
 from trader.store.db import Database
 from trader.store.repos import EvalRepo
 
@@ -139,6 +145,10 @@ class ReplayHarness:
         equity: float = 100_000.0,
         desk: Any | None = None,  # desk.desk.Desk; enables config={"desk": true} runs
         exit_review_enabled: bool = False,  # default for runs that do not say (#34)
+        # The live limits, for the deterministic stop (#74): with them a replayed position
+        # past its stop is closed at that step before the model is asked, and the stop's
+        # cooldown keeps later opens on the symbol out of the crude book. None = no stop.
+        limits: RiskLimits | None = None,
     ) -> None:
         self._db = db
         self._repo = EvalRepo(db)
@@ -157,6 +167,7 @@ class ReplayHarness:
         self._equity = equity
         self._desk = desk
         self._exit_review_default = exit_review_enabled
+        self._limits = limits
 
     # -- public API ----------------------------------------------------------
 
@@ -268,6 +279,18 @@ class ReplayHarness:
 
     # -- internals -----------------------------------------------------------
 
+    def _stop(
+        self, symbol: Symbol, price: float, vol: float | None, qty: float, entry: float
+    ) -> str | None:
+        """The stop's rationale when the sim's position is past its stop, else None."""
+        if self._limits is None or qty == 0.0:
+            return None
+        loss = unrealized_pnl_frac(price, qty, entry)
+        frac = stop_loss_frac_for(self._limits, vol, symbol.asset_class)
+        if loss is None or frac <= 0 or loss > -frac:
+            return None
+        return f"stop-loss: {loss:+.1%} against entry is past -{frac:.1%}"
+
     async def _walk(
         self,
         run_id: int,
@@ -288,6 +311,8 @@ class ReplayHarness:
         desk_tally = {"approve": 0, "shrink": 0, "veto": 0, "pass_through": 0, "skipped": 0}
         recent: list[dict[str, Any]] = []
         steps = errors = skipped_closed = skipped_no_data = 0
+        stops = stop_cooldown_denied = 0
+        stopped_at: datetime | None = None
         qty = entry = realized = cost = 0.0
         last_price = 0.0
         # The sim's one-position book. A seed pre-loads it so the exit-review block has a
@@ -336,6 +361,42 @@ class ReplayHarness:
                 continue
             last_price = ctx.price
 
+            stop = self._stop(symbol, ctx.price, ctx.primary_vol, qty, entry)
+            if stop is not None:
+                # The stop pre-empts the model, as live. One step's mark (a bar close) stands
+                # in for the live loop's two 60 s ticks.
+                realized += (ctx.price - entry) * qty
+                qty = 0.0
+                opened_at = None
+                stopped_at = as_of
+                stops += 1
+                actions["close"] = actions.get("close", 0) + 1
+                await self._repo.add_step(
+                    run_id,
+                    ts=as_of,
+                    status="decided",
+                    price=ctx.price,
+                    decision={
+                        "action": "close",
+                        "conviction": 1.0,
+                        "rationale": stop,
+                        "trigger": "stop_loss",
+                    },
+                    latency_ms=0,
+                )
+                steps += 1
+                recent.append(
+                    {
+                        "ts": as_of.isoformat(),
+                        "trigger": "stop_loss",
+                        "status": "replay",
+                        "decision": {"action": "close"},
+                    }
+                )
+                recent[:] = recent[-5:]
+                as_of += self._step
+                continue
+
             desk_info: dict[str, Any] | None = None
             if use_desk:
                 # Unlike the live loop's fail-open wrapping, a replay desk failure
@@ -368,9 +429,16 @@ class ReplayHarness:
             cost += result.completion.cost_usd or 0.0
 
             # Crude sim: one position, mark-to-bars, no costs. Ranks configs only.
+            cooling = (
+                stopped_at is not None
+                and self._limits is not None
+                and (as_of - stopped_at).total_seconds() < self._limits.stop_cooldown_seconds
+            )
             if decision.intent is not None:
                 side = 1.0 if decision.intent.side.value == "buy" else -1.0
-                if decision.action.value == "open" and qty == 0.0:
+                if decision.action.value == "open" and qty == 0.0 and cooling:
+                    stop_cooldown_denied += 1  # RiskGuard's stop_cooldown would deny it
+                elif decision.action.value == "open" and qty == 0.0:
                     qty = side * decision.intent.notional / ctx.price
                     entry = ctx.price
                     opened_at = as_of
@@ -426,6 +494,8 @@ class ReplayHarness:
             "prompt_variant": prompt_variant,
             **({"sleeve_usd": sleeve} if sleeve is not None else {}),
             "steps": steps,
+            "stops": stops,
+            "stop_cooldown_denied": stop_cooldown_denied,
             "errors": errors,
             "skipped_closed": skipped_closed,
             "skipped_no_data": skipped_no_data,

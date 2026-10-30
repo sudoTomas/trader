@@ -687,6 +687,7 @@ def build_evaluator(db: Database, settings: Settings, desk=None, *, llm=None, xa
     is wired in every build so desk-on replays work while the live desk stays dark."""
     from trader.data.composite import build_market_data
     from trader.eval.replay import ReplayHarness
+    from trader.risk.limits import limits_from_settings
 
     try:
         provider = build_market_data(settings)
@@ -698,6 +699,7 @@ def build_evaluator(db: Database, settings: Settings, desk=None, *, llm=None, xa
         provider,
         desk=desk,
         exit_review_enabled=settings.exit_review_enabled,
+        limits=limits_from_settings(settings),  # replay runs the live stop (#74)
     )
 
 

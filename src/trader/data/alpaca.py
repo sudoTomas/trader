@@ -6,7 +6,8 @@ IEX feed only, and historical requests are budgeted at ~200 req/min (documented 
 
 Endpoints (https://data.alpaca.markets):
 - crypto:   /v1beta3/crypto/us/bars, /v1beta3/crypto/us/latest/quotes
-- equities: /v2/stocks/bars, /v2/stocks/quotes/latest  (feed=iex on the free tier)
+- equities: /v2/stocks/bars, /v2/stocks/quotes/latest  (feed=iex on the free tier),
+            /v2/stocks/trades/latest (the mark when the IEX quote is too wide to trust)
 
 Bars are requested newest-first (``sort=desc``) so ``limit`` bounds the *most recent*
 window, then reversed to the ascending order consumers expect.
@@ -83,6 +84,15 @@ def _failure_detail(exc: BaseException) -> str:
         if message:
             parts.append(message[:_BODY_LIMIT])
     return " ".join(parts)
+
+
+#: Widest IEX equity quote whose mid is trusted as the mark. Normal spreads on the traded
+#: ETFs and large caps are 1-3 bp; the phantom books seen live were 70-600 bp.
+MAX_QUOTE_SPREAD_FRAC = 0.0025
+
+
+def _tight(bid: float, ask: float) -> bool:
+    return bid > 0 and ask >= bid and (ask - bid) / ((ask + bid) / 2) <= MAX_QUOTE_SPREAD_FRAC
 
 
 def _parse_ts(raw: str) -> datetime:
@@ -247,9 +257,22 @@ class AlpacaData:
         quote = (payload.get("quotes") or {}).get(spelled)
         if not quote:
             raise MarketDataError(f"alpaca_data: no quote for {symbol.ticker}")
-        return Quote(
-            symbol=symbol.ticker,
-            ts=_parse_ts(quote["t"]),
-            bid=float(quote["bp"]),
-            ask=float(quote["ap"]),
-        )
+        bid, ask = float(quote["bp"]), float(quote["ap"])
+        if symbol.asset_class is not AssetClass.CRYPTO and not _tight(bid, ask):
+            return await self._latest_trade_mark(symbol, spelled, bid, ask)
+        return Quote(symbol=symbol.ticker, ts=_parse_ts(quote["t"]), bid=bid, ask=ask)
+
+    async def _latest_trade_mark(
+        self, symbol: Symbol, spelled: str, bid: float, ask: float
+    ) -> Quote:
+        """IEX's own book is thin: one side can sit percent away from the market, and
+        that mid is a phantom price (see docs/lessons.md#iex-wide-quote-phantom-mark).
+        The last IEX print is a real execution, so it marks instead."""
+        payload = await self._get("/v2/stocks/trades/latest", {"symbols": spelled, "feed": "iex"})
+        trade = (payload.get("trades") or {}).get(spelled)
+        if not trade or not float(trade.get("p") or 0) > 0:
+            raise MarketDataError(
+                f"alpaca_data: wide quote for {symbol.ticker} ({bid} x {ask}) and no trade"
+            )
+        price = float(trade["p"])
+        return Quote(symbol=symbol.ticker, ts=_parse_ts(trade["t"]), bid=price, ask=price)

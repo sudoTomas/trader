@@ -135,9 +135,12 @@ SignalScheduler → ContextBuilder → (analyst desk) → Decider → (Confirm) 
   (Consolidates what v1 scattered across sleeve/translator/tournament;
   [risk-chain-consolidated](lessons.md#risk-chain-consolidated).)
 - **Stop-loss** (#74) — deterministic, in the loop, before the model: a held position whose
-  loss against its entry reaches `TRADER_RISK_STOP_LOSS_FRAC` (default 8%) on two ticks in a
-  row is closed in full, by quantity, through the same RiskGuard chain, journaled with trigger
-  `stop_loss`. Pause and drift still block it; a blocked stop retries every tick and journals
+  loss against its entry reaches its stop on two ticks in a row is closed in full. The stop
+  is `TRADER_RISK_STOP_VOL_MULT` (default 2) of the symbol's typical daily moves (its 1h
+  mark vol scaled to a day), capped at `TRADER_RISK_STOP_LOSS_FRAC` (default 8%), which is
+  also the stop when no vol is known (`risk/limits.py::stop_loss_frac_for`; the multiplier
+  is chosen in `reports/2026-10-22-bot-1-exits.md`). It is closed by quantity, through the
+  same RiskGuard chain, journaled with trigger `stop_loss`. Pause and drift still block it; a blocked stop retries every tick and journals
   once per outcome. A position with no entry price is journaled as unprotected.
 - **Executor** — Alpaca paper only. Idempotent `client_order_id`; persist the order row
   before submit; trade-updates WebSocket → fills ledger. Closes must eventually land; opens

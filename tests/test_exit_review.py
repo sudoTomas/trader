@@ -215,6 +215,28 @@ async def test_system_prompt_describes_exits_only_when_reviewing():
     assert "notional_usd" in review_system  # how a partial exit is expressed on the wire
 
 
+async def test_the_exit_question_is_asked_without_a_thumb_on_the_scale():
+    """The lane asks whether the thesis holds; it does not tilt the answer to `close`.
+
+    The tilted wording ("prefer `close` over `hold`", "a hold must justify staying in",
+    "beyond your stated tolerance" with no tolerance ever stated) closed Bot #1's ETFs
+    at a median -0.36%: re-deciding those ten journaled prompts closed 16 of 20 under it,
+    1 of 20 with the question asked straight (reports/2026-10-22-bot-1-exits.md).
+    """
+    ctx = await held_builder().build(
+        BTC, now=NOW, triggers=[], equity=100_000.0, position_qty=1.0, position=HELD
+    )
+    llm = StubLLM([HOLD])
+    await Decider(llm).decide(ctx)
+    system, user = (m["content"] for m in llm.calls[0])
+    for text in (system, user):
+        lowered = text.lower()
+        for tilt in ("prefer `close`", "must justify", "tolerance", "not a justification"):
+            assert tilt not in lowered, tilt
+    assert "thesis still holds" in user  # the question itself stays
+    assert "`hold` when it does" in user
+
+
 # --- runner plumbing -----------------------------------------------------------
 
 

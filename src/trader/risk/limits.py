@@ -9,7 +9,13 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from trader.core.symbols import AssetClass
 from trader.ops.config import Settings
+
+# 1h bars in one trading day of the loop's mark vol: crypto trades around the clock;
+# Alpaca's consolidated equity bars span the extended session, 04:00-20:00 ET.
+_STOP_BARS_PER_DAY = {AssetClass.CRYPTO: 24}
+_EQUITY_STOP_BARS_PER_DAY = 16
 
 
 @dataclass(frozen=True)
@@ -39,6 +45,10 @@ class RiskLimits:
     # Deterministic stop (#74): the loop closes a position whose loss against its entry
     # reaches this fraction; 0 is off. A stopped symbol takes no opens for the cooldown.
     stop_loss_frac: float = 0.0
+    # Volatility scaling of that stop: the distance is this many of the symbol's daily
+    # moves (the loop's 1h mark vol scaled to a day), never wider than stop_loss_frac.
+    # 0 keeps the fixed stop alone. See stop_loss_frac_for().
+    stop_vol_mult: float = 0.0
     stop_cooldown_seconds: int = 86_400
 
     def __post_init__(self) -> None:
@@ -53,6 +63,8 @@ class RiskLimits:
                 raise ValueError(f"{name} must be within (0, 1)")
         if not 0 <= self.stop_loss_frac < 1:
             raise ValueError("stop_loss_frac must be within [0, 1)")
+        if not (math.isfinite(self.stop_vol_mult) and self.stop_vol_mult >= 0):
+            raise ValueError("stop_vol_mult must be a finite number >= 0")
         if self.stop_cooldown_seconds < 0:
             raise ValueError("stop_cooldown_seconds must be >= 0")
         if self.park_above_usd is not None:
@@ -60,6 +72,25 @@ class RiskLimits:
                 raise ValueError("park_above_usd must be a positive finite number when set")
             if self.park_above_usd <= self.approval_notional_usd:
                 raise ValueError("park_above_usd must exceed approval_notional_usd")
+
+
+def stop_loss_frac_for(
+    limits: RiskLimits, realized_vol: float | None, asset_class: AssetClass
+) -> float:
+    """The stop distance for one held position, as a loss fraction against its entry.
+
+    ``realized_vol`` is the loop's per-bar mark vol (1h ``realized_vol_20``, ``Mark``).
+    Scaled to a day it says how far the symbol moves on an ordinary day; the stop sits
+    ``stop_vol_mult`` of those away, capped at the fixed ``stop_loss_frac``. Without a
+    vol reading there is no evidence for a tighter stop, so the ceiling holds. 0 = off.
+    """
+    ceiling = limits.stop_loss_frac
+    if ceiling <= 0 or limits.stop_vol_mult <= 0:
+        return ceiling
+    if realized_vol is None or not (math.isfinite(realized_vol) and realized_vol > 0):
+        return ceiling
+    bars = _STOP_BARS_PER_DAY.get(asset_class, _EQUITY_STOP_BARS_PER_DAY)
+    return min(ceiling, limits.stop_vol_mult * realized_vol * math.sqrt(bars))
 
 
 def limits_from_settings(settings: Settings) -> RiskLimits:
@@ -73,6 +104,7 @@ def limits_from_settings(settings: Settings) -> RiskLimits:
         weekly_drawdown_limit_frac=settings.risk_weekly_drawdown_limit_frac,
         approval_notional_usd=settings.risk_approval_notional_usd,
         stop_loss_frac=settings.risk_stop_loss_frac,
+        stop_vol_mult=settings.risk_stop_vol_mult,
         stop_cooldown_seconds=settings.risk_stop_cooldown_seconds,
         park_above_usd=_park_above(
             settings.risk_park_above_usd, settings.risk_approval_notional_usd
