@@ -12,11 +12,14 @@ import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from tests.test_loop import StubLLM, StubMarketData
 from trader.core.symbols import AssetClass, default_registry, make_symbol
 from trader.data.bars_cache import BarsCache
 from trader.eval.replay import ReplayHarness, ReplayMarketData
 from trader.loop.context import ContextBuilder
+from trader.loop.decider import PROMPT_VARIANTS
 from trader.loop.scheduler import Trigger
 from trader.store.db import Database
 from trader.store.repos import BarsRepo, BriefsRepo, MacroViewsRepo
@@ -126,6 +129,46 @@ async def test_run_refuses_windows_beyond_max_steps(db: Database):
     except ValueError:
         pass
     assert await db.fetch_all("SELECT * FROM eval_runs") == []  # refused before any row
+
+
+async def test_run_replays_a_bots_prompt_variant_and_sleeve(db: Database):
+    """A Bot version's decide rules and Sleeve can be replayed (#127): the system prompt
+    is that variant's, and the context sizes against the Sleeve, as the live loop does."""
+    await seed_hourly_bars(db)
+    llm = StubLLM([HOLD, HOLD])
+    harness = ReplayHarness(db, llm, StubMarketData())
+
+    run = await harness.run(
+        BTC,
+        NOW - timedelta(hours=2),
+        NOW,
+        label="bot-2",
+        config={"prompt_variant": "equity-largecap", "sleeve_usd": 5000},
+    )
+    assert run["status"] == "done"
+    assert run["summary"]["prompt_variant"] == "equity-largecap"
+    for messages in llm.calls:
+        assert messages[0]["content"] == PROMPT_VARIANTS["equity-largecap"]
+        assert "Sleeve equity: 5,000.00 USD" in messages[1]["content"]
+
+
+async def test_run_defaults_to_bot_ones_prompt_and_the_account_equity(db: Database):
+    await seed_hourly_bars(db)
+    llm = StubLLM([HOLD])
+    harness = ReplayHarness(db, llm, StubMarketData())
+
+    run = await harness.run(BTC, NOW - timedelta(hours=1), NOW, label="baseline")
+    assert run["summary"]["prompt_variant"] == "default"
+    assert llm.calls[0][0]["content"] == PROMPT_VARIANTS["default"]
+    assert "Account equity: 100,000.00 USD" in llm.calls[0][1]["content"]
+
+
+async def test_run_refuses_an_unknown_prompt_variant_or_a_bad_sleeve(db: Database):
+    harness = ReplayHarness(db, StubLLM([]), StubMarketData())
+    for bad in ({"prompt_variant": "nope"}, {"sleeve_usd": 0}, {"sleeve_usd": "x"}):
+        with pytest.raises(ValueError):
+            await harness.create_run(BTC, NOW - timedelta(hours=1), NOW, label="bad", config=bad)
+    assert await db.fetch_all("SELECT * FROM eval_runs") == []
 
 
 async def test_closed_venue_steps_are_skipped_without_llm_calls(db: Database):
