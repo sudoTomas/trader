@@ -213,6 +213,10 @@ class Supervisor:
         """A symbol with its venue flags, from whichever Bot runs it."""
         return next((s for b in self.bots if (s := b.symbol(ticker)) is not None), None)
 
+    def mark_vol(self, ticker: str) -> float | None:
+        """The last 1h mark vol for a symbol (what sizes its stop), Bot #1's first."""
+        return next((v for b in self.bots if (v := b.mark_vol(ticker)) is not None), None)
+
     def bot(self, name: str | None = None) -> BotRunner:
         """A Bot's runner by name; None is Bot #1."""
         if name is None or name == BOT_ONE:

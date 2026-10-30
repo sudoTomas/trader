@@ -59,6 +59,7 @@ from trader.loop.journal import (
 from trader.loop.scheduler import HEARTBEAT, Mark, SignalScheduler, Trigger
 from trader.loop.sources import bot_one_subscriptions, build_sources, polls_unheld
 from trader.risk.guard import AccountState, RiskGuard
+from trader.risk.limits import stop_loss_frac_for
 from trader.risk.sleeves import (
     UNATTRIBUTED_BOT_ID,
     SleeveLedger,
@@ -570,6 +571,11 @@ class BotRunner:
         ttl = cadence.get(symbol.asset_class) if isinstance(cadence, dict) else None
         return float(ttl) if ttl else MARK_VOL_FALLBACK_TTL_SECONDS
 
+    def mark_vol(self, ticker: str) -> float | None:
+        """The last 1h mark vol this loop saw for a symbol: what sizes its stop now."""
+        cached = self._mark_vols.get(ticker)
+        return cached[1] if cached is not None else None
+
     async def _mark_vol(self, symbol: Symbol, now: datetime) -> float | None:
         """Per-bar realized vol on the same interval the decide context uses.
 
@@ -648,8 +654,7 @@ class BotRunner:
         retries every tick but journals only when its outcome changes; while an order for
         the symbol is still open, nothing is resent.
         """
-        frac = self.guard.limits.stop_loss_frac
-        if frac <= 0:
+        if self.guard.limits.stop_loss_frac <= 0:
             return set(), []
         stopping: set[str] = set()
         results: list[WakeupResult] = []
@@ -670,6 +675,7 @@ class BotRunner:
             loss = mark.unrealized_pnl_frac if mark is not None else None
             if mark is None or loss is None:
                 continue  # venue closed or no quote: no evidence either way
+            frac = stop_loss_frac_for(self.guard.limits, mark.realized_vol, symbol.asset_class)
             if loss > -frac:
                 self._stop_breaches.pop(ticker, None)
                 self._stop_last.pop(ticker, None)
@@ -685,6 +691,7 @@ class BotRunner:
                 qty,
                 mark,
                 loss,
+                frac,
                 ticks,
                 now,
                 positions if account_positions is None else account_positions,
@@ -700,6 +707,7 @@ class BotRunner:
         qty: float,
         mark: Mark,
         loss: float,
+        frac: float,
         ticks: int,
         now: datetime,
         positions: dict[str, float],
@@ -707,13 +715,18 @@ class BotRunner:
     ) -> WakeupResult | None:
         """Close the whole position, by qty, through the same RiskGuard chain."""
         ticker = symbol.ticker
-        frac = self.guard.limits.stop_loss_frac
+        limits = self.guard.limits
+        basis = (
+            f" ({limits.stop_vol_mult:g}x daily vol, ceiling {limits.stop_loss_frac:.1%})"
+            if frac < limits.stop_loss_frac
+            else ""
+        )
         intent = OrderIntent(ticker, Side.SELL if qty > 0 else Side.BUY, qty=abs(qty))
         decision = Decision(
             ticker,
             Action.CLOSE,
             1.0,
-            f"stop-loss: {loss:+.1%} against entry is past -{frac:.1%} on {ticks} ticks",
+            f"stop-loss: {loss:+.1%} against entry is past -{frac:.1%}{basis} on {ticks} ticks",
             intent,
         )
         outcome = await self.guard.evaluate(

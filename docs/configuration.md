@@ -82,7 +82,8 @@ Deterministic limits applied to every intent. Code and config only, never prompt
 | `TRADER_RISK_WEEKLY_DRAWDOWN_LIMIT_FRAC` | `float` | `0.1` | tuning | Weekly drawdown breaker, same mechanics as the daily limit. |
 | `TRADER_RISK_APPROVAL_NOTIONAL_USD` | `float` | `1000.0` | tuning | Unattended opens above this notional clamp down to it and execute; the clamp is journaled. Exits are never clamped. |
 | `TRADER_RISK_PARK_ABOVE_USD` | `float` | `0.0` | tuning | `0` disables parking. A value above the approval cap parks larger opens for a human (`trader risk approve`); everything between the cap and this band clamps to the cap and executes unattended. |
-| `TRADER_RISK_STOP_LOSS_FRAC` | `float` | `0.08` | tuning | Deterministic stop: when a held position's loss against its entry reaches this fraction on two ticks in a row, the loop closes the whole position without asking the model. `0` turns it off. Pause and drift still block it. |
+| `TRADER_RISK_STOP_LOSS_FRAC` | `float` | `0.08` | tuning | Deterministic stop, and its ceiling: when a held position's loss against its entry reaches its stop (this fraction, or tighter under `TRADER_RISK_STOP_VOL_MULT`) on two ticks in a row, the loop closes the whole position without asking the model. `0` turns it off. Pause and drift still block it. |
+| `TRADER_RISK_STOP_VOL_MULT` | `float` | `2.0` | tuning | Volatility-scaled stop: the stop sits this many of the symbol's typical daily moves (its 1h realized volatility scaled to a day) below the entry, never wider than `TRADER_RISK_STOP_LOSS_FRAC`. With no volatility reading the fixed stop applies. `0` keeps the fixed stop alone. Chosen in `docs/reports/2026-10-22-bot-1-exits.md`. |
 | `TRADER_RISK_STOP_COOLDOWN_SECONDS` | `int` | `86400` | tuning | After a stop closes a symbol, RiskGuard refuses opens on it for this long. |
 
 ## Research Desk

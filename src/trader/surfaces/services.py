@@ -166,25 +166,40 @@ def build_registry(
 
     async def _stops(limits: Any) -> dict[str, Any]:
         """The deterministic stop (#74) per held position. Off (0) protects nothing; a
-        position without an entry price cannot be protected."""
+        position without an entry price cannot be protected. The distance is the one the
+        running loop uses: scaled to the symbol's last mark vol when the loop has one
+        (``stop_basis`` "vol"), else the fixed ceiling."""
+        from trader.core.symbols import AssetClass
+        from trader.risk.limits import stop_loss_frac_for
         from trader.store.repos import PositionsRepo
 
         assert db is not None
-        frac = limits.stop_loss_frac
+        mark_vol = getattr(runner, "mark_vol", None)
         positions = []
         for row in await PositionsRepo(db).all():
             qty = float(row["qty"])
             if not qty:
                 continue
             entry = float(row["avg_entry_price"]) if row["avg_entry_price"] is not None else None
-            stop = None
-            if entry is not None and frac > 0:
+            frac = basis = stop = None
+            if entry is not None and limits.stop_loss_frac > 0:
+                vol = mark_vol(row["symbol"]) if mark_vol is not None else None
+                frac = stop_loss_frac_for(limits, vol, AssetClass(row["asset_class"]))
+                basis = "vol" if frac < limits.stop_loss_frac else "ceiling"
                 stop = round(entry * (1 - frac if qty > 0 else 1 + frac), 8)
             positions.append(
-                {"symbol": row["symbol"], "qty": qty, "avg_entry_price": entry, "stop_price": stop}
+                {
+                    "symbol": row["symbol"],
+                    "qty": qty,
+                    "avg_entry_price": entry,
+                    "stop_frac": frac,
+                    "stop_basis": basis,
+                    "stop_price": stop,
+                }
             )
         return {
-            "stop_loss_frac": frac,
+            "stop_loss_frac": limits.stop_loss_frac,
+            "stop_vol_mult": limits.stop_vol_mult,
             "cooldown_seconds": limits.stop_cooldown_seconds,
             "positions": positions,
             "unprotected": [p["symbol"] for p in positions if p["stop_price"] is None],

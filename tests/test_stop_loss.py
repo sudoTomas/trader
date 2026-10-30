@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import pytest
+
 from tests.test_executor import FakeAlpaca
 from tests.test_loop import BTC, HOLD, NOW, StubLLM, StubMarketData
 from trader.loop.executor import Executor
@@ -141,6 +143,86 @@ async def test_a_recovered_price_resets_the_two_tick_count(db: Database):
     assert broker.submitted == []
 
 
+# --- the volatility-scaled stop ---------------------------------------------------------
+
+
+def test_the_stop_scales_with_daily_vol_under_the_fixed_ceiling():
+    from trader.core.symbols import AssetClass
+    from trader.risk.limits import stop_loss_frac_for
+
+    scaled = RiskLimits(stop_loss_frac=0.08, stop_vol_mult=2.0)
+    # 1h vol 0.25%: an ETF's day is 16 consolidated 1h bars, so 1% a day; 2x that is 2%.
+    assert stop_loss_frac_for(scaled, 0.0025, AssetClass.COMMODITY_ETF) == pytest.approx(0.02)
+    assert stop_loss_frac_for(scaled, 0.0025, AssetClass.US_EQUITY) == pytest.approx(0.02)
+    # Crypto trades 24 bars a day.
+    assert stop_loss_frac_for(scaled, 0.0025, AssetClass.CRYPTO) == pytest.approx(
+        2 * 0.0025 * 24**0.5
+    )
+    # The fixed stop stays the ceiling: a wild symbol is never given more room than 8%.
+    assert stop_loss_frac_for(scaled, 0.05, AssetClass.COMMODITY_ETF) == 0.08
+    # No vol (no bars yet, an outage) is no evidence of a tighter stop: the ceiling holds.
+    assert stop_loss_frac_for(scaled, None, AssetClass.COMMODITY_ETF) == 0.08
+    assert stop_loss_frac_for(scaled, 0.0, AssetClass.COMMODITY_ETF) == 0.08
+    # A multiplier of 0 is the fixed stop alone; a ceiling of 0 is no stop at all.
+    fixed = RiskLimits(stop_loss_frac=0.08)
+    assert stop_loss_frac_for(fixed, 0.0025, AssetClass.COMMODITY_ETF) == 0.08
+    off = RiskLimits(stop_loss_frac=0.0, stop_vol_mult=2.0)
+    assert stop_loss_frac_for(off, 0.0025, AssetClass.COMMODITY_ETF) == 0.0
+
+
+def test_the_vol_multiplier_must_be_a_non_negative_number():
+    for bad in (-1.0, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="stop_vol_mult"):
+            RiskLimits(stop_vol_mult=bad)
+
+
+def test_settings_size_the_stop_at_two_daily_moves_by_default():
+    from trader.ops.config import Settings
+    from trader.risk.limits import limits_from_settings
+
+    limits = limits_from_settings(Settings())
+    assert (limits.stop_loss_frac, limits.stop_vol_mult) == (0.08, 2.0)
+
+
+# Alternating 100 / 100.1: a 1h realized vol of about 0.1%, so BTC's day (24 bars) is about
+# 0.5% and the scaled stop about 1.0%. The last quote is 100.1.
+CALM = [100.0 + 0.1 * (i % 2) for i in range(60)]
+
+
+async def test_a_calm_symbol_is_stopped_well_inside_the_fixed_stop(db: Database):
+    await hold_btc(db, entry=103.0)  # -2.8%: inside 8%, past two of this symbol's days
+    broker = FakeAlpaca()
+    llm = StubLLM([HOLD])
+    limits = RiskLimits(
+        max_position_frac=0.05,
+        approval_notional_usd=100_000.0,
+        stop_loss_frac=0.08,
+        stop_vol_mult=2.0,
+    )
+    runner = runner_for(db, broker, llm, limits=limits)
+    runner.market_data = StubMarketData(CALM)
+
+    await ticks(runner, 2)
+
+    assert len(llm.calls) == 1 and broker.submitted[0]["qty"] == 0.5
+    row = await db.fetch_one("SELECT status, decision FROM decisions WHERE trigger = 'stop_loss'")
+    assert row["status"] == EXECUTED
+    rationale = row["decision"]["rationale"]
+    assert "-2.8%" in rationale and "past -1.0%" in rationale
+    assert "2x daily vol" in rationale and "ceiling 8.0%" in rationale
+
+
+async def test_the_same_loss_is_held_by_the_fixed_stop_alone(db: Database):
+    await hold_btc(db, entry=103.0)
+    broker = FakeAlpaca()
+    runner = runner_for(db, broker, StubLLM([HOLD, HOLD]))  # LIMITS: 8% fixed, no scaling
+    runner.market_data = StubMarketData(CALM)
+
+    await ticks(runner, 2)
+
+    assert broker.submitted == [] and await stop_rows(db) == []
+
+
 async def test_the_stop_is_off_at_zero(db: Database):
     await hold_btc(db)
     broker = FakeAlpaca()
@@ -242,13 +324,48 @@ def test_risk_status_shows_each_position_s_stop_on_every_door(clean_db: None, mo
     printed = CliRunner().invoke(cli.app, ["risk", "status"])
     assert printed.exit_code == 0, printed.output
 
+    # No loop is running behind these doors, so no mark vol: the ceiling is the stop.
     assert via_api["stops"] == {
         "stop_loss_frac": 0.08,
+        "stop_vol_mult": 2.0,
         "cooldown_seconds": 86_400,
         "positions": [
-            {"symbol": "BTC/USD", "qty": 0.5, "avg_entry_price": 200.0, "stop_price": 184.0},
-            {"symbol": "ETH/USD", "qty": 2.0, "avg_entry_price": None, "stop_price": None},
+            {
+                "symbol": "BTC/USD",
+                "qty": 0.5,
+                "avg_entry_price": 200.0,
+                "stop_frac": 0.08,
+                "stop_basis": "ceiling",
+                "stop_price": 184.0,
+            },
+            {
+                "symbol": "ETH/USD",
+                "qty": 2.0,
+                "avg_entry_price": None,
+                "stop_frac": None,
+                "stop_basis": None,
+                "stop_price": None,
+            },
         ],
         "unprotected": ["ETH/USD"],
     }
     assert json.loads(printed.output)["stops"] == via_api["stops"] == via_mcp["stops"]
+
+
+async def test_risk_status_shows_the_vol_scaled_stop_the_running_loop_uses(db: Database):
+    from trader.surfaces.services import build_registry
+
+    class Loop:  # the running loop's last 1h mark vol per symbol
+        executor = None
+
+        def mark_vol(self, ticker: str) -> float | None:
+            return {"BTC/USD": 0.0025}.get(ticker)
+
+    await hold_btc(db, qty=0.5, entry=200.0)
+    status = await build_registry(db, runner=Loop()).get("risk_status").handler()
+
+    [btc] = status["stops"]["positions"]
+    frac = 2.0 * 0.0025 * 24**0.5  # two of BTC's days at that vol, under the 8% ceiling
+    assert btc["stop_basis"] == "vol"
+    assert btc["stop_frac"] == pytest.approx(frac)
+    assert btc["stop_price"] == pytest.approx(200.0 * (1 - frac))

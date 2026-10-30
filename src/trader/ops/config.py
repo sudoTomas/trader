@@ -277,9 +277,23 @@ class Settings(BaseSettings):
         category=TUNING,
         section="Risk limits (RiskGuard)",
         description=(
-            "Deterministic stop: when a held position's loss against its entry reaches this "
-            "fraction on two ticks in a row, the loop closes the whole position without "
-            "asking the model. `0` turns it off. Pause and drift still block it."
+            "Deterministic stop, and its ceiling: when a held position's loss against its "
+            "entry reaches its stop (this fraction, or tighter under "
+            "`TRADER_RISK_STOP_VOL_MULT`) on two ticks in a row, the loop closes the whole "
+            "position without asking the model. `0` turns it off. Pause and drift still "
+            "block it."
+        ),
+    )
+    risk_stop_vol_mult: float = setting(
+        2.0,
+        category=TUNING,
+        section="Risk limits (RiskGuard)",
+        description=(
+            "Volatility-scaled stop: the stop sits this many of the symbol's typical daily "
+            "moves (its 1h realized volatility scaled to a day) below the entry, never wider "
+            "than `TRADER_RISK_STOP_LOSS_FRAC`. With no volatility reading the fixed stop "
+            "applies. `0` keeps the fixed stop alone. Chosen in "
+            "`docs/reports/2026-10-22-bot-1-exits.md`."
         ),
     )
     risk_stop_cooldown_seconds: int = setting(

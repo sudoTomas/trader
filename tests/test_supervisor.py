@@ -121,6 +121,19 @@ async def test_two_bots_tick_concurrently_with_isolated_cooldowns_and_history(db
         assert history.count("\n  - ") == 1  # its own earlier hold only
 
 
+async def test_the_supervisor_reports_the_mark_vol_that_sizes_a_stop(db: Database):
+    one, two = await bot_one(db), await bot_two(db)
+    shared = SharedMarketData(CountingData())
+    first = runner(db, shared, one, [HOLD])
+    second = runner(db, shared, two, [HOLD], observes_account=False)
+    supervisor = Supervisor([first, second], shared)
+    assert supervisor.mark_vol("BTC/USD") is None  # no tick yet, no vol
+
+    await supervisor.tick(NOW)
+
+    assert supervisor.mark_vol("BTC/USD") == first.mark_vol("BTC/USD") is not None
+
+
 async def test_a_bot_pause_and_sleeve_are_its_own(db: Database):
     one, two = await bot_one(db), await bot_two(db)
     await BreakerStore(db, bot_id=one["id"]).pause("operator")
