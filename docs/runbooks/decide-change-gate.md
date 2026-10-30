@@ -20,6 +20,11 @@ trader eval list
 trader eval show <id>          # summary + per-step decisions
 ```
 
+Replays run the live deterministic stop (#74, volatility-scaled): a replayed position past
+its stop is closed at that step before the model is asked, and its cooldown keeps later
+opens out of the crude book (`stops` / `stop_cooldown_denied` in the summary). A step's bar
+close stands in for the live loop's two 60 s ticks.
+
 Runs execute in the background (`POST /eval/replay`, MCP `run_replay_eval`); bars come
 from the read-through cache (first run over a window backfills it), the decider is the
 same code the live loop runs, and results land in `eval_runs`/`eval_steps` — **never**

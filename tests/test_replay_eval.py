@@ -469,3 +469,68 @@ def test_eval_runs_surfaced_on_api_and_cli(clean_db: None, monkeypatch):
     result = CliRunner().invoke(cli.app, ["eval", "list"])
     assert result.exit_code == 0, result.output
     assert json.loads(result.output) == []
+
+
+# --- the deterministic stop in replay -------------------------------------------------
+
+# Seeded long at 70,000 against closes near 60,500: about -13.6%, past any 8% stop.
+UNDERWATER = {"qty": 0.01, "avg_entry_price": 70_000.0}
+
+
+async def test_replay_runs_the_stop_before_the_model_and_honors_its_cooldown(db: Database):
+    """With the live limits wired in, a replayed position past its stop is closed by the
+    stop at that step (no model call, as live), and the cooldown keeps the model's next
+    opens on the symbol out of the crude book."""
+    import pytest
+
+    from trader.risk.limits import RiskLimits
+
+    await seed_hourly_bars(db)
+    llm = StubLLM([OPEN, OPEN])
+    harness = ReplayHarness(
+        db, llm, StubMarketData(), limits=RiskLimits(stop_loss_frac=0.08, stop_vol_mult=2.0)
+    )
+    run = await harness.run(
+        BTC,
+        NOW - timedelta(hours=3),
+        NOW,
+        label="stop",
+        config={"exit_review": True, "exit_review_seed": UNDERWATER},
+    )
+
+    summary = run["summary"]
+    assert len(llm.calls) == 2  # the stop step never asked the model
+    assert summary["stops"] == 1 and summary["stop_cooldown_denied"] == 2
+    steps = await db.fetch_all("SELECT ts, price, decision FROM eval_steps ORDER BY ts")
+    first = steps[0]["decision"]
+    assert first["action"] == "close" and first["trigger"] == "stop_loss"
+    assert first["rationale"].startswith("stop-loss: -13.")
+    assert summary["realized_pnl"] == pytest.approx((float(steps[0]["price"]) - 70_000.0) * 0.01)
+    assert summary["unrealized_pnl"] == 0  # the denied opens never entered the book
+
+
+def test_the_api_replays_with_the_live_stop(monkeypatch):
+    from trader.ops.config import Settings
+    from trader.risk.limits import limits_from_settings
+    from trader.surfaces.api.app import build_evaluator
+
+    monkeypatch.setenv("ALPACA_API_KEY_ID", "k")
+    monkeypatch.setenv("ALPACA_API_SECRET", "s")
+    settings = Settings()
+    harness = build_evaluator(None, settings, llm=object())  # type: ignore[arg-type]
+    assert harness._limits == limits_from_settings(settings)
+
+
+async def test_replay_without_limits_has_no_stop(db: Database):
+    await seed_hourly_bars(db)
+    llm = StubLLM([HOLD, HOLD, HOLD])
+    harness = ReplayHarness(db, llm, StubMarketData())
+    run = await harness.run(
+        BTC,
+        NOW - timedelta(hours=3),
+        NOW,
+        label="no-stop",
+        config={"exit_review": True, "exit_review_seed": UNDERWATER},
+    )
+    assert len(llm.calls) == 3
+    assert run["summary"]["stops"] == 0 and run["summary"]["realized_pnl"] == 0
