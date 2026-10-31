@@ -123,7 +123,10 @@ SignalScheduler → ContextBuilder → (analyst desk) → Decider → (Confirm) 
   approve, shrink or veto the Draft; fails open to a journaled pass-through.
 - **RiskGuard** — ordered, fail-closed chain; each check returns allow / deny(reason) /
   clamp(size, reason): paper-gate → kill switches (trading paused, drift) → per-class policy
-  (crypto long-only, equity shortability, session open) → stop cooldown (no opens on a
+  (crypto long-only, equity shortability, session open) → min hold (exits only: the
+  model's close of a position its Bot opened less than `TRADER_RISK_MIN_HOLD_SECONDS`,
+  default 4 h, ago is denied; only a Draft is held, never the stop;
+  `reports/2026-10-30-sentiment-churn.md`) → stop cooldown (no opens on a
   symbol the stop just closed) → sizing clamps (max position frac,
   notional floor, kelly cap) → concurrency + trades/day → daily-loss + weekly-drawdown
   breakers → approval threshold (large orders park as pending) → full close (an exit for at

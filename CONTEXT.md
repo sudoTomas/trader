@@ -18,6 +18,10 @@ Journal-only. Nemotron holds the decide role, Kev is asked on every non-hold Dra
 _Avoid_: shadow confirm, dry run
 _Avoid_: second decider, override, veto
 
+**Minimum hold**:
+The time after a Bot opens a symbol during which RiskGuard refuses the model's close of that position. Only a Draft is held; the stop is not, so the stop is what protects a fresh position.
+_Avoid_: lockup, cooldown (a cooldown follows a stop)
+
 ### Models
 
 **Role**:

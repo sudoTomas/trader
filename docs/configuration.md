@@ -85,6 +85,7 @@ Deterministic limits applied to every intent. Code and config only, never prompt
 | `TRADER_RISK_STOP_LOSS_FRAC` | `float` | `0.08` | tuning | Deterministic stop, and its ceiling: when a held position's loss against its entry reaches its stop (this fraction, or tighter under `TRADER_RISK_STOP_VOL_MULT`) on two ticks in a row, the loop closes the whole position without asking the model. `0` turns it off. Pause and drift still block it. |
 | `TRADER_RISK_STOP_VOL_MULT` | `float` | `2.0` | tuning | Volatility-scaled stop: the stop sits this many of the symbol's typical daily moves (its 1h realized volatility scaled to a day) below the entry, never wider than `TRADER_RISK_STOP_LOSS_FRAC`. With no volatility reading the fixed stop applies. `0` keeps the fixed stop alone. Chosen in `docs/reports/2026-10-22-bot-1-exits.md`. |
 | `TRADER_RISK_STOP_COOLDOWN_SECONDS` | `int` | `86400` | tuning | After a stop closes a symbol, RiskGuard refuses opens on it for this long. |
+| `TRADER_RISK_MIN_HOLD_SECONDS` | `int` | `14400` | tuning | Minimum hold: RiskGuard denies the model's close of a position its Bot opened less than this long ago. The deterministic stop is never held, so it is what protects a fresh position. `0` turns the hold off. Chosen in `docs/reports/2026-10-30-sentiment-churn.md`. |
 
 ## Research Desk
 

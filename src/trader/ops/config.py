@@ -302,6 +302,17 @@ class Settings(BaseSettings):
         section="Risk limits (RiskGuard)",
         description="After a stop closes a symbol, RiskGuard refuses opens on it for this long.",
     )
+    risk_min_hold_seconds: int = setting(
+        14_400,
+        category=TUNING,
+        section="Risk limits (RiskGuard)",
+        description=(
+            "Minimum hold: RiskGuard denies the model's close of a position its Bot opened "
+            "less than this long ago. The deterministic stop is never held, so it is what "
+            "protects a fresh position. `0` turns the hold off. Chosen in "
+            "`docs/reports/2026-10-30-sentiment-churn.md`."
+        ),
+    )
 
     # --- Research Desk ---
     research_stale_days: int = setting(
