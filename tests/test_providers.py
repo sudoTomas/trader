@@ -81,6 +81,15 @@ async def test_bad_input_is_refused_before_anything_is_stored(db: Database):
     assert [p["name"] for p in await d.list()] == ["ollama"]
 
 
+async def test_xai_may_sign_with_the_subscription_login_instead_of_a_key(db: Database):
+    added = await desk(db).add(name="grok", preset="xai")
+
+    assert (added["kind"], added["local"], added["key"]) == ("xai", False, None)
+    presets = ProviderDesk.presets()
+    assert (presets["xai"]["needs_key"], presets["xai"]["key_optional"]) == (True, True)
+    assert presets["openai"]["key_optional"] is False
+
+
 async def test_a_provider_on_a_loopback_or_private_address_is_local(db: Database):
     d = desk(db)
     kev = await d.add(
@@ -229,6 +238,7 @@ async def test_provider_capabilities_are_registered_once_for_every_surface(db: D
         "base_url": "http://localhost:11434/v1",
         "local": True,
         "needs_key": False,
+        "key_optional": False,
         "default_model": None,
     }
     assert presets["custom"]["needs_key"] is False

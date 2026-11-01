@@ -37,6 +37,7 @@ from trader.llm.providers import (
     XAI,
     ProviderDesk,
 )
+from trader.llm.xai import ManagedBearerAuth
 from trader.store.audit import CALLER, SURFACE, audit
 from trader.store.db import Database
 
@@ -89,6 +90,7 @@ class ProfileDesk:
         transport: httpx.AsyncBaseTransport | None = None,
         anthropic_transport: Any | None = None,  # httpx2 transport, for tests
         caps: Any | None = None,  # llm.caps.SpendCaps
+        xai_auth: httpx.Auth | None = None,  # the SuperGrok login (llm.xai.ManagedBearerAuth)
     ) -> None:
         self._db = db
         self._providers = providers
@@ -97,6 +99,7 @@ class ProfileDesk:
         self._transport = transport
         self._anthropic_transport = anthropic_transport
         self._caps = caps
+        self._xai_auth = xai_auth
         # (provider id, provider updated_at, role kind, model) -> client. A key change or
         # rename bumps updated_at, so the next call builds a fresh client.
         self._clients: dict[tuple[Any, ...], Any] = {}
@@ -348,11 +351,20 @@ class ProfileDesk:
             return client
         api_key = self._providers.api_key(entry)
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        # A keyless xAI Provider signs with the service's SuperGrok login. Without one,
+        # every call fails as an LLMError, so the Probe refuses it and a Chain falls through.
+        auth = None
+        if entry["kind"] == XAI and not api_key:
+            auth = self._xai_auth or ManagedBearerAuth(None, "")
         if sentiment:
             from trader.research.sentiment import XSentimentClient
 
             http = httpx.AsyncClient(
-                base_url=entry["base_url"], headers=headers, timeout=60.0, transport=self._transport
+                base_url=entry["base_url"],
+                headers=headers,
+                auth=auth,
+                timeout=60.0,
+                transport=self._transport,
             )
             client = XSentimentClient(http, model=entry["model"], allowed_x_handles=self._handles)
             client.name = entry["name"]
@@ -391,6 +403,7 @@ class ProfileDesk:
                 client=httpx.AsyncClient(
                     base_url=entry["base_url"],
                     headers=headers,
+                    auth=auth,
                     timeout=120.0,
                     transport=self._transport,
                 ),

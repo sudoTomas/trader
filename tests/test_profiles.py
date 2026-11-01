@@ -512,6 +512,63 @@ async def test_a_sentiment_chain_serves_x_search_from_its_xai_provider(db: Datab
     assert row["model"] == "grok-4.6"
 
 
+class LoginAuth(httpx.Auth):
+    """The service's SuperGrok login, stubbed: signs with a fixed access token."""
+
+    def auth_flow(self, request: httpx.Request):
+        request.headers["Authorization"] = "Bearer oauth-access"
+        yield request
+
+
+def signed_by(server: ModelServer, seen: list[tuple[str, str]]) -> httpx.MockTransport:
+    def handler(request: httpx.Request) -> httpx.Response:
+        model = json.loads(request.content).get("model", "") if request.content else ""
+        seen.append((model, request.headers.get("authorization", "")))
+        return server(request)
+
+    return httpx.MockTransport(handler)
+
+
+async def test_a_keyless_xai_provider_signs_with_the_subscription_login(db: Database):
+    server = ModelServer(
+        {("api.x.ai", "grok-4-1-fast"): DECIDE_OK, ("api.x.ai", "grok-4"): DECIDE_OK}
+    )
+    seen: list[tuple[str, str]] = []
+    providers = ProviderDesk(
+        db, secrets_key=SECRETS_KEY, http=httpx.AsyncClient(transport=httpx.MockTransport(server))
+    )
+    profiles = ProfileDesk(db, providers, transport=signed_by(server, seen), xai_auth=LoginAuth())
+    await providers.add(name="grok", preset="xai")
+    await providers.add(name="grok-paid", preset="xai", api_key="xai-key-12345")
+    await profiles.create("trial")
+
+    await profiles.set_chain(
+        "trial",
+        "decide",
+        [
+            {"provider": "grok", "model": "grok-4-1-fast"},
+            {"provider": "grok-paid", "model": "grok-4"},
+        ],
+    )
+
+    assert sorted(seen) == [
+        ("grok-4", "Bearer xai-key-12345"),  # a stored key still wins for its Provider
+        ("grok-4-1-fast", "Bearer oauth-access"),
+    ]
+
+
+async def test_a_keyless_xai_provider_without_a_login_fails_its_probe(db: Database):
+    server = ModelServer({("api.x.ai", "grok-4-1-fast"): DECIDE_OK})
+    providers, profiles = await desks(db, server)
+    await providers.add(name="grok", preset="xai")
+    await profiles.create("trial")
+
+    with pytest.raises(ProfileError, match=r"grok:grok-4-1-fast failed its decide Probe"):
+        await profiles.set_chain(
+            "trial", "decide", [{"provider": "grok", "model": "grok-4-1-fast"}]
+        )
+
+
 async def test_with_no_sentiment_model_a_poll_is_unavailable_and_writes_nothing(db: Database):
     from tests.test_loop import BTC
     from trader.research.sentiment import SentimentService

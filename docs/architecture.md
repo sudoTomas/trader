@@ -333,6 +333,9 @@ hand, never by the screener.
 - **xAI / Grok** via SuperGrok **device-code OAuth** (RFC 8628, `auth.x.ai`): persist the
   rotating refresh token BEFORE serving the access token (single-use), lock-serialized
   refresh, 403 = entitlement (quarantine, no retry). `XAI_API_KEY` is a first-class fallback.
+  An `xai` Provider added without a key signs with that same login (one manager per
+  process), so a Profile can put Grok on any chat Role, decide included; with no login
+  and no `XAI_API_KEY` its Probe fails and a Chain falls through.
   Endpoint surface settled by a spike (`/v1/responses` hosts x_search regardless).
 - **Usage metering**: real token counts surfaced from every provider (vLLM returns them),
   priced per model; budget gates see actual spend. (v1 recorded `None` locally → budgets
