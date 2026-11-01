@@ -55,6 +55,9 @@ class Preset:
     local: bool = False
     #: Model a new Chain entry gets when none is named (None: one must be named).
     default_model: str | None = None
+    #: Hosted, yet a key is optional: without one it signs with the service's SuperGrok
+    #: login (``trader xai login``), the same credential the research roles use.
+    key_optional: bool = False
 
     @property
     def needs_key(self) -> bool:
@@ -65,7 +68,7 @@ PRESETS: dict[str, Preset] = {
     "openai": Preset(OPENAI_COMPAT, "https://api.openai.com/v1"),
     "anthropic": Preset(ANTHROPIC, "https://api.anthropic.com/v1", default_model="claude-opus-5-5"),
     "gemini": Preset(OPENAI_COMPAT, "https://generativelanguage.googleapis.com/v1beta/openai"),
-    "xai": Preset(XAI, "https://api.x.ai/v1"),
+    "xai": Preset(XAI, "https://api.x.ai/v1", key_optional=True),
     "openrouter": Preset(OPENAI_COMPAT, "https://openrouter.ai/api/v1"),
     "groq": Preset(OPENAI_COMPAT, "https://api.groq.com/openai/v1"),
     "together": Preset(OPENAI_COMPAT, "https://api.together.xyz/v1"),
@@ -167,7 +170,7 @@ class ProviderDesk:
             spec = PRESETS[preset]
         else:
             raise ProviderError(f"unknown preset {preset!r}; one of {sorted([*PRESETS, CUSTOM])}")
-        if spec.needs_key and api_key is None:
+        if spec.needs_key and api_key is None and not spec.key_optional:
             raise ProviderError(f"{preset} needs an API key")
         url = base_url or spec.base_url
         # Local means the model runs on hardware you own: a local preset, or any Provider
@@ -267,6 +270,7 @@ class ProviderDesk:
                 "base_url": p.base_url,
                 "local": p.local,
                 "needs_key": p.needs_key,
+                "key_optional": p.key_optional,
                 "default_model": p.default_model,
             }
             for name, p in PRESETS.items()
@@ -276,6 +280,7 @@ class ProviderDesk:
             "base_url": None,
             "local": None,
             "needs_key": False,
+            "key_optional": False,
             "default_model": None,
         }
         return out

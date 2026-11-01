@@ -373,11 +373,12 @@ def provider_add(
         False, "--key-stdin", help="Read the API key from stdin instead of a hidden prompt."
     ),
 ) -> None:
-    """Add a Provider. A hosted preset asks for its key without echoing it."""
+    """Add a Provider. A hosted preset asks for its key without echoing it; xai without
+    --key-stdin signs with the service's SuperGrok login (`trader xai login`)."""
     presets = _get("/providers/presets")
     spec = presets.get(preset) if isinstance(presets, dict) else None
     api_key = None
-    if key_stdin or (spec is not None and spec["needs_key"]):
+    if key_stdin or (spec is not None and spec["needs_key"] and not spec.get("key_optional")):
         api_key = _read_key(key_stdin)
     payload = {"name": name, "preset": preset, "api_key": api_key, "base_url": base_url}
     _echo_masked(_post("/providers", json_body=payload))

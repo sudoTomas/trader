@@ -164,7 +164,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     xai_manager = build_xai_manager(settings)
     providers = build_providers(db, settings)
     caps = build_caps(db, settings)
-    profiles = build_profiles(db, settings, providers, caps)
+    profiles = build_profiles(db, settings, providers, caps, xai_manager=xai_manager)
     # ONE registry per process (#107): it reads the active Profile and the Spend caps per
     # call, so a switch or a cap reaches the loop, desk, compiler, briefs and replays at once.
     llm = build_llm(db, settings, profiles, caps, xai_manager=xai_manager)
@@ -718,9 +718,12 @@ def build_caps(db: Database, settings: Settings):
     return SpendCaps(db, defaults={"critic": settings.desk_critic_daily_usd})
 
 
-def build_profiles(db: Database, settings: Settings, providers, caps=None):
-    """The model picker's Profiles (#107): the active one serves every Role it names."""
+def build_profiles(db: Database, settings: Settings, providers, caps=None, *, xai_manager=None):
+    """The model picker's Profiles (#107): the active one serves every Role it names. A
+    keyless xAI Provider signs with the process's one SuperGrok login (``xai_manager``),
+    with ``XAI_API_KEY`` as its fallback, exactly like the .env research roles."""
     from trader.llm.profiles import ProfileDesk
+    from trader.llm.xai import ManagedBearerAuth
 
     return ProfileDesk(
         db,
@@ -728,6 +731,7 @@ def build_profiles(db: Database, settings: Settings, providers, caps=None):
         nemotron_base_url=settings.nemotron_base_url,
         sentiment_handles=sentiment_handles(settings),
         caps=caps,
+        xai_auth=ManagedBearerAuth(xai_manager, settings.xai_api_key),
     )
 
 

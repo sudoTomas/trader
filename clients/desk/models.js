@@ -228,7 +228,7 @@ function addProviderForm() {
       pick,
       input({ value: a.name, placeholder: 'name (a-z, 0-9, - _)', ariaLabel: 'Name' }, (v) => { a.name = v; }),
       input({ value: a.base_url, placeholder: preset.base_url || 'base URL (…/v1)', ariaLabel: 'Base URL' }, (v) => { a.base_url = v; }),
-      preset.needs_key === false ? null : input({ type: 'password', autocomplete: 'off', placeholder: 'API key', ariaLabel: 'API key' }, (v) => { a.api_key = v; }),
+      preset.needs_key === false ? null : input({ type: 'password', autocomplete: 'off', placeholder: preset.key_optional ? 'API key (blank: SuperGrok login)' : 'API key', ariaLabel: 'API key' }, (v) => { a.api_key = v; }),
       btn('Add', async () => {
         const body = { name: a.name.trim(), preset: a.preset, api_key: a.api_key || null, base_url: a.base_url || null };
         a.api_key = '';
