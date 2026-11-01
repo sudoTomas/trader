@@ -919,6 +919,7 @@ class BotRunner:
                 realized_vol=ctx.primary_vol,
                 shadow=self.shadow,
                 bot_id=self.bot_id,
+                draft=True,  # the min hold binds the model's closes, never the stop's
             )
             verdicts = outcome.verdict_dicts
             reason = outcome.reason

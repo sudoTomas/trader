@@ -50,6 +50,9 @@ class RiskLimits:
     # 0 keeps the fixed stop alone. See stop_loss_frac_for().
     stop_vol_mult: float = 0.0
     stop_cooldown_seconds: int = 86_400
+    # Minimum hold: the model may not close a position its Bot opened less than this
+    # long ago (RiskGuard's min_hold check). The stop is never held. 0 is off.
+    min_hold_seconds: int = 0
 
     def __post_init__(self) -> None:
         if not 0 < self.max_position_frac <= 1:
@@ -67,6 +70,8 @@ class RiskLimits:
             raise ValueError("stop_vol_mult must be a finite number >= 0")
         if self.stop_cooldown_seconds < 0:
             raise ValueError("stop_cooldown_seconds must be >= 0")
+        if self.min_hold_seconds < 0:
+            raise ValueError("min_hold_seconds must be >= 0")
         if self.park_above_usd is not None:
             if not math.isfinite(self.park_above_usd) or self.park_above_usd <= 0:
                 raise ValueError("park_above_usd must be a positive finite number when set")
@@ -106,6 +111,7 @@ def limits_from_settings(settings: Settings) -> RiskLimits:
         stop_loss_frac=settings.risk_stop_loss_frac,
         stop_vol_mult=settings.risk_stop_vol_mult,
         stop_cooldown_seconds=settings.risk_stop_cooldown_seconds,
+        min_hold_seconds=settings.risk_min_hold_seconds,
         park_above_usd=_park_above(
             settings.risk_park_above_usd, settings.risk_approval_notional_usd
         ),

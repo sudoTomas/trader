@@ -23,7 +23,10 @@ trader eval show <id>          # summary + per-step decisions
 Replays run the live deterministic stop (#74, volatility-scaled): a replayed position past
 its stop is closed at that step before the model is asked, and its cooldown keeps later
 opens out of the crude book (`stops` / `stop_cooldown_denied` in the summary). A step's bar
-close stands in for the live loop's two 60 s ticks.
+close stands in for the live loop's two 60 s ticks. They also run the min hold: a model
+close of a position the replay opened (or a seed with `opened_at`) less than
+`TRADER_RISK_MIN_HOLD_SECONDS` before leaves the book as it is (`min_hold_denied`; the step
+is marked `min_hold`).
 
 Runs execute in the background (`POST /eval/replay`, MCP `run_replay_eval`); bars come
 from the read-through cache (first run over a window backfills it), the decider is the

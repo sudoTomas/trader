@@ -147,7 +147,8 @@ class ReplayHarness:
         exit_review_enabled: bool = False,  # default for runs that do not say (#34)
         # The live limits, for the deterministic stop (#74): with them a replayed position
         # past its stop is closed at that step before the model is asked, and the stop's
-        # cooldown keeps later opens on the symbol out of the crude book. None = no stop.
+        # cooldown keeps later opens on the symbol out of the crude book. The min hold
+        # keeps the model's closes of a fresh position out of it too. None = neither.
         limits: RiskLimits | None = None,
     ) -> None:
         self._db = db
@@ -311,7 +312,7 @@ class ReplayHarness:
         desk_tally = {"approve": 0, "shrink": 0, "veto": 0, "pass_through": 0, "skipped": 0}
         recent: list[dict[str, Any]] = []
         steps = errors = skipped_closed = skipped_no_data = 0
-        stops = stop_cooldown_denied = 0
+        stops = stop_cooldown_denied = min_hold_denied = 0
         stopped_at: datetime | None = None
         qty = entry = realized = cost = 0.0
         last_price = 0.0
@@ -320,12 +321,17 @@ class ReplayHarness:
         # block's age line (the seed's own, else the window start; the sim's own opens
         # stamp the step they land on).
         opened_at: datetime | None = None
+        # When the min hold runs from (RiskGuard's min_hold): the sim's own open, or a seed
+        # that says when it was opened. A seed of unknown age is not held.
+        held_from: datetime | None = None
         if seed is not None:
             qty = seed["qty"]
             entry = seed["avg_entry_price"]
             opened_at = (
                 datetime.fromisoformat(seed["opened_at"]) if seed.get("opened_at") else start
             )
+            if seed.get("opened_at"):
+                held_from = opened_at
 
         as_of = start
         while as_of < end:
@@ -367,7 +373,7 @@ class ReplayHarness:
                 # in for the live loop's two 60 s ticks.
                 realized += (ctx.price - entry) * qty
                 qty = 0.0
-                opened_at = None
+                opened_at = held_from = None
                 stopped_at = as_of
                 stops += 1
                 actions["close"] = actions.get("close", 0) + 1
@@ -434,6 +440,12 @@ class ReplayHarness:
                 and self._limits is not None
                 and (as_of - stopped_at).total_seconds() < self._limits.stop_cooldown_seconds
             )
+            holding = (
+                held_from is not None
+                and self._limits is not None
+                and (as_of - held_from).total_seconds() < self._limits.min_hold_seconds
+            )
+            held = False
             if decision.intent is not None:
                 side = 1.0 if decision.intent.side.value == "buy" else -1.0
                 if decision.action.value == "open" and qty == 0.0 and cooling:
@@ -441,11 +453,14 @@ class ReplayHarness:
                 elif decision.action.value == "open" and qty == 0.0:
                     qty = side * decision.intent.notional / ctx.price
                     entry = ctx.price
-                    opened_at = as_of
+                    opened_at = held_from = as_of
+                elif decision.action.value == "close" and qty != 0.0 and holding:
+                    held = True
+                    min_hold_denied += 1  # RiskGuard's min_hold would deny it
                 elif decision.action.value == "close" and qty != 0.0:
                     realized += (ctx.price - entry) * qty
                     qty = 0.0
-                    opened_at = None
+                    opened_at = held_from = None
 
             # Versions ride the step decision: the eval listing omits the prompt, and
             # the gate has to see which research row the step actually used.
@@ -454,6 +469,8 @@ class ReplayHarness:
                 "conviction": decision.conviction,
                 "rationale": decision.rationale,
             }
+            if held:
+                decision_row["min_hold"] = True
             if ctx.macro_view is not None:
                 decision_row["macro_view_version"] = ctx.macro_view.version
                 decision_row["macro_view"] = ctx.macro_view.entries
@@ -496,6 +513,7 @@ class ReplayHarness:
             "steps": steps,
             "stops": stops,
             "stop_cooldown_denied": stop_cooldown_denied,
+            "min_hold_denied": min_hold_denied,
             "errors": errors,
             "skipped_closed": skipped_closed,
             "skipped_no_data": skipped_no_data,

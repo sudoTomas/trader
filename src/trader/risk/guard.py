@@ -12,6 +12,10 @@ Order (deliberate — an audit reader should see the cheap absolute gates first)
                    not know the true position, so even an exit could be wrong)
 4. class policy  — crypto + commodity ETFs long-only, equity shortability, venue
                    session open
+4b. min hold     — exits only: the model may not close a position its Bot opened less
+                   than ``min_hold_seconds`` ago. Only the model's Draft is held; the
+                   deterministic stop (and any caller that does not pass ``draft``) is
+                   not, so the stop is what protects a fresh position
 5. stop cooldown — a symbol the deterministic stop closed takes no opens for a while
 6. sizing clamps — max position fraction, Kelly cap, minimum notional floor
 7. throughput    — concurrent positions, trades per day
@@ -26,7 +30,8 @@ Order (deliberate — an audit reader should see the cheap absolute gates first)
 
 Risk-reducing intents (closing//reducing an existing position) skip 5-9: a limit that
 trapped an open position would be a larger risk than the one it guards. Exits are
-never clamped to the approval cap — closes must land.
+never clamped to the approval cap — closes must land. The min hold (4b) is the one
+exception, and it binds the model alone: the stop still closes inside it.
 
 **Two tiers, one chain** (#125, ADR 0003). The Bot's ``Sleeve`` rides in the context
 beside the account, as data: sizing and Kelly read the Sleeve's equity; "is this
@@ -108,6 +113,9 @@ class RiskContext:
     live_enabled: bool = False  # TRADER_ALPACA_LIVE_ENABLED
     human_approved: bool = False  # a human already cleared the park band; do not re-clamp it
     stopped_at: datetime | None = None  # when the deterministic stop last closed this symbol
+    # When this Bot last opened the symbol, given only for the model's Draft (the min
+    # hold). None = no hold: the stop and every other caller.
+    opened_at: datetime | None = None
     sleeve: Sleeve | None = None  # the Bot's share of the account; None = the whole account
 
     @property
@@ -280,6 +288,14 @@ def evaluate_chain(ctx: RiskContext) -> RiskOutcome:
     allow("class_policy", notional)
 
     if ctx.is_reducing:
+        # --- 4b. min hold (the model's exits only) ---------------------------------
+        hold = timedelta(seconds=ctx.limits.min_hold_seconds)
+        if hold and ctx.opened_at is not None and ctx.now - ctx.opened_at < hold:
+            return deny(
+                "min_hold",
+                f"opened at {ctx.opened_at.isoformat()}; the model may not close it before"
+                f" {(ctx.opened_at + hold).isoformat()} (the stop still can)",
+            )
         # Exits skip the remaining limits by design (see module docstring).
         allow("reducing_position", notional, "risk-reducing: sizing/throughput limits skipped")
         return finish(notional)
@@ -456,6 +472,20 @@ class RiskGuard:
         row = await self._db.fetch_one(sql, params)
         return row["ts"] if row else None
 
+    async def _last_open(self, ticker: str, now: datetime, bot_id: int | None) -> datetime | None:
+        """When this Bot's model last opened ``ticker`` and the open went out. A shadow or
+        denied open sent nothing, so it starts no hold."""
+        sql = (
+            "SELECT max(ts) AS ts FROM decisions WHERE symbol = %s AND status = 'executed'"
+            " AND decision->>'action' = 'open' AND ts <= %s"
+        )
+        params: tuple[Any, ...] = (ticker, now)
+        if bot_id is not None:
+            sql += " AND coalesce(bot_id, %s) = %s"
+            params += (UNATTRIBUTED_BOT_ID, bot_id)
+        row = await self._db.fetch_one(sql, params)
+        return row["ts"] if row else None
+
     async def observe_sleeve(
         self, bot_id: int | None, *, session_day: date, prices: dict[str, float]
     ) -> None:
@@ -480,6 +510,7 @@ class RiskGuard:
         shadow: bool = False,
         human_approved: bool = False,
         bot_id: int | None = None,
+        draft: bool = False,
     ) -> RiskOutcome:
         """Run the chain. Returns the (possibly clamped) intent only when approved.
 
@@ -487,7 +518,8 @@ class RiskGuard:
         asked to approve an order that was never going to be submitted. The verdicts are
         still produced and audited, which is the point of shadow mode. ``bot_id`` names
         the Bot whose Sleeve the chain checks (and the Bot on a parked approval); None
-        checks the account alone.
+        checks the account alone. ``draft`` says the intent is the model's Draft: only then
+        does the min hold apply, so the stop and every other caller's exits always land.
         """
         state = await self.breakers.observe(
             equity=account.equity,
@@ -519,6 +551,11 @@ class RiskGuard:
                 live_enabled=self._live_enabled,
                 human_approved=human_approved,
                 stopped_at=await self._last_stop(symbol.ticker, now, bot_id),
+                opened_at=(
+                    await self._last_open(symbol.ticker, now, bot_id)
+                    if draft and self._limits.min_hold_seconds > 0
+                    else None
+                ),
                 sleeve=sleeve,
             )
         )
