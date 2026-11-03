@@ -120,6 +120,10 @@ class DecisionContext:
     prompt_variant: str = "default"
     # What ``equity`` is: the account's, or a fixed Sleeve's for a Bot that has one.
     equity_label: str = "Account equity"
+    # Blinded replay (#140): a renderer (``trader.eval.blind.BlindView``) that withholds
+    # the symbol's identity, calendar dates and dollar values. Only a blind replay sets
+    # it; everywhere else it is None and the prompt below is the one the live loop sends.
+    blind: Any = None
 
     @property
     def primary_vol(self) -> float | None:
@@ -134,6 +138,8 @@ class DecisionContext:
 
     def to_prompt(self) -> str:
         """The full user-side prompt. Deterministic given the context (replay-ready)."""
+        if self.blind is not None:
+            return self.blind.render(self)
         lines = [
             f"Symbol: {self.symbol.ticker} ({self.symbol.asset_class})",
             f"Time: {self.now.isoformat()}",

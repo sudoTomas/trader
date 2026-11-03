@@ -933,8 +933,12 @@ def build_registry(
         macro_view: bool = True,
         exit_review: bool | None = None,
         exit_review_seed: dict[str, Any] | None = None,
+        blind: bool = False,
     ) -> dict[str, Any]:
-        """``briefs`` / ``macro_view`` drop a research lane from the replayed prompt;
+        """``blind`` withholds the ticker, calendar dates and dollar values from every
+        replayed prompt (#140) and drops the free-text Sources; run it beside a named run
+        over the same window to see how much of the P&L is the model's memory.
+        ``briefs`` / ``macro_view`` drop a research lane from the replayed prompt;
         a baseline with ``briefs=False`` matches the live path while that lane is dark.
         ``exit_review`` renders the held-position block (None → follows
         ``TRADER_EXIT_REVIEW_ENABLED``); ``exit_review_seed`` ({"qty", "avg_entry_price",
@@ -953,6 +957,8 @@ def build_registry(
             config["exit_review"] = exit_review
         if exit_review_seed is not None:
             config["exit_review_seed"] = exit_review_seed
+        if blind:
+            config["blind"] = True
         run_id = await evaluator.create_run(
             sym,
             datetime.fromisoformat(start),

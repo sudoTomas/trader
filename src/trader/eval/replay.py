@@ -44,6 +44,15 @@ A Bot version's decide rules and Sleeve replay the same way (#127):
 that variant's system prompt and sizes it against a fixed Sleeve (the prompt then reads
 ``Sleeve equity``, as the live loop renders it). Absent, a run is Bot #1's: the
 ``default`` rules against the harness equity.
+
+``config={"blind": true}`` is a blinded run (#140, ``trader.eval.blind``): every prompt
+withholds the ticker (a per-run alias), calendar dates (relative bar labels) and dollar
+values (a price index, sizes as % of the Sleeve). The model's %-of-Sleeve size is mapped
+back to dollars after the desk and before the crude book, so the stop, the min hold, the
+no-trade band and the costs run unchanged. The Macro View and briefs are dropped (free
+text that names the asset); the summary's ``blind`` records which Sources were. Every
+step records the ``intent`` the book acted on, so a named and a blind run compare
+directly. Live prompts never blind.
 """
 
 from __future__ import annotations
@@ -60,9 +69,16 @@ from trader.core.symbols import Symbol
 from trader.core.types import Bar, Quote
 from trader.data.bars_cache import BarsCache
 from trader.data.base import MarketData, MarketDataError
+from trader.eval.blind import DEFAULT_ALIAS, Blinder, names_symbol, split_sources
 from trader.eval.costs import FillCost, ReplayCosts
 from trader.loop.context import ContextBuilder, DecisionContext
-from trader.loop.decider import DEFAULT_VARIANT, PROMPT_VARIANTS, Decider, DeciderError
+from trader.loop.decider import (
+    DEFAULT_VARIANT,
+    EXIT_REVIEW_PROMPT,
+    PROMPT_VARIANTS,
+    Decider,
+    DeciderError,
+)
 from trader.loop.scheduler import Trigger
 from trader.loop.sources import (
     bot_one_subscriptions,
@@ -220,6 +236,16 @@ class ReplayHarness:
             if not math.isfinite(sleeve) or sleeve <= 0.0:
                 raise ValueError("sleeve_usd must be a positive number")
             config = {**config, "sleeve_usd": sleeve}
+        if config and config.get("blind"):
+            # The decide rules are a prompt too: rules that name the symbol would
+            # un-blind every step (the desk's and the Confirm's rules are generic).
+            rules = PROMPT_VARIANTS[config.get("prompt_variant", DEFAULT_VARIANT)]
+            if names_symbol(rules + EXIT_REVIEW_PROMPT, symbol):
+                raise ValueError(
+                    f"prompt variant {config.get('prompt_variant', DEFAULT_VARIANT)!r}"
+                    f" names the symbol {symbol.ticker}; a blind run cannot use it"
+                )
+            config = {**config, "blind": True}
         return await self._repo.create_run(
             label=label,
             symbol=symbol.ticker,
@@ -253,6 +279,14 @@ class ReplayHarness:
         seed = config.get("exit_review_seed")
         prompt_variant = config.get("prompt_variant", DEFAULT_VARIANT)
         sleeve = config.get("sleeve_usd")
+        blind: dict[str, Any] | None = None
+        if config.get("blind"):
+            sources, dropped = split_sources(sources)
+            blind = {
+                "alias": DEFAULT_ALIAS,
+                "sources_dropped": dropped,
+                "sources_kept": sorted({s["source"] for s in sources}),
+            }
         try:
             summary = await self._walk(
                 run_id,
@@ -265,6 +299,7 @@ class ReplayHarness:
                 seed=validate_seed(seed) if seed is not None else None,
                 prompt_variant=prompt_variant,
                 sleeve=float(sleeve) if sleeve is not None else None,
+                blind=blind,
             )
             await self._repo.finish_run(run_id, status="done", summary=summary)
         except Exception as exc:  # noqa: BLE001 - a failed run must say so, not hang
@@ -337,8 +372,10 @@ class ReplayHarness:
         seed: dict[str, Any] | None = None,
         prompt_variant: str = DEFAULT_VARIANT,
         sleeve: float | None = None,
+        blind: dict[str, Any] | None = None,  # the run's blind record; None = named
     ) -> dict[str, Any]:
         context = self._context
+        blinder = Blinder(symbol, step=self._step) if blind is not None else None
         equity = self._equity if sleeve is None else sleeve
         actions: dict[str, int] = {}
         desk_tally = {"approve": 0, "shrink": 0, "veto": 0, "pass_through": 0, "skipped": 0}
@@ -394,6 +431,15 @@ class ReplayHarness:
                 ctx = replace(ctx, prompt_variant=prompt_variant)
             if sleeve is not None:
                 ctx = replace(ctx, equity_label="Sleeve equity")
+            if blinder is not None and ctx.price > 0:
+                ctx = blinder.blind(
+                    ctx,
+                    position=(
+                        {"qty": qty, "avg_entry_price": entry, "opened_at": opened_at}
+                        if qty != 0.0
+                        else None
+                    ),
+                )
             if ctx.price <= 0:
                 skipped_no_data += 1
                 as_of += self._step
@@ -467,6 +513,10 @@ class ReplayHarness:
             if use_desk:
                 decision, desk_info = await self._desk.review(ctx, decision, desk_info or {})
                 desk_tally[desk_info["critic"]["verdict"]] += 1
+            if blinder is not None:
+                # The model sized in % of the Sleeve (the critic shrank in the same unit):
+                # dollars from here on, so the book and its RiskGuard rules run unchanged.
+                decision = blinder.unblind(decision, equity=ctx.equity)
             actions[decision.action.value] = actions.get(decision.action.value, 0) + 1
             cost += result.completion.cost_usd or 0.0
 
@@ -520,6 +570,13 @@ class ReplayHarness:
                 "conviction": decision.conviction,
                 "rationale": decision.rationale,
             }
+            if decision.intent is not None:
+                # What RiskGuard would see (blind: already mapped back to dollars).
+                decision_row["intent"] = {
+                    "symbol": decision.intent.symbol,
+                    "side": decision.intent.side.value,
+                    "notional": decision.intent.notional,
+                }
             if held:
                 decision_row["min_hold"] = True
             if banded:
@@ -567,6 +624,7 @@ class ReplayHarness:
             "exit_review": exit_review,
             "prompt_variant": prompt_variant,
             **({"sleeve_usd": sleeve} if sleeve is not None else {}),
+            **({"blind": blind} if blind is not None else {}),
             "steps": steps,
             "stops": stops,
             "stop_cooldown_denied": stop_cooldown_denied,

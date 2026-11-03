@@ -94,3 +94,7 @@ _Avoid_: feed, lane (a lane is one section of the prompt), input
 **Source version**:
 The exact state of a Source a decision read. Every decision records one per Source it used, so replay reads the same information.
 _Avoid_: snapshot
+
+**Blind replay**:
+A replay whose prompts withhold the symbol's identity, calendar dates and dollar values, so the model cannot recall what the asset did over the window. Run beside a named replay of the same window, the gap shows how much of the replay P&L is memory. Sources that name the asset in free text are dropped. Live prompts are never blind.
+_Avoid_: anonymized replay, masked replay

@@ -163,7 +163,12 @@ SignalScheduler → ContextBuilder → (analyst desk) → Decider → (Confirm) 
   a 2 bp fee plus Alpaca's 25 bp crypto taker fee; square-root impact
   (coefficient × daily vol × √(order / average daily dollar volume), from the step's 1h
   bars). The summary reports `gross_pnl` and `net_pnl` side by side (`TRADER_REPLAY_*`,
-  each 0 = off). Replay only: live fills are the venue's.
+  each 0 = off). Replay only: live fills are the venue's. A **blind** run (#140,
+  `eval/blind.py`, `blind` on every surface) withholds the ticker (alias `ASSET_A`),
+  calendar dates (`bar t-k`) and dollar values (a price index, first bar = 100; sizes as
+  % of the Sleeve) from every prompt it renders, drops the free-text Sources (Macro View,
+  briefs) and maps the model's %-size back to dollars before the book. Named vs blind over
+  one window (`scripts/replay_blind_compare.py`) measures how much replay P&L is recall.
 - **Bots** (#123, `loop/bots.py`) — the loop runs as **Bot #1** (`bot-1`). A Bot's spec
   (each symbol with its Symbol mode — `live`, or `shadow` under `TRADER_SHADOW_MODE` /
   `TRADER_SHADOW_SYMBOLS` — the trigger config, its Sources, the desk lane, the decide
