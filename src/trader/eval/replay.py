@@ -13,9 +13,12 @@ Structure:
   ContextBuilder/Decider the live loop uses, and journals to ``eval_runs``/``eval_steps``
   — never ``decisions``, never anywhere near an order path.
 
-Scoring is deliberately crude and labeled as such: mark-to-bars, no costs, no slippage
-(Alpaca paper fills are optimistic already — v1 findings). It ranks configurations; it
-does not predict live PnL.
+Scoring is deliberately crude and labeled as such: mark-to-bars, one position (Alpaca
+paper fills are optimistic already — v1 findings). It ranks configurations; it does not
+predict live PnL. Every fill pays the cost model the harness is given
+(``trader.eval.costs``, #139: half-spread, fees, square-root impact), and the summary
+reports ``gross_pnl`` and ``net_pnl`` side by side; ``realized_pnl`` / ``unrealized_pnl``
+stay gross. A harness built without a cost model fills for free.
 
 Replay reads the same Sources the live loop does (#124), every one pinned to the step
 (``as_of``): the Macro View whose ``created_at`` is at or before that timestamp (never
@@ -57,7 +60,8 @@ from trader.core.symbols import Symbol
 from trader.core.types import Bar, Quote
 from trader.data.bars_cache import BarsCache
 from trader.data.base import MarketData, MarketDataError
-from trader.loop.context import ContextBuilder
+from trader.eval.costs import FillCost, ReplayCosts
+from trader.loop.context import ContextBuilder, DecisionContext
 from trader.loop.decider import DEFAULT_VARIANT, PROMPT_VARIANTS, Decider, DeciderError
 from trader.loop.scheduler import Trigger
 from trader.loop.sources import (
@@ -66,7 +70,7 @@ from trader.loop.sources import (
     subscriptions,
     unrealized_pnl_frac,
 )
-from trader.risk.limits import RiskLimits, stop_loss_frac_for
+from trader.risk.limits import RiskLimits, bars_per_day, stop_loss_frac_for
 from trader.store.db import Database
 from trader.store.repos import EvalRepo
 
@@ -148,8 +152,11 @@ class ReplayHarness:
         # The live limits, for the deterministic stop (#74): with them a replayed position
         # past its stop is closed at that step before the model is asked, and the stop's
         # cooldown keeps later opens on the symbol out of the crude book. The min hold
-        # keeps the model's closes of a fresh position out of it too. None = neither.
+        # keeps the model's closes of a fresh position out of it too, and the no-trade
+        # band its small opens. None = none of them.
         limits: RiskLimits | None = None,
+        # What every replayed fill pays (#139). None = free fills.
+        costs: ReplayCosts | None = None,
     ) -> None:
         self._db = db
         self._repo = EvalRepo(db)
@@ -169,6 +176,7 @@ class ReplayHarness:
         self._desk = desk
         self._exit_review_default = exit_review_enabled
         self._limits = limits
+        self._costs = costs or ReplayCosts()
 
     # -- public API ----------------------------------------------------------
 
@@ -292,6 +300,30 @@ class ReplayHarness:
             return None
         return f"stop-loss: {loss:+.1%} against entry is past -{frac:.1%}"
 
+    async def _fill_cost(self, symbol: Symbol, ctx: DecisionContext, notional: float) -> FillCost:
+        """What a fill of ``notional`` at this step pays. Liquidity comes from the step's
+        own 1h bars: average daily dollar volume is the mean bar volume times the bars in
+        the symbol's day at the step's price; the daily vol is the bar vol scaled the same
+        way (as the stop scales it)."""
+        bid = ask = None
+        try:
+            quote = await self._market.get_latest_quote(symbol)
+            bid, ask = quote.bid, quote.ask
+        except MarketDataError:
+            pass
+        day = bars_per_day(symbol.asset_class)
+        bars = next(iter(ctx.bars.values()), [])
+        adv = (sum(b.volume for b in bars) / len(bars)) * day * ctx.price if bars else None
+        vol = ctx.primary_vol
+        return self._costs.fill(
+            symbol.asset_class,
+            notional,
+            bid=bid,
+            ask=ask,
+            adv_usd=adv,
+            daily_vol=vol * math.sqrt(day) if vol is not None else None,
+        )
+
     async def _walk(
         self,
         run_id: int,
@@ -312,7 +344,8 @@ class ReplayHarness:
         desk_tally = {"approve": 0, "shrink": 0, "veto": 0, "pass_through": 0, "skipped": 0}
         recent: list[dict[str, Any]] = []
         steps = errors = skipped_closed = skipped_no_data = 0
-        stops = stop_cooldown_denied = min_hold_denied = 0
+        stops = stop_cooldown_denied = min_hold_denied = no_trade_band_denied = 0
+        paid = FillCost()  # what the fills cost, summed
         stopped_at: datetime | None = None
         qty = entry = realized = cost = 0.0
         last_price = 0.0
@@ -371,6 +404,8 @@ class ReplayHarness:
             if stop is not None:
                 # The stop pre-empts the model, as live. One step's mark (a bar close) stands
                 # in for the live loop's two 60 s ticks.
+                fill = await self._fill_cost(symbol, ctx, abs(qty) * ctx.price)
+                paid += fill
                 realized += (ctx.price - entry) * qty
                 qty = 0.0
                 opened_at = held_from = None
@@ -387,6 +422,7 @@ class ReplayHarness:
                         "conviction": 1.0,
                         "rationale": stop,
                         "trigger": "stop_loss",
+                        "fill_cost": fill.as_dict(),
                     },
                     latency_ms=0,
                 )
@@ -434,7 +470,8 @@ class ReplayHarness:
             actions[decision.action.value] = actions.get(decision.action.value, 0) + 1
             cost += result.completion.cost_usd or 0.0
 
-            # Crude sim: one position, mark-to-bars, no costs. Ranks configs only.
+            # Crude sim: one position, mark-to-bars, every fill pays the cost model.
+            # Ranks configs only.
             cooling = (
                 stopped_at is not None
                 and self._limits is not None
@@ -445,12 +482,23 @@ class ReplayHarness:
                 and self._limits is not None
                 and (as_of - held_from).total_seconds() < self._limits.min_hold_seconds
             )
-            held = False
+            # RiskGuard's no-trade band, against the equity the prompt was sized from.
+            band = ctx.equity * self._limits.no_trade_band_frac if self._limits else 0.0
+            held = banded = False
+            fill: FillCost | None = None
             if decision.intent is not None:
                 side = 1.0 if decision.intent.side.value == "buy" else -1.0
                 if decision.action.value == "open" and qty == 0.0 and cooling:
                     stop_cooldown_denied += 1  # RiskGuard's stop_cooldown would deny it
+                elif (
+                    decision.action.value == "open"
+                    and qty == 0.0
+                    and (decision.intent.notional < band)
+                ):
+                    banded = True
+                    no_trade_band_denied += 1  # RiskGuard's no_trade_band would deny it
                 elif decision.action.value == "open" and qty == 0.0:
+                    fill = await self._fill_cost(symbol, ctx, decision.intent.notional)
                     qty = side * decision.intent.notional / ctx.price
                     entry = ctx.price
                     opened_at = held_from = as_of
@@ -458,9 +506,12 @@ class ReplayHarness:
                     held = True
                     min_hold_denied += 1  # RiskGuard's min_hold would deny it
                 elif decision.action.value == "close" and qty != 0.0:
+                    fill = await self._fill_cost(symbol, ctx, abs(qty) * ctx.price)
                     realized += (ctx.price - entry) * qty
                     qty = 0.0
                     opened_at = held_from = None
+            if fill is not None:
+                paid += fill
 
             # Versions ride the step decision: the eval listing omits the prompt, and
             # the gate has to see which research row the step actually used.
@@ -471,6 +522,10 @@ class ReplayHarness:
             }
             if held:
                 decision_row["min_hold"] = True
+            if banded:
+                decision_row["no_trade_band"] = True
+            if fill is not None:
+                decision_row["fill_cost"] = fill.as_dict()
             if ctx.macro_view is not None:
                 decision_row["macro_view_version"] = ctx.macro_view.version
                 decision_row["macro_view"] = ctx.macro_view.entries
@@ -504,6 +559,8 @@ class ReplayHarness:
             recent[:] = recent[-5:]
             as_of += self._step
 
+        unrealized = round((last_price - entry) * qty, 6) if qty else 0
+        gross = realized + unrealized
         return {
             **({"desk": desk_tally} if use_desk else {}),
             **({"exit_review_seed": seed} if seed is not None else {}),
@@ -514,12 +571,21 @@ class ReplayHarness:
             "stops": stops,
             "stop_cooldown_denied": stop_cooldown_denied,
             "min_hold_denied": min_hold_denied,
+            "no_trade_band_denied": no_trade_band_denied,
             "errors": errors,
             "skipped_closed": skipped_closed,
             "skipped_no_data": skipped_no_data,
             "actions": actions,
             "realized_pnl": round(realized, 6),
-            "unrealized_pnl": round((last_price - entry) * qty, 6) if qty else 0,
-            "cost_usd": round(cost, 6),
-            "pnl_model": "mark-to-bars, no costs/slippage — ranks configs, not live PnL",
+            "unrealized_pnl": unrealized,
+            # Gross and net side by side (#139): net is gross less what the fills paid. A
+            # position still open has paid its entry, not its exit.
+            "gross_pnl": round(gross, 6),
+            "trading_costs": paid.as_dict(),
+            "net_pnl": round(gross - paid.total, 6),
+            "cost_model": self._costs.as_dict(),
+            "cost_usd": round(cost, 6),  # the model calls, not the fills
+            "pnl_model": (
+                "mark-to-bars, one position, fills pay cost_model — ranks configs, not live PnL"
+            ),
         }

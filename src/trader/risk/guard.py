@@ -18,6 +18,9 @@ Order (deliberate — an audit reader should see the cheap absolute gates first)
                    not, so the stop is what protects a fresh position
 5. stop cooldown — a symbol the deterministic stop closed takes no opens for a while
 6. sizing clamps — max position fraction, Kelly cap, minimum notional floor
+6b. no-trade band — an open or add below ``no_trade_band_frac`` of the Sleeve's equity
+                   (after the clamps) is not worth the spread and fees it pays. Exits
+                   never reach it: trims, closes and the stop always pass
 7. throughput    — concurrent positions, trades per day
 8. breakers      — daily loss, weekly drawdown: block OPENS, exits stay managed
 9. approval      — opens above the unattended cap clamp down to it and execute.
@@ -356,6 +359,18 @@ def evaluate_chain(ctx: RiskContext) -> RiskOutcome:
     if notional < floor:
         return deny("min_notional", f"{notional:.2f} is below the {floor:.2f} floor")
     allow("min_notional", notional)
+
+    # --- 6b. no-trade band (opens and adds; exits returned above) ---------------
+    # Read after the clamps: an add the position cap squeezed small is a small add.
+    band = ctx.sizing_equity * ctx.limits.no_trade_band_frac
+    if band > 0:
+        if notional < band:
+            return deny(
+                "no_trade_band",
+                f"{notional:.2f} is below the {band:.2f} no-trade band"
+                f" ({ctx.limits.no_trade_band_frac:.2%} of {ctx.bot_label} equity)",
+            )
+        allow("no_trade_band", notional)
 
     # --- 7. throughput -------------------------------------------------------
     # The account first, then the Bot: the same limits bind at both levels.

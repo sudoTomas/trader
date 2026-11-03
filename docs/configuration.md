@@ -86,6 +86,19 @@ Deterministic limits applied to every intent. Code and config only, never prompt
 | `TRADER_RISK_STOP_VOL_MULT` | `float` | `2.0` | tuning | Volatility-scaled stop: the stop sits this many of the symbol's typical daily moves (its 1h realized volatility scaled to a day) below the entry, never wider than `TRADER_RISK_STOP_LOSS_FRAC`. With no volatility reading the fixed stop applies. `0` keeps the fixed stop alone. Chosen in `docs/reports/2026-10-22-bot-1-exits.md`. |
 | `TRADER_RISK_STOP_COOLDOWN_SECONDS` | `int` | `86400` | tuning | After a stop closes a symbol, RiskGuard refuses opens on it for this long. |
 | `TRADER_RISK_MIN_HOLD_SECONDS` | `int` | `14400` | tuning | Minimum hold: RiskGuard denies the model's close of a position its Bot opened less than this long ago. The deterministic stop is never held, so it is what protects a fresh position. `0` turns the hold off. Chosen in `docs/reports/2026-10-30-sentiment-churn.md`. |
+| `TRADER_RISK_NO_TRADE_BAND_FRAC` | `float` | `0.01` | tuning | No-trade band: RiskGuard denies an open or add whose notional, after the sizing clamps, is below this fraction of the Bot's Sleeve (the account for a whole-account Bot); a smaller order pays spread and fees for a move it barely changes. Trims, closes and the stop always pass. `0` turns the band off. |
+
+## Replay costs
+
+What a replayed fill pays (`trader eval run`), so a replay reports net P&L beside gross. Replay only: the live loop's fills are the venue's. Every knob at `0` is free.
+
+| Variable | Type | Default | Category | Description |
+|---|---|---|---|---|
+| `TRADER_REPLAY_HALF_SPREAD_BPS_EQUITY` | `float` | `5.0` | tuning | Half the bid-ask spread, in basis points, a replayed equity or ETF fill pays when replay has no real quote (it has none today: its quote is the last close on both sides). A real quote's own half-spread is used when there is one. `0` turns the spread off for equities and ETFs. |
+| `TRADER_REPLAY_HALF_SPREAD_BPS_CRYPTO` | `float` | `10.0` | tuning | The same fallback half-spread for a replayed crypto fill. `0` turns the spread off for crypto. |
+| `TRADER_REPLAY_FEE_BPS` | `float` | `2.0` | tuning | A fee every replayed fill pays, in basis points of its notional (regulatory and clearing fees, rounded up). `0` turns it off. |
+| `TRADER_REPLAY_CRYPTO_TAKER_FEE_BPS` | `float` | `25.0` | tuning | Alpaca's crypto taker fee, in basis points, paid by a replayed crypto fill on top of `TRADER_REPLAY_FEE_BPS`. 25 is the taker rate of Alpaca's lowest-volume tier (its maker rate there is 15); a higher tier pays less. `0` turns it off. |
+| `TRADER_REPLAY_IMPACT_COEF` | `float` | `1.0` | tuning | Square-root market impact: a replayed fill moves its price by this coefficient times the symbol's daily volatility times the square root of the order's share of average daily dollar volume (Almgren et al. 2005; fits put it between 0.5 and 1.0, so 1.0 is the conservative end). Volume and volatility come from the step's own 1h bars. `0` turns it off. |
 
 ## Research Desk
 
