@@ -12,7 +12,7 @@ A blind run drops the Sources that name the asset in free text (the Macro View, 
 splits into recall (control - blind) and the dropped lanes (named - control).
 
     uv run python scripts/replay_blind_compare.py run --bots bot-1,bot-2-largecap --days 20 \\
-        --out /tmp/blind-runs.json [--end 2026-11-02T20:00:00+00:00] [--control]
+        --out /tmp/blind-runs.json [--end 2026-11-02T20:00:00+00:00] [--control] [--skip ETH/USD]
     uv run python scripts/replay_blind_compare.py score --runs /tmp/blind-runs.json \\
         --out /tmp/blind-scores.json [--md docs/reports/<date>-blind-replay.md]
 
@@ -73,7 +73,9 @@ def _config(spec: dict[str, Any], arm: str) -> dict[str, Any]:
     return config
 
 
-async def run(bots: list[str], start: datetime, end: datetime, out: str, control: bool) -> None:
+async def run(
+    bots: list[str], start: datetime, end: datetime, out: str, control: bool, skip: set[str]
+) -> None:
     from trader.loop.bots import BotDesk
     from trader.ops.config import get_settings
     from trader.store.db import Database
@@ -82,8 +84,9 @@ async def run(bots: list[str], start: datetime, end: datetime, out: str, control
     settings = get_settings()
     db = Database(settings.database_url)
     await db.open()
-    # The API's own replay wiring: the active Profile's models, the live stop, the min
-    # hold, the no-trade band and the cost model, and the desk for desk-on Bots.
+    # The API's replay wiring for the live stop, the min hold, the no-trade band, the cost
+    # model and the desk for desk-on Bots. The models are the .env chains, not the active
+    # Profile: decide is the Nemotron preset unless TRADER_DECIDE_BASE_URL is set.
     harness = build_evaluator(db, settings, desk=build_desk(db, settings))
     if harness is None:
         raise SystemExit("no market-data credentials: replay needs the bars provider")
@@ -94,6 +97,8 @@ async def run(bots: list[str], start: datetime, end: datetime, out: str, control
         for name in bots:
             bot = await BotDesk(db).get(name)
             for ticker in bot["spec"]["symbols"]:
+                if ticker in skip:
+                    continue
                 sym = registry.get(ticker)
                 for arm in arms:
                     label = f"{arm}-{name}-v{bot['version']}-{ticker}"
@@ -263,6 +268,7 @@ def main() -> None:
     r.add_argument("--days", type=int, default=MAX_DAYS)
     r.add_argument("--end", help="Window end, ISO-8601 tz-aware (default: this hour, UTC).")
     r.add_argument("--control", action="store_true", help="Add the named-control arm.")
+    r.add_argument("--skip", default="", help="Comma-separated symbols to leave out.")
     r.add_argument("--out", required=True)
     s = sub.add_parser("score")
     s.add_argument("--runs", required=True)
@@ -272,7 +278,8 @@ def main() -> None:
     if a.cmd == "run":
         start, end = _window(a.end, a.days)
         bots = [b.strip() for b in a.bots.split(",") if b.strip()]
-        asyncio.run(run(bots, start, end, a.out, a.control))
+        skip = {t.strip() for t in a.skip.split(",") if t.strip()}
+        asyncio.run(run(bots, start, end, a.out, a.control, skip))
     else:
         asyncio.run(score(a.runs, a.out, a.md))
 
