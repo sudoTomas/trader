@@ -572,6 +572,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         seed_opened_at: str | None = Query(
             default=None, description="Optional seed open time (ISO-8601); default window start."
         ),
+        blind: bool = Query(
+            default=False,
+            description="Blind run (#140): no ticker, dates or dollars in any prompt.",
+        ),
     ) -> dict:
         seed: dict | None = None
         if (seed_qty is None) != (seed_entry is None):
@@ -593,6 +597,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 macro_view=macro_view,
                 exit_review=exit_review,
                 exit_review_seed=seed,
+                blind=blind,
             )
         except (ValueError, KeyError) as exc:  # bad window / unknown symbol / bad seed
             raise HTTPException(status_code=422, detail=str(exc)) from exc

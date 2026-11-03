@@ -492,6 +492,9 @@ class HeldPositionSlice:
     """The budgeted held-position block for the exit-review lane (advisory only)."""
 
     entries: list[str]
+    # The sentiment row the block read, for a blind replay's own render (#140); the
+    # entries above already carry it as text.
+    sentiment: Mapping[str, Any] | None = field(default=None, compare=False, repr=False)
 
 
 def build_held_position_slice(
@@ -538,7 +541,7 @@ def build_held_position_slice(
 
     candidates.append(EXIT_REVIEW_ASK)
     entries = _whole_entries(candidates, budget_chars, "held_position_entry_dropped_whole")
-    return HeldPositionSlice(entries=entries) if entries else None
+    return HeldPositionSlice(entries=entries, sentiment=sentiment) if entries else None
 
 
 class HeldPositionSource:

@@ -464,6 +464,9 @@ def eval_run_cmd(
     seed_opened_at: str | None = typer.Option(
         None, help="Seed open time (ISO-8601, tz-aware); default is the window start."
     ),
+    blind: bool = typer.Option(
+        False, "--blind", help="Blind run (#140): no ticker, dates or dollars in any prompt."
+    ),
 ) -> None:
     """Start a background replay over [start, end); poll with `trader eval show`."""
     params = {
@@ -478,6 +481,8 @@ def eval_run_cmd(
         "seed_qty": seed_qty,
         "seed_entry": seed_entry,
         "seed_opened_at": seed_opened_at,
+        # Off stays off the wire, so an older API still takes a named run.
+        "blind": blind or None,
     }
     # Unset options stay off the wire (an empty query value is not "unset" to the API).
     params = {k: v for k, v in params.items() if v is not None}
