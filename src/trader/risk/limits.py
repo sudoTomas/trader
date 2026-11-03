@@ -53,6 +53,10 @@ class RiskLimits:
     # Minimum hold: the model may not close a position its Bot opened less than this
     # long ago (RiskGuard's min_hold check). The stop is never held. 0 is off.
     min_hold_seconds: int = 0
+    # No-trade band: an open or add smaller than this fraction of the Bot's Sleeve is not
+    # worth the spread and fees it pays (RiskGuard's no_trade_band check). Exits always
+    # pass. 0 is off.
+    no_trade_band_frac: float = 0.0
 
     def __post_init__(self) -> None:
         if not 0 < self.max_position_frac <= 1:
@@ -72,11 +76,18 @@ class RiskLimits:
             raise ValueError("stop_cooldown_seconds must be >= 0")
         if self.min_hold_seconds < 0:
             raise ValueError("min_hold_seconds must be >= 0")
+        if not (math.isfinite(self.no_trade_band_frac) and 0 <= self.no_trade_band_frac < 1):
+            raise ValueError("no_trade_band_frac must be within [0, 1)")
         if self.park_above_usd is not None:
             if not math.isfinite(self.park_above_usd) or self.park_above_usd <= 0:
                 raise ValueError("park_above_usd must be a positive finite number when set")
             if self.park_above_usd <= self.approval_notional_usd:
                 raise ValueError("park_above_usd must exceed approval_notional_usd")
+
+
+def bars_per_day(asset_class: AssetClass) -> int:
+    """1h bars in one trading day of ``asset_class``: what scales a per-bar reading to a day."""
+    return _STOP_BARS_PER_DAY.get(asset_class, _EQUITY_STOP_BARS_PER_DAY)
 
 
 def stop_loss_frac_for(
@@ -94,8 +105,7 @@ def stop_loss_frac_for(
         return ceiling
     if realized_vol is None or not (math.isfinite(realized_vol) and realized_vol > 0):
         return ceiling
-    bars = _STOP_BARS_PER_DAY.get(asset_class, _EQUITY_STOP_BARS_PER_DAY)
-    return min(ceiling, limits.stop_vol_mult * realized_vol * math.sqrt(bars))
+    return min(ceiling, limits.stop_vol_mult * realized_vol * math.sqrt(bars_per_day(asset_class)))
 
 
 def limits_from_settings(settings: Settings) -> RiskLimits:
@@ -112,6 +122,7 @@ def limits_from_settings(settings: Settings) -> RiskLimits:
         stop_vol_mult=settings.risk_stop_vol_mult,
         stop_cooldown_seconds=settings.risk_stop_cooldown_seconds,
         min_hold_seconds=settings.risk_min_hold_seconds,
+        no_trade_band_frac=settings.risk_no_trade_band_frac,
         park_above_usd=_park_above(
             settings.risk_park_above_usd, settings.risk_approval_notional_usd
         ),

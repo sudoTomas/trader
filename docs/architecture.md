@@ -128,7 +128,9 @@ SignalScheduler → ContextBuilder → (analyst desk) → Decider → (Confirm) 
   default 4 h, ago is denied; only a Draft is held, never the stop;
   `reports/2026-10-30-sentiment-churn.md`) → stop cooldown (no opens on a
   symbol the stop just closed) → sizing clamps (max position frac,
-  notional floor, kelly cap) → concurrency + trades/day → daily-loss + weekly-drawdown
+  notional floor, kelly cap) → no-trade band (an open or add below
+  `TRADER_RISK_NO_TRADE_BAND_FRAC`, default 1%, of the Bot's Sleeve after the clamps is
+  denied; trims, closes and the stop never reach it) → concurrency + trades/day → daily-loss + weekly-drawdown
   breakers → approval threshold (large orders park as pending) → full close (an exit for at
   least 98% of the holding's value closes the held qty, so a dollar-rounded close leaves no
   dust) → whole shares (a symbol the
@@ -154,6 +156,14 @@ SignalScheduler → ContextBuilder → (analyst desk) → Decider → (Confirm) 
   `brief_version`, `source_versions` (`{source: {version, as_of}}` for every Source read),
   cost, latency, `bot_id` and `bot_version`. Replay-ready: replay reads the same Sources
   pinned to each step and records the same `source_versions` on the step.
+- **Replay** (`eval/replay.py`) — reruns the decide stage over a window into
+  `eval_runs`/`eval_steps`, with a crude one-position book that runs the live stop, its
+  cooldown, the min hold and the no-trade band. Every replayed fill pays the cost model in
+  `eval/costs.py` (#139): half the quoted spread, else 5 bp equities/ETFs or 10 bp crypto;
+  a 2 bp fee plus Alpaca's 25 bp crypto taker fee; square-root impact
+  (coefficient × daily vol × √(order / average daily dollar volume), from the step's 1h
+  bars). The summary reports `gross_pnl` and `net_pnl` side by side (`TRADER_REPLAY_*`,
+  each 0 = off). Replay only: live fills are the venue's.
 - **Bots** (#123, `loop/bots.py`) — the loop runs as **Bot #1** (`bot-1`). A Bot's spec
   (each symbol with its Symbol mode — `live`, or `shadow` under `TRADER_SHADOW_MODE` /
   `TRADER_SHADOW_SYMBOLS` — the trigger config, its Sources, the desk lane, the decide

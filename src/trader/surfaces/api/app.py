@@ -686,6 +686,7 @@ def build_evaluator(db: Database, settings: Settings, desk=None, *, llm=None, xa
     because ``app = create_app()`` runs at import time (uvicorn's entrypoint). The desk
     is wired in every build so desk-on replays work while the live desk stays dark."""
     from trader.data.composite import build_market_data
+    from trader.eval.costs import costs_from_settings
     from trader.eval.replay import ReplayHarness
     from trader.risk.limits import limits_from_settings
 
@@ -700,6 +701,7 @@ def build_evaluator(db: Database, settings: Settings, desk=None, *, llm=None, xa
         desk=desk,
         exit_review_enabled=settings.exit_review_enabled,
         limits=limits_from_settings(settings),  # replay runs the live stop (#74)
+        costs=costs_from_settings(settings),  # every replayed fill pays (#139)
     )
 
 

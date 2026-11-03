@@ -3,6 +3,9 @@
 Replays the same symbols and window under two prompt variants, one run at a time (one
 Nemotron call in flight), then scores every replayed ``open`` by its forward return from
 the next 1h bar's open. Writes ``eval_runs`` / ``eval_steps`` only, like any replay.
+Replays pay the configured cost model (``TRADER_REPLAY_*``, #139); the score reports each
+run's gross and net P&L, and every forward return gross and net of a round trip at the
+open's own cost.
 
     uv run python scripts/replay_bot_compare.py run   --out runs.json [--sample N]
     uv run python scripts/replay_bot_compare.py score --runs runs.json --out scores.json
@@ -41,6 +44,7 @@ def _write(path: str, obj: Any) -> None:
 
 async def run(out: str, sample: int) -> None:
     from trader.data.composite import build_market_data
+    from trader.eval.costs import costs_from_settings
     from trader.eval.replay import ReplayHarness
     from trader.llm.registry import build_llm_registry
     from trader.llm.usage import UsageMeter
@@ -52,7 +56,9 @@ async def run(out: str, sample: int) -> None:
     db = Database(settings.database_url)
     await db.open()
     llm = build_llm_registry(settings, UsageMeter(UsageRepo(db)))
-    harness = ReplayHarness(db, llm, build_market_data(settings))
+    harness = ReplayHarness(
+        db, llm, build_market_data(settings), costs=costs_from_settings(settings)
+    )
     registry = settings.symbol_registry()
     done: list[dict[str, Any]] = []
     try:
@@ -99,6 +105,18 @@ def _forward(bars: list[Any], ts: datetime, n: int, side: str = "buy") -> dict[s
     }
 
 
+def _round_trip(step: dict[str, Any]) -> float:
+    """An open's cost as a fraction of its notional, paid twice (in and out). A run from
+    before replay costs (#139) has no ``fill_cost``: 0."""
+    paid = (step["decision"].get("fill_cost") or {}).get("total", 0.0)
+    notional = json.loads(step["raw_output"]).get("notional_usd") or 0.0
+    return 2 * paid / notional if notional else 0.0
+
+
+def _net(fwd: dict[str, float] | None, cost: float) -> float | None:
+    return fwd["ret"] - cost if fwd else None
+
+
 def _mean(xs: list[float]) -> float | None:
     return round(statistics.fmean(xs) * 100, 3) if xs else None
 
@@ -137,22 +155,29 @@ async def score(runs_path: str, out: str) -> None:
                 f1 = _forward(bars, s["ts"], SESSION_BARS, side)
                 f5 = _forward(bars, s["ts"], SESSION_BARS * 5, side)
                 fe = _forward(bars, s["ts"], len([b for b in bars if b.ts >= s["ts"]]), side)
+                cost = _round_trip(s)
                 scored.append(
                     {
                         "ts": s["ts"].isoformat(),
                         "side": side,
                         "conviction": s["decision"]["conviction"],
+                        "round_trip_cost": cost,
                         "fwd_1d": f1,
+                        "fwd_1d_net": _net(f1, cost),
                         "fwd_5d": f5,
+                        "fwd_5d_net": _net(f5, cost),
                         "fwd_to_now": fe,
                     }
                 )
             decided = [s for s in steps if s["status"] == "decided"]
+            summary = run_row["summary"] or {}
             report["runs"].append(
                 {
                     **r,
                     "status": run_row["status"],
-                    "summary": run_row["summary"],
+                    "summary": summary,
+                    "gross_pnl": summary.get("gross_pnl"),
+                    "net_pnl": summary.get("net_pnl"),
                     "decisions": len(decided),
                     "errors": len([s for s in steps if s["status"] == "error"]),
                     "opens": len(opens),
@@ -160,7 +185,13 @@ async def score(runs_path: str, out: str) -> None:
                         s["ts"].isoformat(): s["decision"]["action"] for s in decided
                     },
                     "mean_fwd_1d_pct": _mean([o["fwd_1d"]["ret"] for o in scored if o["fwd_1d"]]),
+                    "mean_fwd_1d_net_pct": _mean(
+                        [o["fwd_1d_net"] for o in scored if o["fwd_1d_net"] is not None]
+                    ),
                     "mean_fwd_5d_pct": _mean([o["fwd_5d"]["ret"] for o in scored if o["fwd_5d"]]),
+                    "mean_fwd_5d_net_pct": _mean(
+                        [o["fwd_5d_net"] for o in scored if o["fwd_5d_net"] is not None]
+                    ),
                     "mean_mdd_5d_pct": _mean([o["fwd_5d"]["mdd"] for o in scored if o["fwd_5d"]]),
                     "mean_fwd_to_now_pct": _mean(
                         [o["fwd_to_now"]["ret"] for o in scored if o["fwd_to_now"]]

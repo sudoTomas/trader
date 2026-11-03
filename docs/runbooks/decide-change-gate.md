@@ -26,7 +26,17 @@ opens out of the crude book (`stops` / `stop_cooldown_denied` in the summary). A
 close stands in for the live loop's two 60 s ticks. They also run the min hold: a model
 close of a position the replay opened (or a seed with `opened_at`) less than
 `TRADER_RISK_MIN_HOLD_SECONDS` before leaves the book as it is (`min_hold_denied`; the step
-is marked `min_hold`).
+is marked `min_hold`), and the no-trade band: an open below `TRADER_RISK_NO_TRADE_BAND_FRAC`
+of the run's equity (the Sleeve when `sleeve_usd` is set) never enters the book
+(`no_trade_band_denied`; the step is marked `no_trade_band`).
+
+Every replayed fill pays the cost model (#139, `TRADER_REPLAY_*`): half-spread (5 bp
+equities/ETFs, 10 bp crypto, while replay has no real quote), a 2 bp fee, Alpaca's 25 bp
+crypto taker fee, and square-root impact. The summary carries `gross_pnl`, `trading_costs`
+(`spread` / `fee` / `impact` / `total`), `net_pnl` and the `cost_model` it ran with; each
+fill step carries its own `fill_cost`. `realized_pnl` / `unrealized_pnl` stay gross, and
+`cost_usd` is still the model calls. Compare candidates on `net_pnl`: a candidate that
+trades more pays more.
 
 Runs execute in the background (`POST /eval/replay`, MCP `run_replay_eval`); bars come
 from the read-through cache (first run over a window backfills it), the decider is the
@@ -35,8 +45,8 @@ same code the live loop runs, and results land in `eval_runs`/`eval_steps` — *
 the local Nemotron decide role.
 
 What to compare in the summaries: `actions` mix (a candidate that opens 3× as often is a
-different animal), `errors`, and the crude PnL — which is **mark-to-bars with no
-costs/slippage: it ranks configurations, it does not predict live PnL** (the summary says
+different animal), `errors`, and the crude PnL, gross and net — which is **mark-to-bars
+on one position: it ranks configurations, it does not predict live PnL** (the summary says
 so in `pnl_model`). Replayed contexts currently exclude the Macro View lane and use the
 `replay` trigger; judge relative differences, not absolutes.
 

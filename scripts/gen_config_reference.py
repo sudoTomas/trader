@@ -52,6 +52,10 @@ SECTION_NOTES = {
         "Deterministic limits applied to every intent. Code and config only, never prompt-driven; "
         "a change here is a risk-chain behavior change and goes through the decide-change gate."
     ),
+    "Replay costs": (
+        "What a replayed fill pays (`trader eval run`), so a replay reports net P&L beside "
+        "gross. Replay only: the live loop's fills are the venue's. Every knob at `0` is free."
+    ),
     "Research Desk": (
         "Notes, Macro View compilation, briefs, the decision desk and X sentiment. Every flag "
         "here is dark by default and earns its flip through replay, then a shadow window."

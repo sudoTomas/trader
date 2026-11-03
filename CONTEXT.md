@@ -22,6 +22,10 @@ _Avoid_: second decider, override, veto
 The time after a Bot opens a symbol during which RiskGuard refuses the model's close of that position. Only a Draft is held; the stop is not, so the stop is what protects a fresh position.
 _Avoid_: lockup, cooldown (a cooldown follows a stop)
 
+**No-trade band**:
+The smallest open or add worth placing, as a share of the Bot's Sleeve. RiskGuard refuses an open or add below it, because its costs outweigh the change it makes; a trim, a close or the stop is never refused for its size.
+_Avoid_: dust, minimum notional (that is a fixed dollar floor), rebalance threshold
+
 ### Models
 
 **Role**:
