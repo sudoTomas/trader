@@ -9,7 +9,8 @@ research-capture tools; the capture key's only MCP door — #8).
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+import asyncio
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -184,6 +185,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     briefs = build_briefs(db, settings, llm=llm)
     evaluator = build_evaluator(db, settings, desk, llm=llm)
     xai_http = build_xai_http(settings, xai_manager=xai_manager)
+    settler = build_settler(db, settings, llm=llm)
     registry = build_registry(
         db,
         supervisor,
@@ -198,6 +200,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         profiles=profiles,
         caps=caps,
         vendors=vendors,
+        settler=settler,
     )
     mcp = build_mcp(registry)
     capture_mcp = build_mcp(registry, only=CAPTURE_CAPABILITIES, name="trader-capture")
@@ -224,9 +227,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         async with mcp.session_manager.run(), capture_mcp.session_manager.run():
             if supervisor is not None:
                 await supervisor.start()  # background task; never blocks /health
+            settling = asyncio.Event()
+            settle_task = None
+            if settler is not None and settings.settlement_enabled:
+                settle_task = asyncio.create_task(
+                    settler.run_forever(settings.settlement_interval_seconds, settling),
+                    name="trader-settlement",
+                )
             try:
                 yield
             finally:
+                if settle_task is not None:
+                    settling.set()
+                    settle_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await settle_task
                 if supervisor is not None:
                     await supervisor.stop()
         await db.close()
@@ -596,6 +611,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             default=False,
             description="Blind run (#140): no ticker, dates or dollars in any prompt.",
         ),
+        lessons: bool = Query(
+            default=False,
+            description="Add Bot #1's lessons Source (#143): only Lessons settled by each step.",
+        ),
     ) -> dict:
         seed: dict | None = None
         if (seed_qty is None) != (seed_entry is None):
@@ -618,9 +637,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 exit_review=exit_review,
                 exit_review_seed=seed,
                 blind=blind,
+                lessons=lessons,
             )
         except (ValueError, KeyError) as exc:  # bad window / unknown symbol / bad seed
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/scorecard")
+    async def scorecard(
+        bot: str | None = Query(default=None, description="Bot name; unset = every Bot."),
+        symbol: str | None = Query(default=None),
+    ) -> dict:
+        return await registry.get("scorecard").handler(bot=bot, symbol=symbol)
+
+    @app.get("/lessons")
+    async def lessons(
+        bot: str | None = Query(default=None, description="Bot name; unset = every Bot."),
+        symbol: str | None = Query(default=None),
+        limit: int = Query(default=20, ge=1, le=200),
+    ) -> list[dict]:
+        return await registry.get("lessons").handler(bot=bot, symbol=symbol, limit=limit)
+
+    @app.post("/settlement/run")
+    async def settle_decisions() -> dict:
+        return await registry.get("settle_decisions").handler()
 
     @app.get("/eval/runs")
     async def eval_runs(limit: int = Query(default=50, ge=1, le=200)) -> list[dict]:
@@ -736,6 +775,26 @@ def build_evaluator(db: Database, settings: Settings, desk=None, *, llm=None, xa
         exit_review_enabled=settings.exit_review_enabled,
         limits=limits_from_settings(settings),  # replay runs the live stop (#74)
         costs=costs_from_settings(settings),  # every replayed fill pays (#139)
+    )
+
+
+def build_settler(db: Database, settings: Settings, *, llm=None, xai_manager=None):
+    """The settlement pass (#143): daily bars fetched on use (nothing stored) and the
+    reflect Role. None without market-data credentials, like the evaluator."""
+    from trader.data.composite import build_market_data
+    from trader.learning.reflect import Reflector
+    from trader.learning.settlement import Settler
+
+    try:
+        provider = build_market_data(settings)
+    except ValueError:  # no Alpaca keys in this environment (e.g. CI)
+        return None
+    return Settler(
+        db,
+        provider,
+        symbols=settings.symbol_registry(),
+        reflector=Reflector(llm or build_llm(db, settings, xai_manager=xai_manager)),
+        max_reflections=settings.reflect_max_per_pass,
     )
 
 

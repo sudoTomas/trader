@@ -22,6 +22,8 @@ Gates at a glance (all default closed):
 - `TRADER_EXIT_REVIEW_ENABLED` = `false`
 - `TRADER_BRIEFS_ENABLED` = `false`
 - `TRADER_DESK_ENABLED` = `false`
+- `TRADER_SETTLEMENT_ENABLED` = `false`
+- `TRADER_LESSONS_ENABLED` = `false`
 - `TRADER_SENTIMENT_TRIGGER_ENABLED` = `false`
 - `TRADER_POLYMARKET_IN_MACRO_VIEW` = `false`
 
@@ -113,6 +115,10 @@ Notes, Macro View compilation, briefs, the decision desk and X sentiment. Every 
 | `TRADER_BRIEFS_ENABLED` | `bool` | `false` | gate | Per-candidate briefs: briefs compile and store on note changes regardless; this flag alone lets them into the decide prompt. A decide-behavior change: flip only through `docs/runbooks/decide-change-gate.md`. |
 | `TRADER_DESK_ENABLED` | `bool` | `false` | gate | Decision desk: analyst fan-out + cross-model critic around the decide. Dark by default; earns its flip via replay desk-on vs desk-off, then a shadow window. |
 | `TRADER_DESK_CRITIC_DAILY_USD` | `float` | `1.0` | tuning | Default Spend cap for the critic Role, USD per UTC day (#108; a cap set on any surface replaces it). At the cap the critic's paid models sit out the day and a free one in its Chain reviews; with none, reviews are journaled pass-throughs. |
+| `TRADER_SETTLEMENT_ENABLED` | `bool` | `false` | gate | Learning loop (#143): a background pass settles every journaled decision 5 trading days on (forward and excess return from daily bars, fetched on use) and lets the `reflect` Role write a Lesson for the newest settled ones. Off, nothing settles on its own; the `settle_decisions` command still runs one pass. Lessons reach a decide prompt only through a Bot's `lessons` Source. |
+| `TRADER_SETTLEMENT_INTERVAL_SECONDS` | `float` | `3600.0` | tuning | Seconds between settlement passes when `TRADER_SETTLEMENT_ENABLED`. |
+| `TRADER_REFLECT_MAX_PER_PASS` | `int` | `10` | tuning | Most Lessons the `reflect` Role writes per settlement pass, newest settled decisions first; the rest wait for the next pass. `0` settles without Lessons. The Role's Spend cap still bounds the day. |
+| `TRADER_LESSONS_ENABLED` | `bool` | `false` | gate | Bot #1 reads its `lessons` Source: its latest settled Lessons on the symbol go into the decide prompt. Other Bots subscribe in their spec. A decide-behavior change: flip only through `docs/runbooks/decide-change-gate.md`. |
 | `TRADER_SENTIMENT_POLL_SECONDS` | `float` | `10800.0` | tuning | X sentiment poll interval for held symbols; needs an xAI credential (x_search runs server-side on xAI). The daily call cap still bounds a shorter interval. |
 | `TRADER_SENTIMENT_DAILY_CALL_CAP` | `int` | `24` | tuning | Max sentiment polls per UTC day across symbols. |
 | `TRADER_SENTIMENT_TRIGGER_ENABLED` | `bool` | `false` | gate | Lets a sentiment swing wake the decide loop. Shadow-first: leave OFF until at least a week of journaled scores looks sane. Code default off; a live book arms it in `.env`, never here. |
@@ -153,6 +159,7 @@ Two roles, each any OpenAI-compatible `/v1`: **decide** (also the desk analysts)
 | `TRADER_RESEARCH_PRICE_OUT` | `float` | `0.0` | tuning | USD per 1M output tokens for the research model. |
 | `TRADER_XAI_BASE_URL` | `str` | `https://api.x.ai/v1` | endpoint | xAI API base for Grok research roles and x_search sentiment. |
 | `TRADER_XAI_MODEL` | `str` | `grok-4` | endpoint | Grok model id for the xAI research roles. |
+| `TRADER_REFLECT_XAI_MODEL` | `str` | `grok-4-1-fast-non-reasoning` | endpoint | Grok model id for the `reflect` Role on the xAI chain (a non-reasoning model: a Lesson is a short summary). An explicit research endpoint or a Profile replaces it. |
 | `XAI_API_KEY` (alias `TRADER_XAI_API_KEY`) | `str` | *(empty)* | credential | xAI API key: first-class fallback when SuperGrok OAuth is absent or quarantined. Provider-conventional name; the `TRADER_` form is accepted too. |
 | `TRADER_XAI_TOKEN_KEY` | `str` | *(empty)* | credential | SuperGrok device-code OAuth: Fernet key that encrypts the token store. Set it, then run `trader xai login`. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Unset, OAuth is disabled and the provider resolves to `XAI_API_KEY` alone. |
 | `TRADER_SECRETS_KEY` | `str` | *(empty)* | credential | Fernet key that encrypts Provider API keys stored in Postgres by the model picker. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Unset, Providers that need a key cannot be added; keyless local Providers still work. Losing it loses the stored keys. |

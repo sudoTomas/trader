@@ -2,8 +2,9 @@
 
 ``decide`` / ``analyst`` use ``TRADER_DECIDE_*`` (any OpenAI-compatible endpoint) or,
 when that base URL is empty, the Nemotron preset. ``brief`` / ``compiler`` /
-``sentiment`` / ``critic`` use ``TRADER_RESEARCH_*`` the same way; unset, xAI fronts
-them when a credential exists and the decide client backstops. ``confirm`` is Jev alone
+``sentiment`` / ``critic`` / ``reflect`` use ``TRADER_RESEARCH_*`` the same way; unset,
+xAI fronts them when a credential exists and the decide client backstops (``reflect``
+on a non-reasoning Grok, ``TRADER_REFLECT_XAI_MODEL``). ``confirm`` is Jev alone
 (``TRADER_CONFIRM_*``), absent unless configured, and nothing backstops it. x_search sentiment
 is not routed here — it stays xAI-only. Every completion served here is metered
 into ``usage_daily`` under its role — there is no unmetered path.
@@ -16,6 +17,7 @@ compiler and the briefs on their next call. A Role the Profile leaves out uses t
 
 from __future__ import annotations
 
+import copy
 from dataclasses import replace
 from typing import Any, Protocol
 
@@ -33,8 +35,17 @@ from trader.ops.config import Settings
 
 log = structlog.get_logger(__name__)
 
-ROLES = ("decide", "brief", "compiler", "sentiment", "analyst", "critic", "confirm")
-RESEARCH_ROLES = ("brief", "compiler", "sentiment", "critic")
+ROLES = (
+    "decide",
+    "brief",
+    "compiler",
+    "sentiment",
+    "analyst",
+    "critic",
+    "confirm",
+    "reflect",
+)
+RESEARCH_ROLES = ("brief", "compiler", "sentiment", "critic", "reflect")
 #: Usage-meter provider for a configured OpenAI-compatible endpoint (not the Nemotron preset).
 GENERIC_PROVIDER = "openai_compat"
 
@@ -292,4 +303,10 @@ def build_llm_registry(
     # critique is same-model, not skipped.
     for role in RESEARCH_ROLES:
         routes[role] = ([grok] if grok is not None else []) + backstop
+    # A Lesson is a short summary: a non-reasoning Grok writes it (#143), over the same
+    # authenticated client (one credential manager per process).
+    if grok is not None:
+        reflect = copy.copy(grok)
+        reflect.model = settings.reflect_xai_model
+        routes["reflect"] = [reflect, *backstop]
     return LLMRegistry(routes, meter, profiles=profiles, caps=caps)

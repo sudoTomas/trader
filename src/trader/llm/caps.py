@@ -20,7 +20,16 @@ from trader.store.db import Database
 
 log = structlog.get_logger(__name__)
 
-ROLES = ("decide", "brief", "compiler", "sentiment", "analyst", "critic", "confirm")
+ROLES = (
+    "decide",
+    "brief",
+    "compiler",
+    "sentiment",
+    "analyst",
+    "critic",
+    "confirm",
+    "reflect",
+)
 ESTIMATE_DAYS = 7
 
 

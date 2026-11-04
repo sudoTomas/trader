@@ -17,8 +17,8 @@ Source to it (``trader.loop.pit``), so no slice dated after ``as_of`` reaches a 
 
 A Bot subscribes to Sources by name in its spec (``sources: [{source, params}]``).
 ``params`` holds the subscription's own settings (FRED's series, a lane budget) plus what
-the ContextBuilder knows only at decide time: ``now`` (the context clock), ``price`` and
-``position``.
+the ContextBuilder knows only at decide time: ``now`` (the context clock), ``price``,
+``position`` and ``bot_id``.
 
 Every lane is advisory: it feeds the decider only. RiskGuard never imports this module
 (asserted by test; see docs/lessons.md#macro-view-advisory-firewall).
@@ -44,12 +44,16 @@ BRIEF = "brief"
 FRED = "fred"
 SENTIMENT = "sentiment"
 HELD_POSITION = "held_position"
+LESSONS = "lessons"
 #: The sentiment subscription's one setting: also poll the Bot's symbols it does not hold.
 POLL_UNHELD = "poll_unheld"
 
 MACRO_BUDGET_CHARS = 2000
 BRIEF_BUDGET_CHARS = 1200
 HELD_POSITION_BUDGET_CHARS = 900
+LESSONS_BUDGET_CHARS = 1200
+#: The latest few: a Lesson is one sample, and the lane must not crowd the context.
+LESSONS_LIMIT = 3
 # The explicit ask. The block exists to make the decider answer this, so it is one whole
 # entry: under the lane's budget it stays or goes intact, never truncated mid-sentence.
 # No numbers here on purpose: replay run 18 (docs/reports/2026-09-29-exit-review-replay-gate.md)
@@ -122,10 +126,15 @@ def subscriptions(spec: Iterable[Subscription | Mapping[str, Any]]) -> tuple[Sub
 
 
 def bot_one_subscriptions(
-    *, macro_view: bool = True, briefs: bool = False, exit_review: bool = False
+    *,
+    macro_view: bool = True,
+    briefs: bool = False,
+    exit_review: bool = False,
+    lessons: bool = False,
 ) -> list[dict[str, Any]]:
     """The Sources the pre-Bots flags turned on: FRED and the Macro View always, the brief
-    with ``TRADER_BRIEFS_ENABLED``, the held position with ``TRADER_EXIT_REVIEW_ENABLED``.
+    with ``TRADER_BRIEFS_ENABLED``, the held position with ``TRADER_EXIT_REVIEW_ENABLED``,
+    the Lessons with ``TRADER_LESSONS_ENABLED`` (#143).
     Replay's ``macro_view: false`` is the one way to drop the Macro View."""
     subs = [Subscription(FRED, {"series": list(DEFAULT_FRED_SERIES)})]
     if macro_view:
@@ -134,6 +143,8 @@ def bot_one_subscriptions(
         subs.append(Subscription(BRIEF))
     if exit_review:
         subs.append(Subscription(HELD_POSITION))
+    if lessons:
+        subs.append(Subscription(LESSONS))
     return [s.as_spec() for s in subs]
 
 
@@ -158,7 +169,13 @@ def build_sources(db: Any, market_data: Any, *, fred: Any | None = None) -> dict
         RetailSentimentSource,
         SecFilingsSource,
     )
-    from trader.store.repos import BriefsRepo, MacroViewsRepo, SentimentRepo, VendorReadsRepo
+    from trader.store.repos import (
+        BriefsRepo,
+        LessonsRepo,
+        MacroViewsRepo,
+        SentimentRepo,
+        VendorReadsRepo,
+    )
 
     sentiment = SentimentSource(SentimentRepo(db))
     vendor_reads = VendorReadsRepo(db)
@@ -169,6 +186,7 @@ def build_sources(db: Any, market_data: Any, *, fred: Any | None = None) -> dict
         FRED: FredSource(fred if fred is not None else getattr(market_data, "fred", None)),
         SENTIMENT: sentiment,
         HELD_POSITION: HeldPositionSource(sentiment),
+        LESSONS: LessonsSource(LessonsRepo(db)),
         SEC_FILINGS: SecFilingsSource(vendor_reads),
         POLYMARKET: PolymarketSource(vendor_reads),
         RETAIL_SENTIMENT: RetailSentimentSource(vendor_reads),
@@ -626,3 +644,61 @@ class HeldPositionSource:
         version = hashlib.sha256(text.encode()).hexdigest()[:16]
         # The position is the book at the clock; the sentiment it carries may be older.
         return SourceSlice(self.name, version, clock, text, held, available_at=clock)
+
+
+# --- Lessons (#143) ---------------------------------------------------------------------
+
+
+def lesson_line(row: Mapping[str, Any]) -> str:
+    """One Lesson as a prompt entry, led by the outcome it was written from."""
+    decided = row["decided_at"]
+    day = decided.date().isoformat() if isinstance(decided, datetime) else str(decided)
+    verdict = {True: "right", False: "wrong", None: "no view"}[row.get("correct")]
+    return (
+        f"[{day} {row.get('action') or 'decision'}: {row['excess_return']:+.1%} vs"
+        f" {row['benchmark']} over {row['horizon_days']} sessions, {verdict}] {row['lesson']}"
+    )
+
+
+class LessonsSource:
+    """The latest few Lessons for this Bot and symbol (``lessons``), each readable only
+    from its Settlement's ``settled_at``: a pinned read (replay) never sees a Lesson
+    settled after the step, and a live read sees what has settled by now. The slice's
+    availability time is the newest served Lesson's settlement.
+    Version: the Lesson ids read, newest first, comma-joined."""
+
+    name = LESSONS
+
+    def __init__(self, repo: Any) -> None:  # store.repos.LessonsRepo
+        self._repo = repo
+
+    async def read(
+        self, symbol: Symbol, *, as_of: datetime | None, params: Mapping[str, Any]
+    ) -> SourceSlice | None:
+        clock = _read_clock(as_of, params)
+        # A context with no Bot is Bot #1's, as in the journal.
+        bot_id = params.get("bot_id") or 1
+        rows = await self._repo.visible(
+            bot_id, symbol.ticker, at=clock, limit=int(params.get("limit", LESSONS_LIMIT))
+        )
+        # Defense in depth: a repo that ignores ``at`` must not leak a later Lesson.
+        rows = [row for row in rows if pit.visible(row["available_at"], clock)]
+        lines = {row["id"]: lesson_line(row) for row in rows}
+        entries = _whole_entries(
+            list(lines.values()),
+            params.get("budget_chars", LESSONS_BUDGET_CHARS),
+            "lesson_dropped_whole",
+            symbol=symbol.ticker,
+        )
+        if not entries:
+            return None
+        served = [row for row in rows if lines[row["id"]] in entries]
+        version = ",".join(str(row["id"]) for row in served)
+        return SourceSlice(
+            self.name,
+            version,
+            clock,
+            "\n".join(entries),
+            tuple(entries),
+            available_at=max(row["available_at"] for row in served),
+        )

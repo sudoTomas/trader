@@ -38,6 +38,8 @@ def _contracts() -> dict[str, Contract]:
     from trader.desk.analysts import ANALYST_SCHEMA, TECHNICAL_PROMPT, AnalystOutput
     from trader.desk.critic import CRITIC_SCHEMA, CriticOutput
     from trader.desk.critic import SYSTEM_PROMPT as CRITIC_PROMPT
+    from trader.learning.reflect import REFLECT_SCHEMA, LessonOutput
+    from trader.learning.reflect import SYSTEM_PROMPT as REFLECT_PROMPT
     from trader.loop.confirm import QUESTIONS
     from trader.loop.decider import DECISION_SCHEMA, SYSTEM_PROMPT, DecisionOutput
     from trader.research.briefs import BRIEF_SCHEMA, BriefOutput
@@ -61,6 +63,7 @@ def _contracts() -> dict[str, Contract]:
         "critic": Contract(CRITIC_PROMPT, CRITIC_SCHEMA, CriticOutput.model_validate_json),
         "brief": Contract(BRIEF_PROMPT, BRIEF_SCHEMA, BriefOutput.model_validate_json),
         "compiler": Contract(COMPILE_PROMPT, COMPILE_SCHEMA, CompiledOutput.model_validate_json),
+        "reflect": Contract(REFLECT_PROMPT, REFLECT_SCHEMA, LessonOutput.model_validate_json),
         "confirm": Contract(
             SYSTEM_PROMPT,
             {"action": QUESTIONS["action"], "open_side": QUESTIONS["open_side"]},
