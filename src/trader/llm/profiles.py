@@ -52,6 +52,7 @@ ROLE_KINDS: dict[str, frozenset[str]] = {
     "critic": CHAT,
     "brief": CHAT,
     "compiler": CHAT,
+    "reflect": CHAT,
     "sentiment": frozenset({XAI}),
     "confirm": frozenset({JEV}),
 }

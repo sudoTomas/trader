@@ -7,7 +7,7 @@ const REFRESH_MS = 5000;
 const RESEARCH_MS = 60000;
 const TICK_SECONDS = 60; // TRADER_LOOP_TICK_SECONDS default; the API does not expose it
 
-const store = { config: null, decisions: [], audit: [], approvals: [], positions: [], orders: [], usage: null, risk: null, loop: null, view: null, notes: [], account: null, brokerPositions: [], history: null, brokerError: null };
+const store = { config: null, decisions: [], scorecard: null, audit: [], approvals: [], positions: [], orders: [], usage: null, risk: null, loop: null, view: null, notes: [], account: null, brokerPositions: [], history: null, brokerError: null };
 const openKeys = new Set(); // expanded ledger rows and table rows survive refreshes
 const seenKeys = new Set(); // rows already shown once; anything new gets the arrival motion
 let firstLedger = true;
@@ -591,6 +591,30 @@ function renderDecisions() {
   );
 }
 
+// ---------- scorecard (#143) ----------
+// Each desk seat graded on settled decisions, 5 sessions on: hit rate and slugging on the
+// return over the benchmark, rank IC of its conviction against the forward return.
+function renderScorecard() {
+  const card = store.scorecard;
+  const seats = Object.entries(card?.seats || {}).map(([seat, s]) => ({ seat, ...s }));
+  const ratio = (v) => (v == null ? '—' : Number(v).toFixed(2));
+  $('scorecard').replaceChildren(
+    ...(seats.length
+      ? [
+          el('div', { className: 'sub', textContent: `${card.settled} settled decisions · ${card.horizon_days}-session horizon` }),
+          table([
+            { h: 'Seat', get: (s) => mono(s.seat) },
+            { h: 'Views', get: (s) => String(s.views), r: true, minor: true },
+            { h: 'Directional', get: (s) => String(s.directional), r: true, minor: true },
+            { h: 'Hit rate', get: (s) => pct(s.hit_rate), r: true },
+            { h: 'Slugging', get: (s) => ratio(s.slugging), r: true },
+            { h: 'Rank IC', get: (s) => ratio(s.rank_ic), r: true },
+          ], seats, { key: (s) => `sc${s.seat}` }),
+        ]
+      : [empty('Nothing settled yet', 'A decision settles 5 sessions after it is made, once settlement runs (TRADER_SETTLEMENT_ENABLED or `trader settle`).')]),
+  );
+}
+
 // ---------- research ----------
 function withCitations(s) {
   const out = el('span');
@@ -747,6 +771,7 @@ function renderAll() {
   renderLedger();
   renderBook();
   renderDecisions();
+  renderScorecard();
   renderResearch();
   renderRisk();
   renderBrokerPositions(); // its Stop column reads the risk status
@@ -779,6 +804,7 @@ async function refresh() {
     load('/positions', 'positions', []),
     load('/orders?limit=50', 'orders', []),
     load('/decisions?limit=150', 'decisions', []),
+    load('/scorecard', 'scorecard', null),
     load('/audit?limit=60', 'audit', []),
     load('/usage?days=7', 'usage'),
     load('/config', 'config'),

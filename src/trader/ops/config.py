@@ -444,6 +444,45 @@ class Settings(BaseSettings):
             "free one in its Chain reviews; with none, reviews are journaled pass-throughs."
         ),
     )
+    settlement_enabled: bool = setting(
+        False,
+        category=GATE,
+        section="Research Desk",
+        description=(
+            "Learning loop (#143): a background pass settles every journaled decision 5 "
+            "trading days on (forward and excess return from daily bars, fetched on use) and "
+            "lets the `reflect` Role write a Lesson for the newest settled ones. Off, nothing "
+            "settles on its own; the `settle_decisions` command still runs one pass. Lessons "
+            "reach a decide prompt only through a Bot's `lessons` Source."
+        ),
+    )
+    settlement_interval_seconds: float = setting(
+        3_600.0,
+        category=TUNING,
+        section="Research Desk",
+        description="Seconds between settlement passes when `TRADER_SETTLEMENT_ENABLED`.",
+    )
+    reflect_max_per_pass: int = setting(
+        10,
+        category=TUNING,
+        section="Research Desk",
+        description=(
+            "Most Lessons the `reflect` Role writes per settlement pass, newest settled "
+            "decisions first; the rest wait for the next pass. `0` settles without Lessons. "
+            "The Role's Spend cap still bounds the day."
+        ),
+        ge=0,
+    )
+    lessons_enabled: bool = setting(
+        False,
+        category=GATE,
+        section="Research Desk",
+        description=(
+            "Bot #1 reads its `lessons` Source: its latest settled Lessons on the symbol go "
+            "into the decide prompt. Other Bots subscribe in their spec. A decide-behavior "
+            "change: flip only through `docs/runbooks/decide-change-gate.md`."
+        ),
+    )
     sentiment_poll_seconds: float = setting(
         10_800.0,
         category=TUNING,
@@ -742,6 +781,15 @@ class Settings(BaseSettings):
         category=ENDPOINT,
         section="LLM endpoints",
         description="Grok model id for the xAI research roles.",
+    )
+    reflect_xai_model: str = setting(
+        "grok-4-1-fast-non-reasoning",
+        category=ENDPOINT,
+        section="LLM endpoints",
+        description=(
+            "Grok model id for the `reflect` Role on the xAI chain (a non-reasoning model: a "
+            "Lesson is a short summary). An explicit research endpoint or a Profile replaces it."
+        ),
     )
     xai_api_key: str = setting(
         "",

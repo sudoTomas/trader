@@ -37,6 +37,7 @@ from trader.loop.sources import (
     BriefSource,
     FredSource,
     HeldPositionSource,
+    LessonsSource,
     MacroViewSource,
     OpenBBSource,
     SentimentSource,
@@ -85,6 +86,31 @@ class StubOpenBB:
         return max(rows, key=lambda r: (r["ts"], r["id"])) if rows else None
 
 
+class StubLessons:
+    """Lessons for Bot #1 on BTC/USD, one settled after the step. It ignores ``at`` so
+    the Source's own filter and the guard are what keep the later one out."""
+
+    ROWS = [
+        {"id": 21, "lesson": "Earlier lesson.", "available_at": NOW - timedelta(days=1)},
+        {"id": 22, "lesson": "LATER LESSON.", "available_at": NOW + timedelta(minutes=30)},
+    ]
+
+    async def visible(self, bot_id, symbol, *, at, limit):
+        rows = [
+            {
+                **row,
+                "decided_at": row["available_at"] - timedelta(days=7),
+                "action": "open",
+                "excess_return": 0.01,
+                "benchmark": "BTC/USD",
+                "horizon_days": 5,
+                "correct": True,
+            }
+            for row in self.ROWS
+        ]
+        return sorted(rows, key=lambda r: r["available_at"], reverse=True)[:limit]
+
+
 def every_source() -> dict[str, Any]:
     sentiment = SentimentSource(StubSentiment([*SENTIMENT, LATE_POLL], now=NOW + timedelta(days=1)))
     vendor = StubVendorReads()
@@ -98,6 +124,7 @@ def every_source() -> dict[str, Any]:
         "polymarket": PolymarketSource(vendor),
         "retail_sentiment": RetailSentimentSource(vendor),
         **{name: OpenBBSource(name, StubOpenBB()) for name in (EARNINGS, OPTIONS, FUNDAMENTALS)},
+        "lessons": LessonsSource(StubLessons()),
     }
 
 
@@ -192,6 +219,7 @@ LOOKAHEAD: dict[str, Case] = {
     "earnings": Case(AAPL, 21, ("2026-12-31",)),
     "options": Case(AAPL, 31, ("99.9%",)),
     "fundamentals": Case(AAPL, 41, ("4,242.00",)),
+    "lessons": Case(BTC, "21", ("LATER LESSON",)),
 }
 
 
