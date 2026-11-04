@@ -57,6 +57,10 @@ class RiskLimits:
     # worth the spread and fees it pays (RiskGuard's no_trade_band check). Exits always
     # pass. 0 is off.
     no_trade_band_frac: float = 0.0
+    # Earnings blackout: no opens or adds on a US stock from this many sessions before its
+    # report through the report session (RiskGuard's earnings_blackout check). Exits
+    # always pass. 0 is off.
+    earnings_blackout_days: int = 0
 
     def __post_init__(self) -> None:
         if not 0 < self.max_position_frac <= 1:
@@ -76,6 +80,8 @@ class RiskLimits:
             raise ValueError("stop_cooldown_seconds must be >= 0")
         if self.min_hold_seconds < 0:
             raise ValueError("min_hold_seconds must be >= 0")
+        if self.earnings_blackout_days < 0:
+            raise ValueError("earnings_blackout_days must be >= 0")
         if not (math.isfinite(self.no_trade_band_frac) and 0 <= self.no_trade_band_frac < 1):
             raise ValueError("no_trade_band_frac must be within [0, 1)")
         if self.park_above_usd is not None:
@@ -123,6 +129,7 @@ def limits_from_settings(settings: Settings) -> RiskLimits:
         stop_cooldown_seconds=settings.risk_stop_cooldown_seconds,
         min_hold_seconds=settings.risk_min_hold_seconds,
         no_trade_band_frac=settings.risk_no_trade_band_frac,
+        earnings_blackout_days=settings.risk_earnings_blackout_days,
         park_above_usd=_park_above(
             settings.risk_park_above_usd, settings.risk_approval_notional_usd
         ),

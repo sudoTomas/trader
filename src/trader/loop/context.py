@@ -8,8 +8,8 @@ finished string by the time the model runs (see docs/lessons.md#indicators-over-
 Fetch-on-tick: bars come from the provider and are used in memory. Nothing is stored.
 
 Every other lane is a **Source** (``trader.loop.sources``, #124): the Macro View, the
-Candidate Brief, FRED prints, X sentiment, the held-position block (exit review, #34)
-and the Bot's Lessons (#143).
+Candidate Brief, FRED prints, X sentiment, the OpenBB earnings, options and fundamentals
+notes (#141), the held-position block (exit review, #34) and the Bot's Lessons (#143).
 The builder reads exactly the Sources the Bot version subscribes to, each in its own
 budgeted lane, and keeps every slice on the context so the journal can record its Source
 version. The live call reads current state (``as_of=None``); replay passes ``as_of`` so
@@ -44,14 +44,18 @@ from trader.loop.sources import (  # noqa: F401 - lane renderers re-exported for
     BRIEF,
     BRIEF_BUDGET_CHARS,
     CRYPTO_DERIVATIVES,
+    EARNINGS,
     EXIT_REVIEW_ASK,
     FRED,
+    FUNDAMENTALS,
     HELD_POSITION,
     HELD_POSITION_BUDGET_CHARS,
     KRONOS,
     LESSONS,
     MACRO_BUDGET_CHARS,
     MACRO_VIEW,
+    OPENBB_SOURCES,
+    OPTIONS,
     SENTIMENT,
     SHADOW_SIGNALS,
     BriefSlice,
@@ -73,6 +77,11 @@ from trader.loop.vendor_sources import VENDOR_LANES
 log = structlog.get_logger(__name__)
 
 BAR_LOOKBACK = 100
+OPENBB_LANES = {
+    EARNINGS: "Earnings calendar",
+    OPTIONS: "Options market",
+    FUNDAMENTALS: "Fundamentals note",
+}
 DEFAULT_INTERVALS = ("1h",)
 SIGNAL_HEADERS = {KRONOS: "Kronos forecast", CRYPTO_DERIVATIVES: "Crypto derivatives"}
 
@@ -218,6 +227,17 @@ class DecisionContext:
                 f"  {self.sentiment.text}",
             ]
 
+        openbb = {piece.source: piece for piece in self.sources if piece.source in OPENBB_SOURCES}
+        for name in OPENBB_SOURCES:
+            if name in openbb:
+                lines += [
+                    "",
+                    f"{OPENBB_LANES[name]} (advisory — informs direction and conviction only;"
+                    " a deterministic risk layer owns sizing)"
+                    f" [via {name} #{openbb[name].version}]:",
+                ]
+                lines += [f"  {entry}" for entry in openbb[name].text.splitlines()]
+
         for piece in self.signal_lanes:
             lines += [
                 "",
@@ -226,6 +246,7 @@ class DecisionContext:
                 f" [via {piece.source} {piece.version}]:",
                 f"  {piece.text}",
             ]
+
         for piece in self.sources:
             header = VENDOR_LANES.get(piece.source)
             if header is not None:

@@ -91,13 +91,14 @@ SignalScheduler → ContextBuilder → (analyst desk) → Decider → (Confirm) 
   120 s timeouts;
   [indicators-over-mcp-returned-null](lessons.md#indicators-over-mcp-returned-null)).
 - **Sources** (#124, `loop/sources.py`) — `read(symbol, as_of=None, params) -> SourceSlice`.
-  `macro_view`, `brief`, `fred`, `sentiment` and `held_position` (the exit-review block,
-  which carries the latest sentiment). A Source only reads what a producer already wrote
-  (the compilers, the sentiment poller, FRED on use, the positions row), so the live path
-  stores no market data. `as_of=None` reads current; a timestamp pins the read to the state
+  `macro_view`, `brief`, `fred`, `sentiment`, `held_position` (the exit-review block,
+  which carries the latest sentiment) and the OpenBB three, `earnings`, `options` and
+  `fundamentals` (#141). A Source only reads what a producer already wrote
+  (the compilers, the sentiment poller, the OpenBB producer, FRED on use, the positions
+  row), so the live path stores no market data. `as_of=None` reads current; a timestamp pins the read to the state
   that existed then. Each slice carries a **Source version**: `macro_views.version`,
-  `briefs.version`, `sentiment_scores.id`, `series@obs_date` for FRED, a content hash for
-  the held position. A Bot's spec lists `sources: [{source, params}]`; Bot #1's comes from
+  `briefs.version`, `sentiment_scores.id`, `openbb_snapshots.id`, `series@obs_date` for
+  FRED, a content hash for the held position. A Bot's spec lists `sources: [{source, params}]`; Bot #1's comes from
   the lane flags (FRED and the Macro View always, the brief with `TRADER_BRIEFS_ENABLED`, the
   held position with `TRADER_EXIT_REVIEW_ENABLED`). RiskGuard never imports Sources
   (asserted by test). The sentiment poller scores held symbols only; a store-defined Bot's
@@ -105,6 +106,19 @@ SignalScheduler → ContextBuilder → (analyst desk) → Decider → (Confirm) 
   on every door and the desk's Bots page) to have its unheld symbols scored too, at the same
   cadence. Bots under the Supervisor share one poll stamp per symbol, so the polled set is
   held ∪ opted-in Bots' symbols, each once per cadence.
+- **OpenBB producer** (#141, `research/openbb.py`) — OpenBB (Apache-2.0) runs as its own
+  `openbb-api` sidecar (own venv or container, pinned, `infra/openbb/`); the trader only
+  calls its REST routes (`data/openbb.py`), never imports it. `refresh_openbb` (every door;
+  `trader-openbb-refresh.timer`) asks keyless providers for every Bot's US stocks and
+  appends one compact dated summary per kind to `openbb_snapshots`: the next earnings
+  report (Nasdaq calendar) and last surprise, ATM IV / implied move / put-call skew (Cboe,
+  Nasdaq as fallback), and price targets, ratios, insider trades and short interest
+  (Nasdaq, SEC, FINRA). A breaker per provider skips one that failed three times running
+  for 6 h; a failed fetch writes nothing, so the Source shows its last row with its age
+  (flagged `STALE` past 3 d / 2 d / 10 d). A sidecar that is down only means no new rows.
+  A row has no older vintage (a consensus or a chain is only known as of its read), so its
+  availability time is its fetch: replay, and the earnings blackout in replay, see it only
+  from then on.
 - **Point in time** (#142, `loop/pit.py`) — every slice carries its **availability time**
   (when the newest thing in it became public), and the ContextBuilder reads every Source
   through one guard: in replay a read is clamped to `as_of` (a clock past it is served as of
@@ -158,7 +172,10 @@ SignalScheduler → ContextBuilder → (analyst desk) → Decider → (Confirm) 
   model's close of a position its Bot opened less than `TRADER_RISK_MIN_HOLD_SECONDS`,
   default 4 h, ago is denied; only a Draft is held, never the stop;
   `reports/2026-10-30-sentiment-churn.md`) → stop cooldown (no opens on a
-  symbol the stop just closed) → sizing clamps (max position frac,
+  symbol the stop just closed) → earnings blackout (no opens or adds on a US stock from
+  `TRADER_RISK_EARNINGS_BLACKOUT_DAYS`, default 1, sessions before its report through the
+  report session, from the OpenBB producer's calendar row; no row or a stale one fails
+  open with a warning in the verdict) → sizing clamps (max position frac,
   notional floor, kelly cap) → no-trade band (an open or add below
   `TRADER_RISK_NO_TRADE_BAND_FRAC`, default 1%, of the Bot's Sleeve after the clamps is
   denied; trims, closes and the stop never reach it) → concurrency + trades/day → daily-loss + weekly-drawdown
@@ -189,7 +206,8 @@ SignalScheduler → ContextBuilder → (analyst desk) → Decider → (Confirm) 
   pinned to each step and records the same `source_versions` on the step.
 - **Replay** (`eval/replay.py`) — reruns the decide stage over a window into
   `eval_runs`/`eval_steps`, with a crude one-position book that runs the live stop, its
-  cooldown, the min hold and the no-trade band. Every replayed fill pays the cost model in
+  cooldown, the min hold, the earnings blackout (from the calendar row fetched by each
+  step) and the no-trade band. Every replayed fill pays the cost model in
   `eval/costs.py` (#139): half the quoted spread, else 5 bp equities/ETFs or 10 bp crypto;
   a 2 bp fee plus Alpaca's 25 bp crypto taker fee; square-root impact
   (coefficient × daily vol × √(order / average daily dollar volume), from the step's 1h

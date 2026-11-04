@@ -91,6 +91,7 @@ from trader.loop.sources import (
     subscriptions,
     unrealized_pnl_frac,
 )
+from trader.risk.earnings import applies, earnings_blackout, load_earnings
 from trader.risk.limits import RiskLimits, bars_per_day, stop_loss_frac_for
 from trader.store.db import Database
 from trader.store.repos import EvalRepo
@@ -173,8 +174,9 @@ class ReplayHarness:
         # The live limits, for the deterministic stop (#74): with them a replayed position
         # past its stop is closed at that step before the model is asked, and the stop's
         # cooldown keeps later opens on the symbol out of the crude book. The min hold
-        # keeps the model's closes of a fresh position out of it too, and the no-trade
-        # band its small opens. None = none of them.
+        # keeps the model's closes of a fresh position out of it too, the earnings
+        # blackout its opens around a report, and the no-trade band its small opens.
+        # None = none of them.
         limits: RiskLimits | None = None,
         # What every replayed fill pays (#139). None = free fills.
         costs: ReplayCosts | None = None,
@@ -344,6 +346,15 @@ class ReplayHarness:
             return None
         return f"stop-loss: {loss:+.1%} against entry is past -{frac:.1%}"
 
+    async def _earnings_blackout(self, symbol: Symbol, as_of: datetime) -> bool:
+        """RiskGuard's earnings blackout at ``as_of``, from the calendar row fetched by
+        then (no row then = fails open, as live)."""
+        days = self._limits.earnings_blackout_days if self._limits is not None else 0
+        if days <= 0 or not applies(symbol):
+            return False
+        earnings = await load_earnings(self._db, symbol.ticker, as_of)
+        return earnings_blackout(earnings, symbol, as_of, days).blocked
+
     async def _fill_cost(self, symbol: Symbol, ctx: DecisionContext, notional: float) -> FillCost:
         """What a fill of ``notional`` at this step pays. Liquidity comes from the step's
         own 1h bars: average daily dollar volume is the mean bar volume times the bars in
@@ -392,6 +403,7 @@ class ReplayHarness:
         recent: list[dict[str, Any]] = []
         steps = errors = skipped_closed = skipped_no_data = 0
         stops = stop_cooldown_denied = min_hold_denied = no_trade_band_denied = 0
+        earnings_blackout_denied = 0
         paid = FillCost()  # what the fills cost, summed
         stopped_at: datetime | None = None
         qty = entry = realized = cost = 0.0
@@ -545,12 +557,19 @@ class ReplayHarness:
             )
             # RiskGuard's no-trade band, against the equity the prompt was sized from.
             band = ctx.equity * self._limits.no_trade_band_frac if self._limits else 0.0
-            held = banded = False
+            held = banded = blacked = False
             fill: FillCost | None = None
             if decision.intent is not None:
                 side = 1.0 if decision.intent.side.value == "buy" else -1.0
                 if decision.action.value == "open" and qty == 0.0 and cooling:
                     stop_cooldown_denied += 1  # RiskGuard's stop_cooldown would deny it
+                elif (
+                    decision.action.value == "open"
+                    and qty == 0.0
+                    and await self._earnings_blackout(symbol, as_of)
+                ):
+                    blacked = True
+                    earnings_blackout_denied += 1  # RiskGuard's earnings_blackout would deny it
                 elif (
                     decision.action.value == "open"
                     and qty == 0.0
@@ -592,6 +611,8 @@ class ReplayHarness:
                 decision_row["min_hold"] = True
             if banded:
                 decision_row["no_trade_band"] = True
+            if blacked:
+                decision_row["earnings_blackout"] = True
             if fill is not None:
                 decision_row["fill_cost"] = fill.as_dict()
             if ctx.macro_view is not None:
@@ -643,6 +664,7 @@ class ReplayHarness:
             "stop_cooldown_denied": stop_cooldown_denied,
             "min_hold_denied": min_hold_denied,
             "no_trade_band_denied": no_trade_band_denied,
+            "earnings_blackout_denied": earnings_blackout_denied,
             "errors": errors,
             "skipped_closed": skipped_closed,
             "skipped_no_data": skipped_no_data,

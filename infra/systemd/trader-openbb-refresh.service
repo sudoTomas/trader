@@ -1,0 +1,20 @@
+# OpenBB producer run (#141): asks the running trader API to refresh the earnings,
+# options and fundamentals Source rows for every Bot's US stocks (POST
+# /research/openbb/refresh). The API calls the OpenBB sidecar (openbb-api.service, or the
+# `openbb` compose service) at TRADER_OPENBB_BASE_URL; with the sidecar down the run
+# reports `unavailable` and writes nothing. Pair with trader-openbb-refresh.timer:
+#   cp infra/systemd/trader-openbb-refresh.{service,timer} ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now trader-openbb-refresh.timer
+# Settings come from the checkout's .env (WorkingDirectory): TRADER_API_BASE_URL,
+# TRADER_API_KEY. Runbook: docs/runbooks/deploy.md ("OpenBB sidecar").
+[Unit]
+Description=trader OpenBB refresh (earnings, options, fundamentals -> Source rows)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/repos/trader
+# uv from the official installer lands in ~/.local/bin; adjust like trader-api.service.
+#Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/uv run trader openbb refresh

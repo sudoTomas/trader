@@ -35,8 +35,11 @@ from trader.loop.bots import SOURCE_NAMES
 from trader.loop.context import ContextBuilder
 from trader.loop.sources import (
     CRYPTO_DERIVATIVES,
+    EARNINGS,
+    FUNDAMENTALS,
     IN_PROMPT,
     KRONOS,
+    OPTIONS,
     BriefSource,
     CryptoDerivativesSource,
     FredSource,
@@ -44,6 +47,7 @@ from trader.loop.sources import (
     KronosSource,
     LessonsSource,
     MacroViewSource,
+    OpenBBSource,
     SentimentSource,
     SourceSlice,
     Subscription,
@@ -66,6 +70,28 @@ LATE_POLL = {
     "volume": "storm",
     "ts": NOW + timedelta(minutes=30),
 }
+
+
+class StubOpenBB:
+    """OpenBB producer rows (#141): one fetched before the step, one after it per kind."""
+
+    ROWS = (
+        (21, EARNINGS, -1, {"next_report_date": "2026-09-10", "report_time": "after market close"}),
+        (22, EARNINGS, 1, {"next_report_date": "2026-12-31"}),
+        (31, OPTIONS, -1, {"expiration": "2026-08-14", "dte": 2, "atm_iv": 0.29}),
+        (32, OPTIONS, 1, {"expiration": "2026-08-14", "dte": 2, "atm_iv": 0.999}),
+        (41, FUNDAMENTALS, -1, {"price_target": {"consensus": 255.5}}),
+        (42, FUNDAMENTALS, 1, {"price_target": {"consensus": 4242.0}}),
+    )
+
+    async def latest(self, kind, symbol, *, as_of=None):
+        rows = [
+            {"id": i, "ts": NOW + timedelta(minutes=30 * sign), "provider": "nasdaq", "data": d}
+            for i, k, sign, d in self.ROWS
+            if k == kind and symbol == "AAPL"
+        ]
+        rows = [r for r in rows if as_of is None or r["ts"] <= as_of]
+        return max(rows, key=lambda r: (r["ts"], r["id"])) if rows else None
 
 
 class EchoKronos:
@@ -138,6 +164,7 @@ def every_source() -> dict[str, Any]:
         "retail_sentiment": RetailSentimentSource(vendor),
         KRONOS: KronosSource(EchoKronos()),
         CRYPTO_DERIVATIVES: CryptoDerivativesSource(StubPerps()),
+        **{name: OpenBBSource(name, StubOpenBB()) for name in (EARNINGS, OPTIONS, FUNDAMENTALS)},
         "lessons": LessonsSource(StubLessons()),
     }
 
@@ -235,6 +262,10 @@ LOOKAHEAD: dict[str, Case] = {
     KRONOS: Case(BTC, None, ("999 sampled",), params={IN_PROMPT: True}),
     # No point-in-time history at the venues: a replay step reads nothing at all.
     CRYPTO_DERIVATIVES: Case(BTC, None, (), params={IN_PROMPT: True}, lane=False),
+    # OpenBB rows have no older vintage: each is available from its fetch.
+    "earnings": Case(AAPL, 21, ("2026-12-31",)),
+    "options": Case(AAPL, 31, ("99.9%",)),
+    "fundamentals": Case(AAPL, 41, ("4,242.00",)),
     "lessons": Case(BTC, "21", ("LATER LESSON",)),
 }
 

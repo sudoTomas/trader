@@ -67,6 +67,22 @@ services:
     mem_limit: 4g
     memswap_limit: 4g
 
+  openbb:
+    # OpenBB sidecar (#141): `openbb-api` with pinned routers and keyless providers
+    # (infra/openbb/). Opt-in through its profile, so a plain `up -d` never starts it:
+    #   docker compose -f infra/docker-compose.yml --profile openbb up -d --build openbb
+    # Then set TRADER_OPENBB_BASE_URL in .env: http://openbb:6900 for the app container,
+    # http://127.0.0.1:6900 for the systemd shape. Unauthenticated, so loopback only.
+    # Runbook: docs/runbooks/deploy.md ("OpenBB sidecar").
+    profiles: ["openbb"]
+    build:
+      context: openbb
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6900:6900"
+    mem_limit: 1g
+    memswap_limit: 1g
+
   kronos:
     # Kronos forecast sidecar (#144), opt-in: `--profile kronos up -d --build kronos`.
     # Point the trader at it with TRADER_KRONOS_URL (http://kronos:8095 from the app

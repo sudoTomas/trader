@@ -97,6 +97,7 @@ ALL_TABLES = (
     "macro_views",
     "briefs",
     "sentiment_scores",
+    "openbb_snapshots",
     "vendor_reads",
     "bars",
     "usage_daily",

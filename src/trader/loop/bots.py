@@ -39,6 +39,7 @@ from trader.loop.sources import (
     KRONOS,
     LESSONS,
     MACRO_VIEW,
+    OPENBB_SOURCES,
     POLL_UNHELD,
     SENTIMENT,
     SHADOW_SIGNALS,
@@ -76,6 +77,7 @@ SOURCE_NAMES = frozenset(
         KRONOS,
         CRYPTO_DERIVATIVES,
         *VENDOR_SOURCES,
+        *OPENBB_SOURCES,
     }
 )
 # Any constant: the transaction-scoped advisory lock every Owner check takes.

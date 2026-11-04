@@ -60,6 +60,67 @@ Optional shadow-window watcher (monitoring only, see
 `scripts/desk-watch.sh` reads `TRADER_DATABASE_URL` from the environment or `.env`
 and uses host `psql` when present, otherwise `docker exec` into the compose db.
 
+## OpenBB sidecar (optional, #141)
+
+OpenBB (Apache-2.0) feeds the `earnings`, `options` and `fundamentals` Sources and the
+RiskGuard earnings blackout. It runs as its own `openbb-api` process on `:6900` in its own
+venv or container, with pinned versions (`infra/openbb/requirements.txt`: the equity,
+derivatives and news routers; the keyless Nasdaq, Cboe, SEC and FINRA providers). The
+trader never imports it: the producer calls its REST routes on a timer and appends compact
+rows to `openbb_snapshots`. The trader runs normally without it: the three Sources are
+absent (or age, flagged `STALE`) and the blackout fails open with a warning in its verdict.
+
+Pick the shape that matches the trader's:
+
+```bash
+# A (compose): the sidecar as a container, opt-in by profile, loopback-published.
+docker compose -f infra/docker-compose.yml --profile openbb up -d --build openbb
+echo 'TRADER_OPENBB_BASE_URL=http://openbb:6900' >> .env       # the app container's view
+
+# B (systemd): its own venv, never the trader's.
+uv venv ~/.local/share/openbb/venv --python 3.12
+uv pip install --python ~/.local/share/openbb/venv -r infra/openbb/requirements.txt
+cp infra/systemd/openbb-api.service ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now openbb-api
+echo 'TRADER_OPENBB_BASE_URL=http://127.0.0.1:6900' >> .env
+```
+
+Restart the trader so it reads the URL, check the sidecar answers, then run the producer
+once by hand and install its timer (11:30 and 21:30 UTC, every day):
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' \
+  'http://127.0.0.1:6900/api/v1/equity/calendar/earnings?provider=nasdaq'   # 200 (204 = empty day)
+trader openbb refresh                    # every Bot's US stocks; or --symbols AAPL,MSFT
+trader openbb show --kind earnings       # one row per stock: next_report_date, report_time
+cp infra/systemd/trader-openbb-refresh.{service,timer} ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now trader-openbb-refresh.timer
+```
+
+`refresh` reports what it wrote (`written`), what `failed` per provider, and each provider's
+breaker (three failures in a row skip that provider for 6 h; a restart clears them).
+`status: unavailable` with "unreachable" means the sidecar is down: nothing was written and
+no breaker was charged.
+
+**Live check before relying on the blackout:** compare `trader openbb show --kind earnings`
+for each of Bot #2's six stocks with the report dates on nasdaq.com's earnings calendar.
+The blackout (`TRADER_RISK_EARNINGS_BLACKOUT_DAYS`, default 1, `0` = off) then denies
+opens and adds from the session before each report through the report session; exits
+always pass. Subscribing a Bot to the Sources is a decide-behavior change and goes through
+`docs/runbooks/decide-change-gate.md`; Bot #2 first:
+
+```bash
+trader bot show bot-2-largecap   # its current Sources: --source replaces the whole list
+trader bot version bot-2-largecap \
+  --source sentiment --source brief --source held_position --source macro_view \
+  --source earnings --source options --source fundamentals
+```
+
+**Upgrading OpenBB**: bump the pins in `infra/openbb/requirements.txt` together, rebuild
+(or reinstall the venv), run `trader openbb refresh` and read `failed` before the timer
+runs on it. Scraped endpoints change shape without notice; the breaker and the `STALE`
+flags are what make a break visible.
+
 ## After any deploy
 
 ```bash

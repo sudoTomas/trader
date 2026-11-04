@@ -1,0 +1,14 @@
+# Triggers trader-openbb-refresh.service twice a day, every day: 11:30 UTC, before the
+# US open (overnight calendar changes, the prior close's chains), and 21:30 UTC, after the
+# close. Every day, so a row is never older than the Sources' stale limits over a weekend.
+# Persistent=true runs a missed tick after a reboot.
+[Unit]
+Description=Twice-daily trader OpenBB refresh
+
+[Timer]
+OnCalendar=*-*-* 11:30:00 UTC
+OnCalendar=*-*-* 21:30:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target
