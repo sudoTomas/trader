@@ -29,6 +29,7 @@ dependencies = [
     "numpy>=2.1",
     "cryptography>=43",
     "anthropic>=1",
+    "ccxt>=4.5.92",
 ]
 
 [project.scripts]

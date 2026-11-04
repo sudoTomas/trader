@@ -222,6 +222,18 @@ def usage(
     typer.echo(json.dumps(_get("/usage", params=params), indent=2))
 
 
+@app.command("signal-scores")
+def signal_scores(
+    days: int = typer.Option(14, help="How many days of journaled readings to score."),
+    bot: Annotated[str | None, typer.Option(help="Score one Bot's readings only.")] = None,
+) -> None:
+    """Score the shadow signals: Kronos band coverage and hit rate, funding/OI rank IC."""
+    params: dict[str, object] = {"days": days}
+    if bot:
+        params["bot"] = bot
+    typer.echo(json.dumps(_get("/signals/scores", params=params), indent=2))
+
+
 broker_app = typer.Typer(help="Broker reconciliation and emergency flatten.")
 app.add_typer(broker_app, name="broker")
 
@@ -965,6 +977,21 @@ def bot_sentiment(
     """Turn sentiment polling for unheld symbols on or off (a new version; not bot-1)."""
     body = {"poll_unheld": poll_unheld}
     typer.echo(json.dumps(_post(f"/bots/{name}/sentiment-poll", json_body=body), indent=2))
+
+
+@bot_app.command("signal")
+def bot_signal(
+    name: str = typer.Argument(..., help="Bot name."),
+    source: str = typer.Argument(..., help="Shadow signal: kronos or crypto_derivatives."),
+    in_prompt: bool = typer.Option(
+        ...,
+        "--in-prompt/--no-in-prompt",
+        help="Read the signal in the Bot's prompt (a decide change; only after it scores).",
+    ),
+) -> None:
+    """Put a shadow signal in a Bot's prompt or take it out (a new version; not bot-1)."""
+    body = {"source": source, "in_prompt": in_prompt}
+    typer.echo(json.dumps(_post(f"/bots/{name}/signal-prompt", json_body=body), indent=2))
 
 
 @bot_app.command("pause")

@@ -16,6 +16,10 @@ every lane is the state that existed at that instant, not whichever row is curre
 Every lane is advisory by construction — it feeds the decider only, never RiskGuard (see
 docs/lessons.md#macro-view-advisory-firewall) — and a failing Source drops its lane; it
 never blocks a decide.
+
+The shadow signals (#144, Kronos and crypto derivatives) are read like any Source but
+reach the prompt only when their subscription says ``in_prompt``; either way every
+reading lands in ``signals``, which the journal records for scoring.
 """
 
 from __future__ import annotations
@@ -35,13 +39,16 @@ from trader.loop.scheduler import Trigger
 from trader.loop.sources import (  # noqa: F401 - lane renderers re-exported for callers
     BRIEF,
     BRIEF_BUDGET_CHARS,
+    CRYPTO_DERIVATIVES,
     EXIT_REVIEW_ASK,
     FRED,
     HELD_POSITION,
     HELD_POSITION_BUDGET_CHARS,
+    KRONOS,
     MACRO_BUDGET_CHARS,
     MACRO_VIEW,
     SENTIMENT,
+    SHADOW_SIGNALS,
     BriefSlice,
     FredPrint,
     HeldPositionSlice,
@@ -52,6 +59,7 @@ from trader.loop.sources import (  # noqa: F401 - lane renderers re-exported for
     build_brief_slice,
     build_held_position_slice,
     build_macro_slice,
+    in_prompt,
     unrealized_pnl_frac,
 )
 from trader.loop.sources import subscriptions as _subscriptions
@@ -60,6 +68,7 @@ log = structlog.get_logger(__name__)
 
 BAR_LOOKBACK = 100
 DEFAULT_INTERVALS = ("1h",)
+SIGNAL_HEADERS = {KRONOS: "Kronos forecast", CRYPTO_DERIVATIVES: "Crypto derivatives"}
 
 
 @dataclass(frozen=True)
@@ -114,6 +123,10 @@ class DecisionContext:
     # Exit-review lane (#34): present only when subscribed AND a position is held.
     held_position: HeldPositionSlice | None = None  # advisory; RiskGuard never sees it
     sentiment: SourceSlice | None = None  # its own lane, for a Bot that subscribes to it
+    # Shadow signals (#144) the Bot reads in its prompt (subscribed with in_prompt).
+    signal_lanes: tuple[SourceSlice, ...] = ()
+    # Every shadow-signal reading, in the prompt or not, for the journal's ``signals``.
+    signals: dict[str, Any] = field(default_factory=dict)
     # Every Source slice this context read, for the journal's source_versions.
     sources: tuple[SourceSlice, ...] = ()
     # The decide rules this context is judged by (#126): its Bot version's prompt variant.
@@ -195,6 +208,15 @@ class DecisionContext:
                 " a deterministic risk layer owns sizing)"
                 f" [via sentiment #{self.sentiment.version}]:",
                 f"  {self.sentiment.text}",
+            ]
+
+        for piece in self.signal_lanes:
+            lines += [
+                "",
+                f"{SIGNAL_HEADERS[piece.source]} (advisory — a model signal still being"
+                " scored; a deterministic risk layer owns sizing)"
+                f" [via {piece.source} {piece.version}]:",
+                f"  {piece.text}",
             ]
 
         if self.analysts:
@@ -299,6 +321,7 @@ class ContextBuilder:
 
         subs = self._subscriptions if subscriptions is None else _subscriptions(subscriptions)
         read: dict[str, SourceSlice] = {}
+        signals: dict[str, Any] = {}
         for sub in subs:
             source = self._sources.get(sub.source)
             if source is None:
@@ -310,6 +333,7 @@ class ContextBuilder:
                 "now": now,
                 "price": price,
                 "position": position if position_qty != 0 else None,
+                "market_data": self._data,
             }
             try:
                 piece = await source.read(symbol, as_of=as_of, params=params)
@@ -318,7 +342,15 @@ class ContextBuilder:
                     "source_unavailable", source=sub.source, symbol=symbol.ticker, error=str(exc)
                 )
                 continue
-            if piece is not None:
+            if piece is None:
+                continue
+            if sub.source in SHADOW_SIGNALS:
+                signals[sub.source] = {
+                    **piece.stamp(),
+                    "in_prompt": in_prompt(sub),
+                    "reading": piece.detail,
+                }
+            if in_prompt(sub):
                 read[sub.source] = piece
 
         def detail(name: str) -> Any:
@@ -340,5 +372,7 @@ class ContextBuilder:
             fred_series=detail(FRED) or (),
             held_position=detail(HELD_POSITION),
             sentiment=read.get(SENTIMENT),
+            signal_lanes=tuple(read[name] for name in SIGNAL_HEADERS if name in read),
+            signals=signals,
             sources=tuple(read.values()),
         )

@@ -592,6 +592,8 @@ class ReplayHarness:
             if ctx.held_position is not None:
                 decision_row["held_position"] = ctx.held_position.entries
             decision_row["source_versions"] = ctx.source_versions
+            if ctx.signals:
+                decision_row["signals"] = ctx.signals
             if desk_info is not None:
                 decision_row["desk"] = desk_info
             await self._repo.add_step(

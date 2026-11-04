@@ -850,6 +850,7 @@ class BotRunner:
                 macro_view_version=macro_view_version,
                 brief_version=brief_version,
                 source_versions=ctx.source_versions,
+                signals=ctx.signals,
             )
             return WakeupResult(
                 symbol.ticker, names, SUPPRESSED, decision_id, reason="no usable price"
@@ -881,6 +882,7 @@ class BotRunner:
                 macro_view_version=macro_view_version,
                 brief_version=brief_version,
                 source_versions=ctx.source_versions,
+                signals=ctx.signals,
                 latency_ms=int((time.perf_counter() - started) * 1000),
             )
             self.stats.errors += 1
@@ -944,6 +946,7 @@ class BotRunner:
                     macro_view_version=macro_view_version,
                     brief_version=brief_version,
                     source_versions=ctx.source_versions,
+                    signals=ctx.signals,
                     cost_usd=result.completion.cost_usd,
                     latency_ms=int((time.perf_counter() - started) * 1000),
                     **served(result.completion),
@@ -982,6 +985,7 @@ class BotRunner:
             macro_view_version=macro_view_version,
             brief_version=brief_version,
             source_versions=ctx.source_versions,
+            signals=ctx.signals,
             cost_usd=result.completion.cost_usd,
             latency_ms=int((time.perf_counter() - started) * 1000),
             **served(result.completion),

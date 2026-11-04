@@ -2,7 +2,8 @@
 
 A decision you can't replay is a decision you can't audit. Each row carries the exact
 prompt the model saw, its raw output, the risk verdicts, cost and latency, the macro-view
-version (from M4) and the Source version of every Source it read (#124) — enough to
+version (from M4), the Source version of every Source it read (#124) and every
+shadow-signal reading (#144) — enough to
 re-run the call offline and compare.
 """
 
@@ -64,6 +65,7 @@ class Journal:
         bot_id: int | None = None,
         bot_version: int | None = None,
         source_versions: dict[str, Any] | None = None,
+        signals: dict[str, Any] | None = None,
     ) -> int:
         decision_id = await self._repo.insert(
             trigger=trigger,
@@ -85,6 +87,7 @@ class Journal:
             bot_id=bot_id,
             bot_version=bot_version,
             source_versions=json_safe(source_versions) if source_versions is not None else None,
+            signals=json_safe(signals) if signals else None,
         )
         log.info(
             "decision_journaled",

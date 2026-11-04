@@ -204,6 +204,56 @@ class Settings(BaseSettings):
             "(replay it with `trader eval run --exit-review --seed-qty --seed-entry`)."
         ),
     )
+    shadow_signals_enabled: bool = setting(
+        False,
+        category=TUNING,
+        section="Decide loop",
+        description=(
+            "Bot #1 subscribes to the shadow signals (#144), the Kronos forecast and the "
+            "crypto derivatives reading: each is read on every decide and journaled in "
+            "`decisions.signals` for scoring, never shown to the decide (a Bot defined in "
+            "the store subscribes in its spec instead). Changes no decision. See "
+            "`docs/runbooks/shadow-signals.md`."
+        ),
+    )
+    kronos_url: str = setting(
+        "",
+        category=ENDPOINT,
+        section="Decide loop",
+        description=(
+            "Base URL of the Kronos forecast sidecar (`infra/kronos/`), e.g. "
+            "`http://localhost:8095`. Blank = no Kronos reading. The trader decides as usual "
+            "when the sidecar is down; that decide journals no forecast."
+        ),
+    )
+    kronos_paths: int = setting(
+        32,
+        category=TUNING,
+        section="Decide loop",
+        description=(
+            "Independent sampled paths per Kronos forecast; the band (p10/p90) and the share "
+            "of paths up are taken across them."
+        ),
+    )
+    signal_horizon_bars: int = setting(
+        24,
+        category=TUNING,
+        section="Decide loop",
+        description=(
+            "Horizon the shadow signals are forecast and scored at, in 1h bars: Kronos "
+            "samples this many bars ahead, and every signal is scored against the return "
+            "this many bars after it was read."
+        ),
+    )
+    derivatives_venues: str = setting(
+        "binance,bybit,okx",
+        category=ENDPOINT,
+        section="Decide loop",
+        description=(
+            "Comma-separated ccxt venues the crypto derivatives Source reads BTC and ETH "
+            "USDT perpetuals from (public endpoints, no keys). Empty = no reading."
+        ),
+    )
     shadow_equity: float = setting(
         100_000.0,
         category=TUNING,
