@@ -8,7 +8,8 @@ finished string by the time the model runs (see docs/lessons.md#indicators-over-
 Fetch-on-tick: bars come from the provider and are used in memory. Nothing is stored.
 
 Every other lane is a **Source** (``trader.loop.sources``, #124): the Macro View, the
-Candidate Brief, FRED prints, X sentiment and the held-position block (exit review, #34).
+Candidate Brief, FRED prints, X sentiment, the held-position block (exit review, #34)
+and the Bot's Lessons (#143).
 The builder reads exactly the Sources the Bot version subscribes to, each in its own
 budgeted lane, and keeps every slice on the context so the journal can record its Source
 version. The live call reads current state (``as_of=None``); replay passes ``as_of`` so
@@ -48,6 +49,7 @@ from trader.loop.sources import (  # noqa: F401 - lane renderers re-exported for
     HELD_POSITION,
     HELD_POSITION_BUDGET_CHARS,
     KRONOS,
+    LESSONS,
     MACRO_BUDGET_CHARS,
     MACRO_VIEW,
     SENTIMENT,
@@ -131,6 +133,8 @@ class DecisionContext:
     signal_lanes: tuple[SourceSlice, ...] = ()
     # Every shadow-signal reading, in the prompt or not, for the journal's ``signals``.
     signals: dict[str, Any] = field(default_factory=dict)
+    # This Bot's latest settled Lessons on the symbol (#143); advisory, opt-in.
+    lessons: SourceSlice | None = None
     # Every Source slice this context read, for the journal's source_versions.
     sources: tuple[SourceSlice, ...] = ()
     # The decide rules this context is judged by (#126): its Bot version's prompt variant.
@@ -244,6 +248,15 @@ class DecisionContext:
             ]
             lines += [f"  {entry}" for entry in self.held_position.entries]
 
+        if self.lessons:
+            lines += [
+                "",
+                "Lessons from this Bot's settled decisions on this symbol (advisory — each"
+                " is one past outcome, not a rule; a deterministic risk layer owns sizing)"
+                f" [via lessons {self.lessons.version}]:",
+            ]
+            lines += [f"  {entry}" for entry in self.lessons.detail]
+
         if self.recent_decisions:
             lines += ["", "Recent decisions (newest first):"]
             lines += [
@@ -300,6 +313,7 @@ class ContextBuilder:
         as_of: datetime | None = None,  # None reads current; replay pins to the step
         position: Mapping[str, Any] | None = None,  # positions row (or a replay seed)
         subscriptions: Iterable[Subscription | Mapping[str, Any]] | None = None,
+        bot_id: int | None = None,  # whose Lessons the lessons Source reads
     ) -> DecisionContext:
         bars: dict[str, list[Bar]] = {}
         indicators: dict[str, Indicators] = {}
@@ -344,6 +358,7 @@ class ContextBuilder:
                 "price": price,
                 "position": position if position_qty != 0 else None,
                 "market_data": self._data,
+                "bot_id": bot_id,
             }
             try:
                 piece = await source.read(symbol, as_of=as_of, params=params)
@@ -384,5 +399,6 @@ class ContextBuilder:
             sentiment=read.get(SENTIMENT),
             signal_lanes=tuple(read[name] for name in SIGNAL_HEADERS if name in read),
             signals=signals,
+            lessons=read.get(LESSONS),
             sources=tuple(read.values()),
         )

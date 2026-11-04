@@ -42,6 +42,7 @@ from trader.loop.sources import (
     FredSource,
     HeldPositionSource,
     KronosSource,
+    LessonsSource,
     MacroViewSource,
     SentimentSource,
     SourceSlice,
@@ -98,6 +99,31 @@ class LateBarData(StubMarketData):
         return bars[-lookback:]
 
 
+class StubLessons:
+    """Lessons for Bot #1 on BTC/USD, one settled after the step. It ignores ``at`` so
+    the Source's own filter and the guard are what keep the later one out."""
+
+    ROWS = [
+        {"id": 21, "lesson": "Earlier lesson.", "available_at": NOW - timedelta(days=1)},
+        {"id": 22, "lesson": "LATER LESSON.", "available_at": NOW + timedelta(minutes=30)},
+    ]
+
+    async def visible(self, bot_id, symbol, *, at, limit):
+        rows = [
+            {
+                **row,
+                "decided_at": row["available_at"] - timedelta(days=7),
+                "action": "open",
+                "excess_return": 0.01,
+                "benchmark": "BTC/USD",
+                "horizon_days": 5,
+                "correct": True,
+            }
+            for row in self.ROWS
+        ]
+        return sorted(rows, key=lambda r: r["available_at"], reverse=True)[:limit]
+
+
 def every_source() -> dict[str, Any]:
     sentiment = SentimentSource(StubSentiment([*SENTIMENT, LATE_POLL], now=NOW + timedelta(days=1)))
     vendor = StubVendorReads()
@@ -112,6 +138,7 @@ def every_source() -> dict[str, Any]:
         "retail_sentiment": RetailSentimentSource(vendor),
         KRONOS: KronosSource(EchoKronos()),
         CRYPTO_DERIVATIVES: CryptoDerivativesSource(StubPerps()),
+        "lessons": LessonsSource(StubLessons()),
     }
 
 
@@ -208,6 +235,7 @@ LOOKAHEAD: dict[str, Case] = {
     KRONOS: Case(BTC, None, ("999 sampled",), params={IN_PROMPT: True}),
     # No point-in-time history at the venues: a replay step reads nothing at all.
     CRYPTO_DERIVATIVES: Case(BTC, None, (), params={IN_PROMPT: True}, lane=False),
+    "lessons": Case(BTC, "21", ("LATER LESSON",)),
 }
 
 

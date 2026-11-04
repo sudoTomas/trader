@@ -37,6 +37,7 @@ from trader.loop.sources import (
     HELD_POSITION,
     IN_PROMPT,
     KRONOS,
+    LESSONS,
     MACRO_VIEW,
     POLL_UNHELD,
     SENTIMENT,
@@ -65,7 +66,17 @@ SYMBOL_MODES = (REPLAY, SHADOW, LIVE)
 #: Every Source a Bot may subscribe to (loop/sources.build_sources wires each one). The
 #: vendor Sources (#142) are opt-in like the rest: no Bot reads one until it subscribes.
 SOURCE_NAMES = frozenset(
-    {MACRO_VIEW, BRIEF, FRED, SENTIMENT, HELD_POSITION, KRONOS, CRYPTO_DERIVATIVES, *VENDOR_SOURCES}
+    {
+        MACRO_VIEW,
+        BRIEF,
+        FRED,
+        SENTIMENT,
+        HELD_POSITION,
+        LESSONS,
+        KRONOS,
+        CRYPTO_DERIVATIVES,
+        *VENDOR_SOURCES,
+    }
 )
 # Any constant: the transaction-scoped advisory lock every Owner check takes.
 _OWNER_LOCK = 126
@@ -121,6 +132,7 @@ def bot_one_spec(settings: Settings) -> dict[str, Any]:
             briefs=settings.briefs_enabled,
             exit_review=settings.exit_review_enabled,
             shadow_signals=settings.shadow_signals_enabled,
+            lessons=settings.lessons_enabled,
         ),
         # The desk is not a Source: it reads the finished context, not a producer's rows.
         "lanes": {"desk": settings.desk_enabled},

@@ -29,7 +29,7 @@ _Avoid_: dust, minimum notional (that is a fixed dollar floor), rebalance thresh
 ### Models
 
 **Role**:
-A job a model does for the agent: decide, analyst, critic, brief, compiler, sentiment, or confirm. Each Role has a contract its model must meet, so only some models fit some Roles.
+A job a model does for the agent: decide, analyst, critic, brief, compiler, sentiment, confirm, or reflect. Each Role has a contract its model must meet, so only some models fit some Roles.
 _Avoid_: seat (a seat is a Grok research sweep), slot, agent
 
 **Provider**:
@@ -105,3 +105,17 @@ _Avoid_: feature, indicator (an indicator is computed from the bars in the promp
 **Blind replay**:
 A replay whose prompts withhold the symbol's identity, calendar dates and dollar values, so the model cannot recall what the asset did over the window. Run beside a named replay of the same window, the gap shows how much of the replay P&L is memory. Sources that name the asset in free text are dropped. Live prompts are never blind.
 _Avoid_: anonymized replay, masked replay
+
+### Learning
+
+**Settlement**:
+The outcome of one journaled decision, measured from daily bars five of the symbol's sessions after the session it was made in: the symbol's forward return, the benchmark's (SPY for equities and ETFs, BTC/USD for crypto), the excess between them, and whether the decision's direction matched the excess. A hold settles too, with no direction. A decision is settled once, when its window has fully traded.
+_Avoid_: outcome, grade, mark
+
+**Lesson**:
+Two to four sentences the reflect Role writes about one settled decision, kept for the Bot and symbol that made it. A Lesson can be read only from its Settlement's time on, so a replay never sees one that settled after the bar it is replaying. A Bot reads its latest few through the lessons Source, which is off until the Bot subscribes.
+_Avoid_: memory, reflection, note (a note is research)
+
+**Scorecard**:
+How each desk seat (the decide model, each analyst lane, the critic) has done on settled decisions: its hit rate on the excess return, its slugging (average win over average loss), and the rank correlation of its conviction with the forward return.
+_Avoid_: leaderboard, performance report

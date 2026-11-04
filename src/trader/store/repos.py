@@ -747,3 +747,135 @@ class UsageRepo:
             """,
             (start, end, role, role),
         )
+
+
+class SettlementsRepo:
+    """Settlements (#143): one immutable outcome per journaled decision, 5 trading days on."""
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def pending(self, *, now: datetime, min_age_days: int, max_age_days: int) -> list[Row]:
+        """Journaled decisions with no Settlement yet, old enough to have one and young
+        enough for the bars to still reach them, oldest first. A row with no Bot is
+        Bot #1's."""
+        return await self._db.fetch_all(
+            """
+            SELECT d.id, d.ts, d.symbol, coalesce(d.bot_id, 1) AS bot_id, d.decision
+            FROM decisions d
+            LEFT JOIN decision_settlements s ON s.decision_id = d.id
+            WHERE s.decision_id IS NULL AND d.decision IS NOT NULL AND d.symbol IS NOT NULL
+              AND d.ts <= %s - make_interval(days => %s)
+              AND d.ts >= %s - make_interval(days => %s)
+            ORDER BY d.ts, d.id
+            """,
+            (now, min_age_days, now, max_age_days),
+        )
+
+    async def insert(self, **row: Any) -> None:
+        await self._db.execute(
+            """
+            INSERT INTO decision_settlements
+                (decision_id, bot_id, symbol, horizon_days, entry_ts, entry_price, exit_ts,
+                 exit_price, benchmark, benchmark_return, forward_return, excess_return,
+                 direction, correct, settled_at)
+            VALUES (%(decision_id)s, %(bot_id)s, %(symbol)s, %(horizon_days)s, %(entry_ts)s,
+                    %(entry_price)s, %(exit_ts)s, %(exit_price)s, %(benchmark)s,
+                    %(benchmark_return)s, %(forward_return)s, %(excess_return)s,
+                    %(direction)s, %(correct)s, %(settled_at)s)
+            ON CONFLICT (decision_id) DO NOTHING
+            """,
+            row,
+        )
+
+    async def unreflected(self, limit: int) -> list[Row]:
+        """Settled model decisions with no Lesson yet, newest outcome first: the decision's
+        prompt and output beside its Settlement. Rows with no prompt (the stop) are not
+        the model's and get none."""
+        return await self._db.fetch_all(
+            """
+            SELECT s.*, d.ts AS decided_at, d.prompt, d.decision
+            FROM decision_settlements s
+            JOIN decisions d ON d.id = s.decision_id
+            LEFT JOIN lessons l ON l.decision_id = s.decision_id
+            WHERE l.id IS NULL AND d.prompt IS NOT NULL
+            ORDER BY s.settled_at DESC, s.decision_id DESC
+            LIMIT %s
+            """,
+            (limit,),
+        )
+
+    async def scored(self, *, bot_id: int | None = None, symbol: str | None = None) -> list[Row]:
+        """Every Settlement with what each desk seat said about its decision."""
+        return await self._db.fetch_all(
+            """
+            SELECT s.*, d.decision, d.raw_output, d.desk_verdicts
+            FROM decision_settlements s
+            JOIN decisions d ON d.id = s.decision_id
+            WHERE (%s::bigint IS NULL OR s.bot_id = %s) AND (%s::text IS NULL OR s.symbol = %s)
+            ORDER BY s.settled_at, s.decision_id
+            """,
+            (bot_id, bot_id, symbol, symbol),
+        )
+
+
+class LessonsRepo:
+    """Lessons (#143): what the reflect Role wrote about a settled decision, per Bot and
+    symbol, readable from its Settlement's ``settled_at`` on."""
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def insert(
+        self,
+        *,
+        decision_id: int,
+        bot_id: int,
+        symbol: str,
+        lesson: str,
+        written_by: str,
+        available_at: datetime,
+    ) -> int:
+        row = await self._db.fetch_one(
+            """
+            INSERT INTO lessons (decision_id, bot_id, symbol, lesson, written_by, available_at)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (decision_id, bot_id, symbol, lesson, written_by, available_at),
+        )
+        assert row is not None
+        return row["id"]
+
+    async def visible(self, bot_id: int, symbol: str, *, at: datetime, limit: int) -> list[Row]:
+        """The newest Lessons available at ``at`` (``available_at <= at``), newest first,
+        each with its Settlement."""
+        return await self._db.fetch_all(
+            """
+            SELECT l.id, l.lesson, l.available_at, s.direction, s.forward_return,
+                   s.excess_return, s.benchmark, s.correct, s.horizon_days,
+                   d.ts AS decided_at, d.decision->>'action' AS action
+            FROM lessons l
+            JOIN decision_settlements s ON s.decision_id = l.decision_id
+            JOIN decisions d ON d.id = l.decision_id
+            WHERE l.bot_id = %s AND l.symbol = %s AND l.available_at <= %s
+            ORDER BY l.available_at DESC, l.id DESC
+            LIMIT %s
+            """,
+            (bot_id, symbol, at, limit),
+        )
+
+    async def recent(
+        self, *, bot_id: int | None = None, symbol: str | None = None, limit: int = 20
+    ) -> list[Row]:
+        return await self._db.fetch_all(
+            """
+            SELECT l.*, s.direction, s.forward_return, s.excess_return, s.benchmark, s.correct
+            FROM lessons l
+            JOIN decision_settlements s ON s.decision_id = l.decision_id
+            WHERE (%s::bigint IS NULL OR l.bot_id = %s) AND (%s::text IS NULL OR l.symbol = %s)
+            ORDER BY l.available_at DESC, l.id DESC
+            LIMIT %s
+            """,
+            (bot_id, bot_id, symbol, symbol, limit),
+        )

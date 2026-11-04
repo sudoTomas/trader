@@ -838,6 +838,7 @@ class BotRunner:
             recent_decisions=recent,
             position=position_row,
             subscriptions=self.sources,
+            bot_id=self.bot_id,
         )
         if self.prompt_variant != DEFAULT_VARIANT:
             ctx = replace(ctx, prompt_variant=self.prompt_variant)
