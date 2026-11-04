@@ -11,7 +11,9 @@ replay sees what the live loop saw and never a row written later. Every slice ca
 **Source version** — the immutable row id (``macro_views.version``, ``briefs.version``,
 ``sentiment_scores.id``), ``series@obs_date`` for FRED, or a content hash for the held
 position — and the instant it was read as of. The journal records one per Source used
-(``decisions.source_versions``).
+(``decisions.source_versions``). Every slice also carries its **availability time**, the
+instant the newest thing it says became public; in replay the ContextBuilder holds every
+Source to it (``trader.loop.pit``), so no slice dated after ``as_of`` reaches a prompt.
 
 A Bot subscribes to Sources by name in its spec (``sources: [{source, params}]``).
 ``params`` holds the subscription's own settings (FRED's series, a lane budget) plus what
@@ -33,6 +35,7 @@ from typing import Any, Protocol
 import structlog
 
 from trader.core.symbols import Symbol
+from trader.loop import pit
 
 log = structlog.get_logger(__name__)
 
@@ -74,7 +77,9 @@ class SourceSlice:
     """One Source's read for one prompt: what it said, and exactly which state it was.
 
     ``detail`` is the lane's structured render (a MacroSlice, the FRED prints, ...) for
-    the prompt and the desk; it is not part of the slice's identity.
+    the prompt and the desk; it is not part of the slice's identity. ``available_at`` is
+    when the newest thing in it became public (``trader.loop.pit``): a pinned read whose
+    slice is dated after its ``as_of`` is refused, and an undated one is withheld.
     """
 
     source: str
@@ -82,6 +87,7 @@ class SourceSlice:
     as_of: datetime
     text: str
     detail: Any = field(default=None, compare=False, repr=False)
+    available_at: datetime | None = None
 
     def stamp(self) -> dict[str, Any]:
         """The Source version as the journal records it."""
@@ -144,9 +150,18 @@ def polls_unheld(spec: Iterable[Subscription | Mapping[str, Any]]) -> bool:
 def build_sources(db: Any, market_data: Any, *, fred: Any | None = None) -> dict[str, Source]:
     """Every Source, over the store and the market-data provider. Construction does no
     I/O; a subscription decides which ones a decide actually reads."""
-    from trader.store.repos import BriefsRepo, MacroViewsRepo, SentimentRepo
+    from trader.loop.vendor_sources import (
+        POLYMARKET,
+        RETAIL_SENTIMENT,
+        SEC_FILINGS,
+        PolymarketSource,
+        RetailSentimentSource,
+        SecFilingsSource,
+    )
+    from trader.store.repos import BriefsRepo, MacroViewsRepo, SentimentRepo, VendorReadsRepo
 
     sentiment = SentimentSource(SentimentRepo(db))
+    vendor_reads = VendorReadsRepo(db)
     return {
         MACRO_VIEW: MacroViewSource(MacroViewsRepo(db)),
         BRIEF: BriefSource(BriefsRepo(db)),
@@ -154,6 +169,9 @@ def build_sources(db: Any, market_data: Any, *, fred: Any | None = None) -> dict
         FRED: FredSource(fred if fred is not None else getattr(market_data, "fred", None)),
         SENTIMENT: sentiment,
         HELD_POSITION: HeldPositionSource(sentiment),
+        SEC_FILINGS: SecFilingsSource(vendor_reads),
+        POLYMARKET: PolymarketSource(vendor_reads),
+        RETAIL_SENTIMENT: RetailSentimentSource(vendor_reads),
     }
 
 
@@ -183,10 +201,12 @@ def _whole_entries(candidates: list[str], budget_chars: int, event: str, **kw: A
 
 def _latest_at(rows: list[dict[str, Any]], as_of: datetime, ts_key: str) -> dict[str, Any] | None:
     """Newest row whose timestamp is at or before ``as_of`` (version breaks ties)."""
-    eligible = [row for row in rows if row[ts_key] <= as_of]
-    if not eligible:
-        return None
-    return max(eligible, key=lambda row: (row[ts_key], int(row["version"])))
+    return pit.latest_visible(
+        rows,
+        as_of,
+        available_at=lambda row: row[ts_key],
+        order=lambda row: (row[ts_key], int(row["version"])),
+    )
 
 
 async def _history_from(
@@ -291,7 +311,12 @@ class MacroViewSource:
         if macro is None:
             return None
         return SourceSlice(
-            self.name, macro.version, _read_clock(as_of, params), "\n".join(macro.entries), macro
+            self.name,
+            macro.version,
+            _read_clock(as_of, params),
+            "\n".join(macro.entries),
+            macro,
+            available_at=row["created_at"],
         )
 
 
@@ -349,7 +374,12 @@ class BriefSource:
         if brief is None:
             return None
         return SourceSlice(
-            self.name, brief.version, _read_clock(as_of, params), "\n".join(brief.entries), brief
+            self.name,
+            brief.version,
+            _read_clock(as_of, params),
+            "\n".join(brief.entries),
+            brief,
+            available_at=row["ts"],
         )
 
 
@@ -367,10 +397,12 @@ def _as_float(value: Any) -> float | None:
 
 def _latest_sentiment_at(rows: list[dict[str, Any]], as_of: datetime) -> dict[str, Any] | None:
     """Newest scored poll at or before ``as_of`` (id breaks ties)."""
-    eligible = [row for row in rows if row.get("status", "ok") == "ok" and row["ts"] <= as_of]
-    if not eligible:
-        return None
-    return max(eligible, key=lambda row: (row["ts"], int(row.get("id") or 0)))
+    return pit.latest_visible(
+        [row for row in rows if row.get("status", "ok") == "ok"],
+        as_of,
+        available_at=lambda row: row["ts"],
+        order=lambda row: (row["ts"], int(row.get("id") or 0)),
+    )
 
 
 def sentiment_line(row: Mapping[str, Any] | None) -> str | None:
@@ -406,7 +438,9 @@ class SentimentSource:
         line = sentiment_line(row)
         if row is None or line is None:
             return None
-        return SourceSlice(self.name, row.get("id"), _read_clock(as_of, params), line, row)
+        return SourceSlice(
+            self.name, row.get("id"), _read_clock(as_of, params), line, row, available_at=row["ts"]
+        )
 
 
 # --- FRED -------------------------------------------------------------------------------
@@ -423,7 +457,11 @@ class FredPrint:
 
 class FredSource:
     """FRED prints, fetched on use — the latest observation on or before the clock, not a
-    stored window. Version: ``series@obs_date`` per series, comma-joined."""
+    stored window. Version: ``series@obs_date`` per series, comma-joined.
+
+    A pinned read takes only prints whose day has ended by ``as_of`` (``pit.day_end``):
+    a 15:00 replay step reads yesterday's VIX close, as the live loop did at 15:00 —
+    FRED had not published today's yet."""
 
     name = FRED
 
@@ -446,7 +484,11 @@ class FredSource:
                 continue
             # Defense in depth: a client that ignores observation_end must not leak
             # a later print into a replay step. Keep only the latest point, not the window.
-            eligible = [(obs_date, value) for obs_date, value in rows if obs_date <= end]
+            eligible = [
+                (obs_date, value)
+                for obs_date, value in rows
+                if obs_date <= end and pit.visible(pit.day_end(obs_date), as_of)
+            ]
             if not eligible:
                 continue
             obs_date, value = eligible[-1]
@@ -457,7 +499,10 @@ class FredSource:
         text = "\n".join(
             f"{p.series_id}: {p.value:,.6g} ({p.obs_date.isoformat()})" for p in prints
         )
-        return SourceSlice(self.name, version, clock, text, tuple(prints))
+        available_at = max(pit.day_end(p.obs_date) for p in prints)
+        return SourceSlice(
+            self.name, version, clock, text, tuple(prints), available_at=available_at
+        )
 
 
 # --- held position (exit review, #34) ---------------------------------------------------
@@ -579,4 +624,5 @@ class HeldPositionSource:
             return None
         text = "\n".join(held.entries)
         version = hashlib.sha256(text.encode()).hexdigest()[:16]
-        return SourceSlice(self.name, version, clock, text, held)
+        # The position is the book at the clock; the sentiment it carries may be older.
+        return SourceSlice(self.name, version, clock, text, held, available_at=clock)

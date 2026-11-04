@@ -190,7 +190,7 @@ class _ReplayProvider(StubMarketData):
         self.fred = fred
 
 
-async def test_replay_uses_the_fred_print_current_on_the_step_date(db: Database):
+async def test_replay_uses_the_latest_fred_print_out_by_the_step(db: Database):
     await seed_hourly_bars(db)
     fred = RecordingFred(_prints())
     harness = ReplayHarness(db, _HoldLLM(), _ReplayProvider(fred))
@@ -199,7 +199,9 @@ async def test_replay_uses_the_fred_print_current_on_the_step_date(db: Database)
     assert run["status"] == "done"
     step = await db.fetch_one("SELECT prompt FROM eval_steps")
     assert step is not None
-    assert "18.2" in step["prompt"]
+    # The step is 14:00 on the print's own day: that close is not out yet (#142).
+    earlier = (NOW.date() - timedelta(days=2)).isoformat()
+    assert f"VIXCLS: 16 ({earlier})" in step["prompt"] and "18.2" not in step["prompt"]
     assert "424242" not in step["prompt"]
     assert fred.calls
     assert all(call["observation_end"] == NOW.date() for call in fred.calls)

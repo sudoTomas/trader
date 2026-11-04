@@ -170,7 +170,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     llm = build_llm(db, settings, profiles, caps, xai_manager=xai_manager)
     sentiment = build_sentiment(db, settings, xai_manager=xai_manager, profiles=profiles)
     desk = build_desk(db, settings, llm=llm)
-    runner = build_runner(db, settings, sentiment, desk, llm=llm) if settings.loop_enabled else None
+    vendors = build_vendors(db, settings)
+    runner = (
+        build_runner(db, settings, sentiment, desk, llm=llm, vendors=vendors)
+        if settings.loop_enabled
+        else None
+    )
     # Bot #1's runner leads the Supervisor (#126), which loads every other Bot from the
     # store and owns what they share. The surfaces speak to the Supervisor.
     supervisor = build_supervisor(runner, settings, desk) if runner is not None else None
@@ -192,6 +197,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         providers=providers,
         profiles=profiles,
         caps=caps,
+        vendors=vendors,
     )
     mcp = build_mcp(registry)
     capture_mcp = build_mcp(registry, only=CAPTURE_CAPABILITIES, name="trader-capture")
@@ -543,6 +549,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def fetch_x_sentiment(symbol: str = Query()) -> dict:
         return await registry.get("fetch_x_sentiment").handler(symbol=symbol)
 
+    @app.get("/research/vendors")
+    async def vendor_reads(
+        source: str | None = Query(default=None),
+        symbol: str | None = Query(default=None),
+        limit: int = Query(default=20, ge=1, le=200),
+    ) -> list[dict]:
+        return await registry.get("vendor_reads").handler(source=source, symbol=symbol, limit=limit)
+
+    @app.post("/research/vendors/collect")
+    async def collect_vendor(
+        source: str = Query(), symbol: str | None = Query(default=None)
+    ) -> dict:
+        return await registry.get("collect_vendor").handler(source=source, symbol=symbol)
+
     @app.get("/fred")
     async def fred(
         series: str = Query(default="VIXCLS", description="FRED series id."),
@@ -665,6 +685,15 @@ def build_sentiment(db: Database, settings: Settings, *, xai_manager=None, profi
     )
 
 
+def build_vendors(db: Database, settings: Settings):
+    """The vendor producers (#142): Polymarket and StockTwits/Reddit (keyless), and SEC
+    EDGAR with TRADER_SEC_EDGAR_USER_AGENT. Nothing is fetched until a Bot subscribes to
+    one of their Sources, or the operator collects one."""
+    from trader.research.vendors import build_vendor_desk
+
+    return build_vendor_desk(db, settings)
+
+
 def sentiment_handles(settings: Settings) -> list[str]:
     return [h.strip() for h in settings.sentiment_x_handles.split(",") if h.strip()]
 
@@ -783,6 +812,7 @@ def build_compiler(db: Database, settings: Settings, mirror=None, *, llm=None, x
         llm or build_llm(db, settings, xai_manager=xai_manager),
         debounce_seconds=settings.research_compile_debounce_seconds,
         on_compiled=mirror.export_quietly if mirror is not None else None,
+        polymarket=settings.polymarket_in_macro_view,
     )
 
 
@@ -800,7 +830,14 @@ def build_briefs(db: Database, settings: Settings, *, llm=None, xai_manager=None
 
 
 def build_runner(
-    db: Database, settings: Settings, sentiment=None, desk=None, *, llm=None, xai_manager=None
+    db: Database,
+    settings: Settings,
+    sentiment=None,
+    desk=None,
+    *,
+    llm=None,
+    xai_manager=None,
+    vendors=None,
 ):
     """Assemble the decide loop from configured providers (opt-in via TRADER_LOOP_ENABLED)."""
     from trader.brokers.alpaca import AlpacaBroker
@@ -845,6 +882,7 @@ def build_runner(
         executor=executor,
         sentiment=sentiment,
         sentiment_poll_seconds=settings.sentiment_poll_seconds,
+        vendors=vendors,
         shadow_symbols={t.strip() for t in settings.shadow_symbols.split(",") if t.strip()},
         briefs_enabled=settings.briefs_enabled,
         exit_review_enabled=settings.exit_review_enabled,
