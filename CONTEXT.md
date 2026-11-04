@@ -88,12 +88,16 @@ A breaker trip or a position drift on the whole account. It stops every Bot from
 _Avoid_: global kill, panic
 
 **Source**:
-A body of information a Bot reads when it decides: the Macro View, a brief, sentiment, an economic series, a held position. A Bot subscribes to the Sources it wants. A Source only reads what has already been produced; it never fetches into storage on the live path.
+A body of information a Bot reads when it decides: the Macro View, a brief, sentiment, an economic series, a held position, SEC filings, prediction-market odds, retail chatter. A Bot subscribes to the Sources it wants. A Source only reads what has already been produced; it never fetches into storage on the live path.
 _Avoid_: feed, lane (a lane is one section of the prompt), input
 
 **Source version**:
 The exact state of a Source a decision read. Every decision records one per Source it used, so replay reads the same information.
 _Avoid_: snapshot
+
+**Availability time**:
+The instant a piece of information became public: a view's compile, a poll, a filing's acceptance by SEC, the end of a daily print's day, a vendor read's fetch. A replayed step reads only information whose availability time is at or before it; anything later, or undated, is withheld.
+_Avoid_: timestamp, as-of (the as-of is the step being replayed)
 
 **Blind replay**:
 A replay whose prompts withhold the symbol's identity, calendar dates and dollar values, so the model cannot recall what the asset did over the window. Run beside a named replay of the same window, the gap shows how much of the replay P&L is memory. Sources that name the asset in free text are dropped. Live prompts are never blind.

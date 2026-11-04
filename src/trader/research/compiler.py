@@ -12,6 +12,8 @@ audit are enforced here, not just prompted:
   ``(example-not-current)`` — the pattern is the knowledge, the number is history.
 - **Staleness is upstream**: the desk's default listing already excludes stale/retired
   notes, so the compiler cannot see them.
+- **Polymarket odds** (#142), behind ``TRADER_POLYMARKET_IN_MACRO_VIEW``: the latest
+  ``polymarket`` row joins the inputs, citable as ``[poly:<id>]`` like a note.
 
 The view is advisory by construction: RiskGuard has no parameter that could carry it
 (asserted by test), and the decide prompt receives only a budgeted slice in its own lane
@@ -40,6 +42,7 @@ ROLE = "compiler"
 DEFAULT_DEBOUNCE_SECONDS = 30.0
 
 CITATION = re.compile(r"\[note:(\d+)\]")
+POLY_CITATION = re.compile(r"\[poly:(\d+)\]")
 # $-amounts not already stamped: "$2,400", "$2,400.50", "$ 105".
 PRICE_LEVEL = re.compile(r"(\$\s?\d[\d,]*(?:\.\d+)?)(?!\s*\(example-not-current\))")
 
@@ -76,6 +79,12 @@ class CompiledOutput(BaseModel):
 
 COMPILE_SCHEMA: dict[str, Any] = CompiledOutput.model_json_schema()
 
+# Appended only when odds are among the inputs, so a dark gate leaves the prompt unchanged.
+POLY_RULE = """
+
+The inputs also carry a Polymarket block: crowd-priced odds on macro events. Cite it as \
+[poly:<id>], state the odds as odds (not as a forecast), and never let it outweigh a note."""
+
 
 def freeze_price_levels(text: str) -> str:
     """Stamp every $-amount as example-not-current (idempotent)."""
@@ -92,12 +101,14 @@ class MacroViewCompiler:
         *,
         debounce_seconds: float = DEFAULT_DEBOUNCE_SECONDS,
         on_compiled: Any | None = None,  # async () -> None; e.g. the markdown mirror
+        polymarket: bool = False,  # TRADER_POLYMARKET_IN_MACRO_VIEW: odds join the inputs
     ) -> None:
         self._db = db
         self._llm = llm
         self._views = MacroViewsRepo(db)
         self._debounce = debounce_seconds
         self._on_compiled = on_compiled
+        self._polymarket = polymarket
         self._dirty = False
         self._task: asyncio.Task | None = None
 
@@ -129,9 +140,15 @@ class MacroViewCompiler:
             return None
 
         note_ids = {n["id"] for n in notes}
+        odds = await self._odds() if self._polymarket else None
+        poly_ids = {odds["id"]} if odds is not None else set()
+        system, prompt = SYSTEM_PROMPT, self._notes_prompt(notes)
+        if odds is not None:
+            system += POLY_RULE
+            prompt += "\n\n" + self._odds_block(odds)
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": self._notes_prompt(notes)},
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
         ]
         completion = await self._llm.complete(ROLE, messages, schema=COMPILE_SCHEMA)
         try:
@@ -143,7 +160,8 @@ class MacroViewCompiler:
         sections: dict[str, str] = {}
         for asset_class, text in output.sections.items():
             cited = {int(m) for m in CITATION.findall(text)}
-            if not cited or not cited <= note_ids:
+            cited_poly = {int(m) for m in POLY_CITATION.findall(text)}
+            if not (cited or cited_poly) or not cited <= note_ids or not cited_poly <= poly_ids:
                 # Uncited or ghost-cited: the notes don't back it. Drop whole.
                 log.warning(
                     "macro_view_section_dropped",
@@ -172,6 +190,7 @@ class MacroViewCompiler:
                 "note_ids": sorted(note_ids),
                 "sections": sorted(sections),
                 "cost_usd": completion.cost_usd,
+                **({"polymarket_id": odds["id"]} if odds is not None else {}),
             },
         )
         row = await self._views.get(version)
@@ -179,6 +198,18 @@ class MacroViewCompiler:
         if self._on_compiled is not None:
             await self._on_compiled()
         return row
+
+    async def _odds(self) -> dict[str, Any] | None:
+        from trader.store.repos import VendorReadsRepo
+
+        return await VendorReadsRepo(self._db).latest("polymarket", None)
+
+    @staticmethod
+    def _odds_block(row: dict[str, Any]) -> str:
+        from trader.loop.vendor_sources import render_polymarket
+
+        lines = "\n".join(render_polymarket(row["payload"]))
+        return f"--- poly:{row['id']} | Polymarket odds | fetched {row['ts'].isoformat()}\n{lines}"
 
     @staticmethod
     def _notes_prompt(notes: list[dict[str, Any]]) -> str:

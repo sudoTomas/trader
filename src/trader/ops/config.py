@@ -507,6 +507,26 @@ class Settings(BaseSettings):
         section="Research Desk",
         description="Comma-separated allowlist of X handles for x_search; empty = open search.",
     )
+    polymarket_topics: str = setting(
+        "Fed decision,CPI,recession",
+        category=TUNING,
+        section="Research Desk",
+        description=(
+            "Comma-separated Polymarket search topics for the `polymarket` Source (#142); "
+            "each keeps its most-traded open markets. Polymarket is keyless and fetched only "
+            "while some Bot subscribes to the Source."
+        ),
+    )
+    polymarket_in_macro_view: bool = setting(
+        False,
+        category=GATE,
+        section="Research Desk",
+        description=(
+            "Lets the latest Polymarket odds into the Macro View compiler's inputs, citable as "
+            "`[poly:<id>]`. The Macro View feeds every Bot, so this is a decide-behavior change "
+            "for all of them: flip only through `docs/runbooks/decide-change-gate.md`."
+        ),
+    )
     screener_min_dollar_volume_usd: float = setting(
         50_000_000.0,
         category=TUNING,
@@ -735,7 +755,7 @@ class Settings(BaseSettings):
         description="Grok model id for the xAI research roles.",
     )
     reflect_xai_model: str = setting(
-        "grok-4.20-0309-non-reasoning",
+        "grok-4-1-fast-non-reasoning",
         category=ENDPOINT,
         section="LLM endpoints",
         description=(
@@ -847,6 +867,19 @@ class Settings(BaseSettings):
             "calls/day. Absent, the decide prompt carries no FRED line."
         ),
         validation_alias=AliasChoices("FRED_API_KEY", "TRADER_FRED_API_KEY"),
+    )
+
+    sec_edgar_user_agent: str = setting(
+        "",
+        category=CREDENTIAL,
+        section="Broker / market data credentials",
+        description=(
+            "Who SEC EDGAR sees for the `sec_filings` Source (#142): a name and a contact "
+            "address, e.g. `Salamander research ops@example.org`. EDGAR is free and keyless but "
+            "refuses anonymous callers (https://www.sec.gov/os/accessing-edgar-data). Not a "
+            "secret, but an identity: blank leaves the EDGAR producer out of the build."
+        ),
+        validation_alias=AliasChoices("TRADER_SEC_EDGAR_USER_AGENT", "SEC_EDGAR_USER_AGENT"),
     )
 
     def symbol_registry(self) -> SymbolRegistry:

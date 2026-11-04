@@ -121,9 +121,11 @@ async def test_fred_source_reads_the_print_on_or_before_the_clock_and_pins_to_as
     assert "424242" not in current.text  # the print after the clock never leaks
     assert fred.calls[-1]["observation_end"] == NOW.date()
 
+    # Pinned, a print counts only once its day has ended (#142): at 15:00 on 08-11 the
+    # 08-11 close is not out, so the step reads the print before it.
     then = NOW - timedelta(days=1)
     pinned = await source.read(BTC, as_of=then, params=LIVE)
-    assert pinned is not None and pinned.version == "VIXCLS@2026-08-11"
+    assert pinned is not None and pinned.version == "VIXCLS@2026-08-09"
     assert await source.read(BTC, as_of=then, params=LIVE) == pinned
     assert await FredSource(None).read(BTC, as_of=None, params=LIVE) is None  # no client
     two = await source.read(BTC, as_of=None, params={**LIVE, "series": ["VIXCLS", "DGS10"]})

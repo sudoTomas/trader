@@ -560,7 +560,7 @@ def test_reflect_is_a_profile_routable_role_on_a_non_reasoning_grok():
     assert ROLE_KINDS["reflect"] == CHAT and "reflect" in ROLES and "reflect" in CAP_ROLES
     with_grok = build_llm_registry(Settings(auth_disabled=True, xai_api_key="k"))
     chain = with_grok.chain_for("reflect")
-    assert [(c.name, c.model) for c in chain][0] == ("xai", "grok-4.20-0309-non-reasoning")
+    assert [(c.name, c.model) for c in chain][0] == ("xai", "grok-4-1-fast-non-reasoning")
     assert chain[-1].name == "nemotron"  # the decide client backstops, like research
     without = build_llm_registry(Settings(auth_disabled=True))
     assert [c.name for c in without.chain_for("reflect")] == ["nemotron"]

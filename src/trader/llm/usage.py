@@ -34,6 +34,8 @@ PRICES: dict[tuple[str, str], tuple[float, float]] = {
     ("xai", "grok-4.20-0309-reasoning"): (1.25, 2.50),
     ("xai", "grok-4.20-0309-non-reasoning"): (1.25, 2.50),
     ("xai", "grok-4.20-multi-agent-0309"): (1.25, 2.50),
+    # docs/research/2026-09-16-grok-bots-macro-team.md (x.ai/news/grok-4-1-fast).
+    ("xai", "grok-4-1-fast-non-reasoning"): (0.20, 0.50),
 }
 
 #: x_search tool fees (docs.x.ai/developers/pricing). Until this instant: $5 / 1k

@@ -35,6 +35,7 @@ os.environ["TRADER_DESK_ENABLED"] = "false"
 os.environ["TRADER_BRIEFS_ENABLED"] = "false"
 os.environ["TRADER_EXIT_REVIEW_ENABLED"] = "false"
 os.environ["TRADER_SHADOW_SYMBOLS"] = ""
+os.environ["TRADER_POLYMARKET_IN_MACRO_VIEW"] = "false"
 # Likewise credentials: tests that want a credential construct one explicitly; the
 # operator's real keys must never leak in (they also make local runs diverge from CI,
 # which has none — that divergence shipped a CI-red commit once, 2026-08-26).
@@ -45,6 +46,8 @@ os.environ["ALPACA_API_KEY_ID"] = ""
 os.environ["ALPACA_API_SECRET"] = ""
 os.environ["TWELVE_DATA_API_KEY"] = ""
 os.environ["FRED_API_KEY"] = ""
+os.environ["TRADER_SEC_EDGAR_USER_AGENT"] = ""
+os.environ["SEC_EDGAR_USER_AGENT"] = ""
 
 # The suite truncates tables wholesale, and the deployed trader may share the compose
 # Postgres — running tests against its database wipes the live journal/ledger (it did
@@ -94,6 +97,7 @@ ALL_TABLES = (
     "macro_views",
     "briefs",
     "sentiment_scores",
+    "vendor_reads",
     "bars",
     "usage_daily",
     "llm_price_overrides",
