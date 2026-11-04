@@ -1,0 +1,14 @@
+# OpenBB sidecar (#141): exactly what `openbb-api` needs to serve the trader's routes.
+# Its own venv or container, never the trader's: OpenBB is Apache-2.0 and is called over
+# HTTP only. Routers: equity (calendar, fundamentals, estimates, ownership, shorts),
+# derivatives (options chains), news. Providers: keyless only. Pinned; bump them
+# deliberately and re-run `trader openbb refresh` against the result before switching.
+openbb-core==2.0.1
+openbb-platform-api==2.0.1
+openbb-equity==2.0.0
+openbb-derivatives==2.0.0
+openbb-news==2.0.0
+openbb-nasdaq==2.0.0
+openbb-cboe==2.0.0
+openbb-sec==2.0.0
+openbb-finra==2.0.0

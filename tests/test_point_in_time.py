@@ -31,11 +31,15 @@ from trader.loop import pit
 from trader.loop.bots import SOURCE_NAMES
 from trader.loop.context import ContextBuilder
 from trader.loop.sources import (
+    EARNINGS,
+    FUNDAMENTALS,
+    OPTIONS,
     BriefSource,
     FredSource,
     HeldPositionSource,
     LessonsSource,
     MacroViewSource,
+    OpenBBSource,
     SentimentSource,
     SourceSlice,
     Subscription,
@@ -58,6 +62,28 @@ LATE_POLL = {
     "volume": "storm",
     "ts": NOW + timedelta(minutes=30),
 }
+
+
+class StubOpenBB:
+    """OpenBB producer rows (#141): one fetched before the step, one after it per kind."""
+
+    ROWS = (
+        (21, EARNINGS, -1, {"next_report_date": "2026-09-10", "report_time": "after market close"}),
+        (22, EARNINGS, 1, {"next_report_date": "2026-12-31"}),
+        (31, OPTIONS, -1, {"expiration": "2026-08-14", "dte": 2, "atm_iv": 0.29}),
+        (32, OPTIONS, 1, {"expiration": "2026-08-14", "dte": 2, "atm_iv": 0.999}),
+        (41, FUNDAMENTALS, -1, {"price_target": {"consensus": 255.5}}),
+        (42, FUNDAMENTALS, 1, {"price_target": {"consensus": 4242.0}}),
+    )
+
+    async def latest(self, kind, symbol, *, as_of=None):
+        rows = [
+            {"id": i, "ts": NOW + timedelta(minutes=30 * sign), "provider": "nasdaq", "data": d}
+            for i, k, sign, d in self.ROWS
+            if k == kind and symbol == "AAPL"
+        ]
+        rows = [r for r in rows if as_of is None or r["ts"] <= as_of]
+        return max(rows, key=lambda r: (r["ts"], r["id"])) if rows else None
 
 
 class StubLessons:
@@ -97,6 +123,7 @@ def every_source() -> dict[str, Any]:
         "sec_filings": SecFilingsSource(vendor),
         "polymarket": PolymarketSource(vendor),
         "retail_sentiment": RetailSentimentSource(vendor),
+        **{name: OpenBBSource(name, StubOpenBB()) for name in (EARNINGS, OPTIONS, FUNDAMENTALS)},
         "lessons": LessonsSource(StubLessons()),
     }
 
@@ -188,6 +215,10 @@ LOOKAHEAD: dict[str, Case] = {
     "sec_filings": Case(AAPL, 7, ("10-Q/A", "424.24B")),
     "polymarket": Case(BTC, 3, ("FUTURE",)),
     "retail_sentiment": Case(BTC, 5, ("999",)),
+    # OpenBB rows have no older vintage: each is available from its fetch.
+    "earnings": Case(AAPL, 21, ("2026-12-31",)),
+    "options": Case(AAPL, 31, ("99.9%",)),
+    "fundamentals": Case(AAPL, 41, ("4,242.00",)),
     "lessons": Case(BTC, "21", ("LATER LESSON",)),
 }
 

@@ -661,6 +661,48 @@ class SentimentRepo:
         return row["n"]
 
 
+class OpenBBRepo:
+    """OpenBB producer rows (#141): one compact summary per (kind, symbol) per refresh.
+    Append-only; the id is the Source version."""
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def insert(
+        self,
+        *,
+        kind: str,
+        symbol: str,
+        provider: str,
+        data: dict[str, Any],
+        ts: datetime | None = None,  # tests and backfills date a row; live rows take now()
+    ) -> int:
+        row = await self._db.fetch_one(
+            "INSERT INTO openbb_snapshots (ts, kind, symbol, provider, data)"
+            " VALUES (coalesce(%s, now()), %s, %s, %s, %s) RETURNING id",
+            (ts, kind, symbol, provider, Jsonb(data)),
+        )
+        assert row is not None
+        return row["id"]
+
+    async def latest(self, kind: str, symbol: str, *, as_of: datetime | None = None) -> Row | None:
+        """The newest row at or before ``as_of`` (None = the newest of all)."""
+        return await self._db.fetch_one(
+            "SELECT * FROM openbb_snapshots WHERE kind = %s AND symbol = %s"
+            " AND (%s::timestamptz IS NULL OR ts <= %s) ORDER BY ts DESC, id DESC LIMIT 1",
+            (kind, symbol, as_of, as_of),
+        )
+
+    async def recent(
+        self, *, kind: str | None = None, symbol: str | None = None, limit: int = 50
+    ) -> list[Row]:
+        return await self._db.fetch_all(
+            "SELECT * FROM openbb_snapshots WHERE (%s::text IS NULL OR kind = %s)"
+            " AND (%s::text IS NULL OR symbol = %s) ORDER BY ts DESC, id DESC LIMIT %s",
+            (kind, kind, symbol, symbol, limit),
+        )
+
+
 class VendorReadsRepo:
     """Producer fetches for the vendor Sources (#142): append-only, one row per fetch.
     ``symbol`` None is a market-wide read (Polymarket)."""

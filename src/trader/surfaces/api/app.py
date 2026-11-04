@@ -199,6 +199,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         providers=providers,
         profiles=profiles,
         caps=caps,
+        openbb=build_openbb(db, settings),
         vendors=vendors,
         settler=settler,
     )
@@ -564,6 +565,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def fetch_x_sentiment(symbol: str = Query()) -> dict:
         return await registry.get("fetch_x_sentiment").handler(symbol=symbol)
 
+    @app.get("/research/openbb")
+    async def openbb_snapshots(
+        symbol: str | None = Query(default=None),
+        kind: str | None = Query(default=None, description="earnings, options or fundamentals."),
+        limit: int = Query(default=20, ge=1, le=200),
+    ) -> list[dict]:
+        return await registry.get("openbb").handler(symbol=symbol, kind=kind, limit=limit)
+
+    @app.post("/research/openbb/refresh")
+    async def refresh_openbb(
+        symbols: str | None = Query(default=None, description="Comma-separated; default all."),
+    ) -> dict:
+        return await registry.get("refresh_openbb").handler(symbols=symbols)
+
     @app.get("/research/vendors")
     async def vendor_reads(
         source: str | None = Query(default=None),
@@ -722,6 +737,16 @@ def build_sentiment(db: Database, settings: Settings, *, xai_manager=None, profi
     return SentimentService(
         db, client, daily_call_cap=settings.sentiment_daily_call_cap, profiles=profiles
     )
+
+
+def build_openbb(db: Database, settings: Settings):
+    """The OpenBB producer (#141). Without ``TRADER_OPENBB_BASE_URL`` it has no client and
+    every refresh answers unavailable; nothing else depends on it."""
+    from trader.data.openbb import OpenBBClient
+    from trader.research.openbb import OpenBBProducer
+
+    client = OpenBBClient.from_url(settings.openbb_base_url) if settings.openbb_base_url else None
+    return OpenBBProducer(db, client)
 
 
 def build_vendors(db: Database, settings: Settings):

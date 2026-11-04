@@ -1,7 +1,8 @@
 """Sources (#124) — the information a Bot reads when it decides.
 
 A Source reads what a producer already wrote (the research compiler's Macro View and
-briefs, the sentiment poller's scores, FRED on use, the positions row) and renders one
+briefs, the sentiment poller's scores, the OpenBB producer's earnings, options and
+fundamentals rows, FRED on use, the positions row) and renders one
 prompt lane from it. It never fetches into storage: the live path stores no market data.
 Producers are unchanged; a Source only reads.
 
@@ -9,11 +10,12 @@ Producers are unchanged; a Source only reads.
 current state; a timestamp pins the read to the state that existed at that instant, so
 replay sees what the live loop saw and never a row written later. Every slice carries a
 **Source version** — the immutable row id (``macro_views.version``, ``briefs.version``,
-``sentiment_scores.id``), ``series@obs_date`` for FRED, or a content hash for the held
-position — and the instant it was read as of. The journal records one per Source used
-(``decisions.source_versions``). Every slice also carries its **availability time**, the
-instant the newest thing it says became public; in replay the ContextBuilder holds every
-Source to it (``trader.loop.pit``), so no slice dated after ``as_of`` reaches a prompt.
+``sentiment_scores.id``, ``openbb_snapshots.id``), ``series@obs_date`` for FRED, or a
+content hash for the held position — and the instant it was read as of. The journal
+records one per Source used (``decisions.source_versions``). Every slice also carries its
+**availability time**, the instant the newest thing it says became public; in replay the
+ContextBuilder holds every Source to it (``trader.loop.pit``), so no slice dated after
+``as_of`` reaches a prompt.
 
 A Bot subscribes to Sources by name in its spec (``sources: [{source, params}]``).
 ``params`` holds the subscription's own settings (FRED's series, a lane budget) plus what
@@ -44,6 +46,11 @@ BRIEF = "brief"
 FRED = "fred"
 SENTIMENT = "sentiment"
 HELD_POSITION = "held_position"
+# The OpenBB producer's three (#141); each name is also its ``openbb_snapshots.kind``.
+EARNINGS = "earnings"
+OPTIONS = "options"
+FUNDAMENTALS = "fundamentals"
+OPENBB_SOURCES = (EARNINGS, OPTIONS, FUNDAMENTALS)
 LESSONS = "lessons"
 #: The sentiment subscription's one setting: also poll the Bot's symbols it does not hold.
 POLL_UNHELD = "poll_unheld"
@@ -173,12 +180,14 @@ def build_sources(db: Any, market_data: Any, *, fred: Any | None = None) -> dict
         BriefsRepo,
         LessonsRepo,
         MacroViewsRepo,
+        OpenBBRepo,
         SentimentRepo,
         VendorReadsRepo,
     )
 
     sentiment = SentimentSource(SentimentRepo(db))
     vendor_reads = VendorReadsRepo(db)
+    openbb = OpenBBRepo(db)
     return {
         MACRO_VIEW: MacroViewSource(MacroViewsRepo(db)),
         BRIEF: BriefSource(BriefsRepo(db)),
@@ -186,6 +195,9 @@ def build_sources(db: Any, market_data: Any, *, fred: Any | None = None) -> dict
         FRED: FredSource(fred if fred is not None else getattr(market_data, "fred", None)),
         SENTIMENT: sentiment,
         HELD_POSITION: HeldPositionSource(sentiment),
+        EARNINGS: OpenBBSource(EARNINGS, openbb),
+        OPTIONS: OpenBBSource(OPTIONS, openbb),
+        FUNDAMENTALS: OpenBBSource(FUNDAMENTALS, openbb),
         LESSONS: LessonsSource(LessonsRepo(db)),
         SEC_FILINGS: SecFilingsSource(vendor_reads),
         POLYMARKET: PolymarketSource(vendor_reads),
@@ -644,6 +656,160 @@ class HeldPositionSource:
         version = hashlib.sha256(text.encode()).hexdigest()[:16]
         # The position is the book at the clock; the sentiment it carries may be older.
         return SourceSlice(self.name, version, clock, text, held, available_at=clock)
+
+
+# --- OpenBB: earnings, options, fundamentals (#141) --------------------------------------
+
+#: Past these ages a row is flagged stale in its lane (the producer runs a few times a day).
+OPENBB_STALE_AFTER = {
+    EARNINGS: timedelta(days=3),
+    OPTIONS: timedelta(days=2),
+    FUNDAMENTALS: timedelta(days=10),
+}
+
+
+def _pct(value: Any, *, signed: bool = False) -> str | None:
+    number = _as_float(value)
+    if number is None:
+        return None
+    return f"{number:+.1%}" if signed else f"{number:.1%}"
+
+
+def _money(value: Any) -> str | None:
+    number = _as_float(value)
+    return f"{number:,.2f}" if number is not None else None
+
+
+def render_earnings(data: Mapping[str, Any], *, today: date) -> list[str]:
+    lines: list[str] = []
+    upcoming = data.get("next_report_date")
+    if upcoming:
+        day = date.fromisoformat(upcoming)
+        if day < today:
+            lines.append(
+                f"Last scheduled report {upcoming} has passed; the calendar was not refreshed since"
+            )
+        else:
+            when = data.get("report_time") or "time not supplied"
+            line = f"Next earnings report: {upcoming}, {when}"
+            line += f" ({(day - today).days} calendar days away)"
+            consensus = _as_float(data.get("eps_consensus"))
+            if consensus is not None:
+                line += f"; consensus EPS {consensus:.2f}"
+                if data.get("num_estimates"):
+                    line += f" ({int(data['num_estimates'])} estimates)"
+            lines.append(line)
+    elif data.get("window_end"):
+        lines.append(f"No earnings report scheduled through {data['window_end']}")
+    last = data.get("last_report") or {}
+    if last.get("date") and _as_float(last.get("eps_actual")) is not None:
+        line = f"Last report {last['date']}: EPS {float(last['eps_actual']):.2f}"
+        if _as_float(last.get("eps_estimated")) is not None:
+            line += f" vs {float(last['eps_estimated']):.2f} estimated"
+        surprise = _pct(last.get("surprise_frac"), signed=True)
+        if surprise is not None:
+            line += f" ({surprise} surprise)"
+        lines.append(line)
+    return lines
+
+
+def render_options(data: Mapping[str, Any], *, today: date) -> list[str]:
+    parts = []
+    atm_iv = _pct(data.get("atm_iv"))
+    if atm_iv is not None:
+        parts.append(f"ATM implied vol {atm_iv}")
+    move = _as_float(data.get("implied_move_frac"))
+    if move is not None:
+        parts.append(f"implied move ±{move:.1%} by expiry")
+    skew = _as_float(data.get("put_call_skew"))
+    if skew is not None:
+        parts.append(f"put/call skew {skew * 100:+.1f} vol pts (95% put IV minus 105% call IV)")
+    if not parts:
+        return []
+    return [f"Options, {data.get('expiration')} expiry ({data.get('dte')}d): " + "; ".join(parts)]
+
+
+def render_fundamentals(data: Mapping[str, Any], *, today: date) -> list[str]:
+    lines: list[str] = []
+    target = data.get("price_target") or {}
+    if _money(target.get("consensus")):
+        line = f"Price target consensus {_money(target['consensus'])}"
+        bounds = [f"{k} {_money(target.get(k))}" for k in ("low", "high") if _money(target.get(k))]
+        if bounds:
+            line += f" ({', '.join(bounds)})"
+        if target.get("rating"):
+            line += f"; rating {target['rating']}"
+        lines.append(line)
+    ratios = data.get("ratios") or {}
+    picked = [
+        f"{label} {_pct(ratios.get(key))}"
+        for key, label in (("net_profit_margin", "net margin"), ("return_on_equity", "ROE"))
+        if _pct(ratios.get(key)) is not None
+    ]
+    if picked:
+        lines.append(f"Ratios (period ending {ratios.get('period_ending')}): " + ", ".join(picked))
+    insider = data.get("insider") or {}
+    if insider:
+        lines.append(
+            f"Insider trades ({insider.get('window_days')}d): {insider.get('buys', 0)} buys,"
+            f" {insider.get('sells', 0)} sells, net {float(insider.get('net_shares') or 0):+,.0f}"
+            " shares"
+        )
+    short = data.get("short_interest") or {}
+    if short.get("settlement_date"):
+        line = f"Short interest (settled {short['settlement_date']})"
+        shares = _as_float(short.get("shares"))
+        if shares is not None:
+            line += f": {shares:,.0f} shares"
+        if _as_float(short.get("days_to_cover")) is not None:
+            line += f", {float(short['days_to_cover']):.1f} days to cover"
+        change = _pct(short.get("change_frac"), signed=True)
+        if change is not None:
+            line += f", {change} vs the prior settlement"
+        lines.append(line)
+    return lines
+
+
+OPENBB_RENDERERS = {
+    EARNINGS: render_earnings,
+    OPTIONS: render_options,
+    FUNDAMENTALS: render_fundamentals,
+}
+
+
+class OpenBBSource:
+    """One OpenBB producer kind (``openbb_snapshots``): the newest row fetched at or before
+    the read, rendered as a dated note. A row older than ``OPENBB_STALE_AFTER`` says so.
+    No row (the sidecar never ran, or not yet at a replayed instant) = no lane.
+    Version: ``openbb_snapshots.id``."""
+
+    def __init__(self, kind: str, repo: Any) -> None:  # store.repos.OpenBBRepo
+        self.name = kind
+        self._repo = repo
+
+    async def read(
+        self, symbol: Symbol, *, as_of: datetime | None, params: Mapping[str, Any]
+    ) -> SourceSlice | None:
+        row = await self._repo.latest(self.name, symbol.ticker, as_of=as_of)
+        if row is None:
+            return None
+        clock = _read_clock(as_of, params)
+        lines = OPENBB_RENDERERS[self.name](row["data"], today=clock.date())
+        if not lines:
+            return None
+        fetched = row["ts"]
+        header = (
+            f"Fetched {fetched.isoformat()} ({_format_age(clock - fetched)} before this read)"
+            f" via OpenBB/{row['provider']}"
+        )
+        limit = OPENBB_STALE_AFTER[self.name]
+        if clock - fetched > limit:
+            header += f"; STALE: older than {limit.days}d, the producer has not refreshed it"
+        text = "\n".join([header, *lines])
+        # Available from its fetch: the producer's summary has no older vintage (a
+        # consensus or a chain is only known as of when it was read), so a row fetched
+        # later never serves an earlier bar.
+        return SourceSlice(self.name, row["id"], clock, text, row, available_at=fetched)
 
 
 # --- Lessons (#143) ---------------------------------------------------------------------
