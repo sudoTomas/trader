@@ -570,6 +570,39 @@ def sentiment_fetch(symbol: str = typer.Argument(..., help="Symbol, e.g. ETH/USD
     typer.echo(json.dumps(_post("/research/sentiment/fetch", params={"symbol": symbol}), indent=2))
 
 
+vendors_app = typer.Typer(
+    help="Vendor Sources: SEC EDGAR filings, Polymarket odds, StockTwits/Reddit counts."
+)
+app.add_typer(vendors_app, name="vendors")
+
+
+@vendors_app.command("history")
+def vendors_history(
+    source: str = typer.Option(None, help="sec_filings, polymarket or retail_sentiment."),
+    symbol: str = typer.Option(None, help="Filter to one symbol."),
+    limit: int = typer.Option(20, help="How many reads, newest first."),
+) -> None:
+    """Print recorded vendor reads (each row is a Source version a decision can name)."""
+    params: dict = {"limit": limit}
+    if source is not None:
+        params["source"] = source
+    if symbol is not None:
+        params["symbol"] = symbol
+    typer.echo(json.dumps(_get("/research/vendors", params=params), indent=2))
+
+
+@vendors_app.command("collect")
+def vendors_collect(
+    source: str = typer.Argument(..., help="sec_filings, polymarket or retail_sentiment."),
+    symbol: str = typer.Option(None, help="The symbol (not needed for polymarket)."),
+) -> None:
+    """Fetch one vendor Source's data now and record it."""
+    params: dict = {"source": source}
+    if symbol is not None:
+        params["symbol"] = symbol
+    typer.echo(json.dumps(_post("/research/vendors/collect", params=params), indent=2))
+
+
 fred_app = typer.Typer(help="FRED macro series (VIX etc.) — the prints the decide context sees.")
 app.add_typer(fred_app, name="fred")
 

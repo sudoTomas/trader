@@ -131,6 +131,7 @@ def runner_for(
         sentiment=template.sentiment,
         sentiment_poll_seconds=template.sentiment_poll_seconds,
         sentiment_stamps=template.sentiment_stamps,
+        vendors=template.vendors,
         shadow_symbols=set(modes) - live,
         desk=desk if (spec.get("lanes") or {}).get("desk") else None,
         confirm=template.confirm,
