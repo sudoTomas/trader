@@ -88,6 +88,7 @@ def build_registry(
     providers: Any | None = None,
     profiles: Any | None = None,
     caps: Any | None = None,
+    settler: Any | None = None,
 ) -> ServiceRegistry:
     """Construct the registry with the capabilities available in this build.
 
@@ -102,7 +103,8 @@ def build_registry(
     market-data credentials. ``providers`` is the model picker's Provider store
     (``llm.providers.ProviderDesk``) and ``profiles`` its Profile store
     (``llm.profiles.ProfileDesk``), and ``caps`` the Spend caps (``llm.caps.SpendCaps``),
-    all absent in store-less builds.
+    all absent in store-less builds. ``settler`` is the settlement pass
+    (``learning.settlement.Settler``), absent without market-data credentials.
     """
     reg = ServiceRegistry()
 
@@ -934,6 +936,7 @@ def build_registry(
         exit_review: bool | None = None,
         exit_review_seed: dict[str, Any] | None = None,
         blind: bool = False,
+        lessons: bool = False,
     ) -> dict[str, Any]:
         """``blind`` withholds the ticker, calendar dates and dollar values from every
         replayed prompt (#140) and drops the free-text Sources; run it beside a named run
@@ -943,7 +946,9 @@ def build_registry(
         ``exit_review`` renders the held-position block (None → follows
         ``TRADER_EXIT_REVIEW_ENABLED``); ``exit_review_seed`` ({"qty", "avg_entry_price",
         optional "opened_at"}) starts the run's crude book with that position held so the
-        block has something to review — seed baseline and candidate alike."""
+        block has something to review — seed baseline and candidate alike. ``lessons``
+        adds Bot #1's lessons Source (#143), each step reading only the Lessons settled
+        by then."""
         import asyncio
         from datetime import datetime
 
@@ -959,6 +964,8 @@ def build_registry(
             config["exit_review_seed"] = exit_review_seed
         if blind:
             config["blind"] = True
+        if lessons:
+            config["lessons"] = True
         run_id = await evaluator.create_run(
             sym,
             datetime.fromisoformat(start),
@@ -997,6 +1004,75 @@ def build_registry(
             for s in await repo.steps_summary(run_id)
         ]
         return {**_run_out(row), "steps": steps}
+
+    # --- learning loop (#143) -------------------------------------------------
+
+    async def _bot_id(bot: str | None) -> int | None:
+        """A Bot's id by name; None = every Bot. An unknown name raises BotNotFound."""
+        from trader.loop.bots import BotNotFound
+
+        if bot is None:
+            return None
+        assert db is not None
+        row = await db.fetch_one("SELECT id FROM bots WHERE name = %s", (bot,))
+        if row is None:
+            raise BotNotFound(bot)
+        return row["id"]
+
+    @reg.register(
+        "scorecard",
+        kind="query",
+        summary="Per-seat Scorecard on settled decisions (5-day horizon): hit rate, slugging"
+        " and rank IC for the decide model, each analyst lane and the critic. Optional bot"
+        " name and symbol narrow it.",
+    )
+    async def scorecard(bot: str | None = None, symbol: str | None = None) -> dict[str, Any]:
+        from trader.learning.scorecard import scorecard as score
+        from trader.store.repos import SettlementsRepo
+
+        assert db is not None, "scorecard requires a store"
+        rows = await SettlementsRepo(db).scored(bot_id=await _bot_id(bot), symbol=symbol)
+        return {"bot": bot, "symbol": symbol, **score(rows)}
+
+    @reg.register(
+        "lessons",
+        kind="query",
+        summary="Lessons the reflect Role wrote from settled decisions, newest first."
+        " Optional bot name and symbol narrow it.",
+    )
+    async def lessons(
+        bot: str | None = None, symbol: str | None = None, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        from trader.store.repos import LessonsRepo
+
+        assert db is not None, "lessons requires a store"
+        rows = await LessonsRepo(db).recent(
+            bot_id=await _bot_id(bot), symbol=symbol, limit=min(max(int(limit), 1), 200)
+        )
+        return [
+            {
+                **r,
+                "available_at": r["available_at"].isoformat(),
+                "created_at": r["created_at"].isoformat(),
+            }
+            for r in rows
+        ]
+
+    @reg.register(
+        "settle_decisions",
+        kind="command",
+        summary="Run one settlement pass now: settle decisions whose 5-day window has traded"
+        " and let the reflect Role write Lessons for the newest (TRADER_REFLECT_MAX_PER_PASS).",
+    )
+    async def settle_decisions() -> dict[str, Any]:
+        if settler is None:
+            return {"status": "unavailable", "reason": "no market data in this build"}
+        out = await settler.settle()
+        await _audit_command(
+            "settle_decisions",
+            {"settled": out["settled"], "lessons": out["lessons"], "failed": len(out["failed"])},
+        )
+        return {"status": "ok", **out}
 
     # --- diagnostics (operator-only) -----------------------------------------
 

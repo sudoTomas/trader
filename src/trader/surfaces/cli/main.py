@@ -222,6 +222,33 @@ def usage(
     typer.echo(json.dumps(_get("/usage", params=params), indent=2))
 
 
+@app.command()
+def scorecard(
+    bot: Annotated[str | None, typer.Option(help="One Bot by name (default: every Bot).")] = None,
+    symbol: Annotated[str | None, typer.Option(help="One symbol.")] = None,
+) -> None:
+    """Per-seat Scorecard on settled decisions: hit rate, slugging, rank IC (5-day)."""
+    params = {k: v for k, v in {"bot": bot, "symbol": symbol}.items() if v is not None}
+    typer.echo(json.dumps(_get("/scorecard", params=params), indent=2))
+
+
+@app.command()
+def lessons(
+    bot: Annotated[str | None, typer.Option(help="One Bot by name (default: every Bot).")] = None,
+    symbol: Annotated[str | None, typer.Option(help="One symbol.")] = None,
+    limit: int = typer.Option(20, help="How many Lessons, newest first."),
+) -> None:
+    """Print the Lessons the reflect Role wrote from settled decisions."""
+    params = {k: v for k, v in {"bot": bot, "symbol": symbol}.items() if v is not None}
+    typer.echo(json.dumps(_get("/lessons", params={**params, "limit": limit}), indent=2))
+
+
+@app.command()
+def settle() -> None:
+    """Run one settlement pass now (settle 5-day windows that traded, write Lessons)."""
+    typer.echo(json.dumps(_post("/settlement/run"), indent=2))
+
+
 broker_app = typer.Typer(help="Broker reconciliation and emergency flatten.")
 app.add_typer(broker_app, name="broker")
 
@@ -467,6 +494,9 @@ def eval_run_cmd(
     blind: bool = typer.Option(
         False, "--blind", help="Blind run (#140): no ticker, dates or dollars in any prompt."
     ),
+    lessons: bool = typer.Option(
+        False, "--lessons", help="Add Bot #1's lessons Source (#143), point-in-time per step."
+    ),
 ) -> None:
     """Start a background replay over [start, end); poll with `trader eval show`."""
     params = {
@@ -483,6 +513,7 @@ def eval_run_cmd(
         "seed_opened_at": seed_opened_at,
         # Off stays off the wire, so an older API still takes a named run.
         "blind": blind or None,
+        "lessons": lessons or None,
     }
     # Unset options stay off the wire (an empty query value is not "unset" to the API).
     params = {k: v for k, v in params.items() if v is not None}

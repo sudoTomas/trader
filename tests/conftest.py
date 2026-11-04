@@ -85,6 +85,8 @@ ALL_TABLES = (
     "fills",
     "orders",
     "approvals",
+    "lessons",
+    "decision_settlements",
     "decisions",
     "positions",
     "audit_events",

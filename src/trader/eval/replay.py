@@ -39,6 +39,11 @@ starts from that seed: a close realizes against the seeded entry, and a run that
 closes carries the seed's mark-to-bars move as ``unrealized_pnl``. Seed the SAME
 position into the baseline and the candidate; only the block should differ.
 
+The Lessons Source (#143) replays the same way: ``config={"lessons": true}`` adds it to
+Bot #1's lanes (or name it in ``sources``), ``config={"bot_id": n}`` reads Bot ``n``'s
+Lessons (default Bot #1), and each step reads only the Lessons whose Settlement had
+settled by that step (``available_at <= as_of``).
+
 A Bot version's decide rules and Sleeve replay the same way (#127):
 ``config={"prompt_variant": "equity-largecap", "sleeve_usd": 5000}`` judges every step by
 that variant's system prompt and sizes it against a fixed Sleeve (the prompt then reads
@@ -274,7 +279,10 @@ class ReplayHarness:
         sources = config.get("sources")
         if sources is None:
             sources = bot_one_subscriptions(
-                macro_view=include_macro_view, briefs=include_briefs, exit_review=exit_review
+                macro_view=include_macro_view,
+                briefs=include_briefs,
+                exit_review=exit_review,
+                lessons=bool(config.get("lessons", False)),
             )
         seed = config.get("exit_review_seed")
         prompt_variant = config.get("prompt_variant", DEFAULT_VARIANT)
@@ -300,6 +308,7 @@ class ReplayHarness:
                 prompt_variant=prompt_variant,
                 sleeve=float(sleeve) if sleeve is not None else None,
                 blind=blind,
+                bot_id=config.get("bot_id"),
             )
             await self._repo.finish_run(run_id, status="done", summary=summary)
         except Exception as exc:  # noqa: BLE001 - a failed run must say so, not hang
@@ -373,6 +382,7 @@ class ReplayHarness:
         prompt_variant: str = DEFAULT_VARIANT,
         sleeve: float | None = None,
         blind: dict[str, Any] | None = None,  # the run's blind record; None = named
+        bot_id: int | None = None,  # whose Lessons a lessons subscription reads (None: #1)
     ) -> dict[str, Any]:
         context = self._context
         blinder = Blinder(symbol, step=self._step) if blind is not None else None
@@ -420,6 +430,7 @@ class ReplayHarness:
                 recent_decisions=list(recent),
                 as_of=as_of,
                 subscriptions=sources,
+                bot_id=bot_id,
                 position=(
                     {"qty": qty, "avg_entry_price": entry, "opened_at": opened_at}
                     if qty != 0.0
