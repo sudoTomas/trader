@@ -143,6 +143,11 @@ class SentimentPollIn(BaseModel):
     poll_unheld: bool
 
 
+class SignalPromptIn(BaseModel):
+    source: str
+    in_prompt: bool
+
+
 class XaiProbeIn(BaseModel):
     """``POST /xai/probe`` body. Every field optional: the service fills the #7 matrix
     defaults (models × both endpoints × none/x_search/web_search, credential auto)."""
@@ -349,6 +354,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return await registry.get("set_sentiment_poll").handler(
             name=name, poll_unheld=body.poll_unheld
         )
+
+    @app.post("/bots/{name}/signal-prompt")
+    async def set_signal_prompt(name: str, body: SignalPromptIn) -> dict:
+        return await registry.get("set_signal_prompt").handler(
+            name=name, source=body.source, in_prompt=body.in_prompt
+        )
+
+    @app.get("/signals/scores")
+    async def signal_scores(
+        days: int = Query(default=14, ge=1, le=60), bot: str | None = Query(default=None)
+    ) -> dict:
+        return await registry.get("signal_scores").handler(days=days, bot=bot)
 
     @app.get("/decisions/{decision_id}")
     async def decision(decision_id: int) -> dict | None:

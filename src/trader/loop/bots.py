@@ -32,13 +32,17 @@ from trader.loop.decider import DEFAULT_VARIANT, PROMPT_VARIANTS, prompt_spec
 from trader.loop.scheduler import TriggerConfig
 from trader.loop.sources import (
     BRIEF,
+    CRYPTO_DERIVATIVES,
     FRED,
     HELD_POSITION,
+    IN_PROMPT,
+    KRONOS,
     LESSONS,
     MACRO_VIEW,
     OPENBB_SOURCES,
     POLL_UNHELD,
     SENTIMENT,
+    SHADOW_SIGNALS,
     bot_one_subscriptions,
     subscriptions,
 )
@@ -70,6 +74,8 @@ SOURCE_NAMES = frozenset(
         SENTIMENT,
         HELD_POSITION,
         LESSONS,
+        KRONOS,
+        CRYPTO_DERIVATIVES,
         *VENDOR_SOURCES,
         *OPENBB_SOURCES,
     }
@@ -127,6 +133,7 @@ def bot_one_spec(settings: Settings) -> dict[str, Any]:
         "sources": bot_one_subscriptions(
             briefs=settings.briefs_enabled,
             exit_review=settings.exit_review_enabled,
+            shadow_signals=settings.shadow_signals_enabled,
             lessons=settings.lessons_enabled,
         ),
         # The desk is not a Source: it reads the finished context, not a producer's rows.
@@ -175,6 +182,8 @@ def bot_spec(
     for sub in subs:
         if sub.source == SENTIMENT and not isinstance(sub.params.get(POLL_UNHELD, False), bool):
             raise BotSpecError(f"sentiment {POLL_UNHELD} must be true or false")
+        if sub.source in SHADOW_SIGNALS and not isinstance(sub.params.get(IN_PROMPT, False), bool):
+            raise BotSpecError(f"{sub.source} {IN_PROMPT} must be true or false")
     if prompt_variant not in PROMPT_VARIANTS:
         raise BotSpecError(
             f"unknown prompt variant {prompt_variant!r} (known: {sorted(PROMPT_VARIANTS)})"
@@ -367,6 +376,39 @@ class BotDesk:
 
         return await self._revise(
             name, "set_sentiment_poll", change, extra={POLL_UNHELD: bool(poll_unheld)}
+        )
+
+    async def set_signal_prompt(self, name: str, source: str, *, in_prompt: bool) -> dict[str, Any]:
+        """Whether the Bot reads a shadow signal (#144) in its prompt, as a new version.
+        Off is the default and drops the setting: the signal is still read and journaled
+        for scoring, the decide just never sees it. Switch it on only after the scores
+        pass (docs/runbooks/shadow-signals.md). Bot #1 is refused: it follows Settings
+        and journals the shadow signals only."""
+        if name == BOT_ONE:
+            raise BotSpecError(
+                f"{BOT_ONE} follows Settings and journals the shadow signals only;"
+                " the toggle is for Bots defined in the store"
+            )
+        if source not in SHADOW_SIGNALS:
+            raise BotSpecError(
+                f"{source!r} is not a shadow signal (known: {sorted(SHADOW_SIGNALS)})"
+            )
+
+        def change(spec: dict[str, Any]) -> dict[str, Any]:
+            sources = []
+            for sub in spec["sources"]:
+                if sub["source"] == source:
+                    params = {k: v for k, v in sub["params"].items() if k != IN_PROMPT}
+                    if in_prompt:
+                        params[IN_PROMPT] = True
+                    sub = {**sub, "params": params}
+                sources.append(sub)
+            if in_prompt and not any(s["source"] == source for s in sources):
+                raise BotSpecError(f"{name} does not read {source}; subscribe it first")
+            return {**spec, "sources": sources}
+
+        return await self._revise(
+            name, "set_signal_prompt", change, extra={"source": source, IN_PROMPT: bool(in_prompt)}
         )
 
     async def _revise(

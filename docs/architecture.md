@@ -137,6 +137,19 @@ SignalScheduler → ContextBuilder → (analyst desk) → Decider → (Confirm) 
   their fetch on. All three are off until a Bot subscribes, and blind replay drops them.
   `TRADER_POLYMARKET_IN_MACRO_VIEW` (a gate, off) also feeds the latest odds to the Macro
   View compiler, citable as `[poly:<id>]`. Doors: `vendor_reads`, `collect_vendor`.
+- **Shadow signals** (#144) — two more Sources, `kronos` and `crypto_derivatives`, scored
+  before any Bot reads them. `kronos` sends the symbol's last 400 1h bars to the Kronos-small
+  sidecar (`infra/kronos/`, its own GPU container, `TRADER_KRONOS_URL`) and keeps N sampled
+  paths apart: share of paths up, median, p10 and p90 return `TRADER_SIGNAL_HORIZON_BARS`
+  ahead. `crypto_derivatives` reads BTC/ETH perp funding, open interest and its 24h change,
+  and mark-vs-index basis from Binance, Bybit and OKX through ccxt public endpoints. Both
+  fetch on use and store nothing; every reading lands in `decisions.signals`. A
+  subscription reaches the prompt only with `params.in_prompt` (default off;
+  `set_signal_prompt` on every door); Bot #1 subscribes journal-only with
+  `TRADER_SHADOW_SIGNALS_ENABLED`. `signal_scores` scores the journal against later bars
+  (Kronos band coverage and hit rate, funding/OI rank IC). Kronos replays point-in-time
+  (bars from the replay's frozen provider); the derivatives Source reads nothing in replay.
+  Runbook: `runbooks/shadow-signals.md`.
 - **Decider** — one Nemotron completion, JSON-schema-validated, 1 retry with the validation
   errors fed back. Transient (infra) vs crash errors classified so infra blips don't arm
   backoff ([transient-vs-crash-backoff](lessons.md#transient-vs-crash-backoff)). Runs in
@@ -189,7 +202,7 @@ SignalScheduler → ContextBuilder → (analyst desk) → Decider → (Confirm) 
 - **Journal** — every wakeup (including suppressed/shadow) writes a row: trigger, full
   prompt, raw output, risk verdicts, desk verdicts, the Confirm, `macro_view_version` and
   `brief_version`, `source_versions` (`{source: {version, as_of}}` for every Source read),
-  cost, latency, `bot_id` and `bot_version`. Replay-ready: replay reads the same Sources
+  `signals` (every shadow-signal reading, in the prompt or not), cost, latency, `bot_id` and `bot_version`. Replay-ready: replay reads the same Sources
   pinned to each step and records the same `source_versions` on the step.
 - **Replay** (`eval/replay.py`) — reruns the decide stage over a window into
   `eval_runs`/`eval_steps`, with a crude one-position book that runs the live stop, its

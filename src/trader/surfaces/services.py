@@ -509,6 +509,45 @@ def build_registry(
         assert db is not None, "set_sentiment_poll requires a store"
         return await BotDesk(db).set_sentiment_poll(name, poll_unheld=poll_unheld)
 
+    @reg.register(
+        "set_signal_prompt",
+        kind="command",
+        summary="Whether a Bot reads a shadow signal (kronos or crypto_derivatives) in its"
+        " prompt (in_prompt; off by default: the signal is journaled and scored only). A new"
+        " version; switch on only after signal_scores pass. Bot #1 is refused. Audited.",
+    )
+    async def set_signal_prompt(name: str, source: str, in_prompt: bool) -> dict[str, Any]:
+        from trader.loop.bots import BotDesk
+
+        assert db is not None, "set_signal_prompt requires a store"
+        return await BotDesk(db).set_signal_prompt(name, source, in_prompt=in_prompt)
+
+    @reg.register(
+        "signal_scores",
+        kind="query",
+        summary="Shadow-signal scores over the last days of journaled readings: Kronos band"
+        " coverage (target 80%) and directional hit rate, crypto funding/OI/basis rank IC"
+        " vs the forward return. bot narrows it to one Bot.",
+    )
+    async def signal_scores(days: int = 14, bot: str | None = None) -> dict[str, Any]:
+        from trader.eval.signals import score_signals
+        from trader.ops.config import get_settings
+
+        assert db is not None, "signal_scores requires a store"
+        market_data = getattr(runner, "market_data", None)
+        if market_data is None:
+            return {"status": "unavailable", "reason": "no market data in this build"}
+        settings = get_settings()
+        out = await score_signals(
+            db,
+            market_data,
+            settings.symbol_registry(),
+            days=min(max(int(days), 1), 60),
+            horizon=settings.signal_horizon_bars,
+            bot_id=await _bot_id(bot),
+        )
+        return _scoped(out, bot)
+
     async def _bot_id(bot: str | None) -> int | None:
         """A Bot name → its id (None = the account). Unknown names raise BotNotFound."""
         from trader.loop.bots import BotDesk

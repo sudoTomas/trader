@@ -25,18 +25,26 @@ from tests.source_fixtures import (
 from tests.test_loop import HOLD, NOW, StubLLM, StubMarketData
 from tests.test_replay_eval import seed_hourly_bars
 from tests.vendor_fixtures import AAPL, POLY_LATER, POLY_NOW, RETAIL_NOW, StubVendorReads
+from trader.core.types import Bar
+from trader.data.derivatives import DerivativesSnapshot, VenueReading
+from trader.data.kronos import KronosForecast
 from trader.eval.blind import split_sources
 from trader.eval.replay import ReplayHarness
 from trader.loop import pit
 from trader.loop.bots import SOURCE_NAMES
 from trader.loop.context import ContextBuilder
 from trader.loop.sources import (
+    CRYPTO_DERIVATIVES,
     EARNINGS,
     FUNDAMENTALS,
+    IN_PROMPT,
+    KRONOS,
     OPTIONS,
     BriefSource,
+    CryptoDerivativesSource,
     FredSource,
     HeldPositionSource,
+    KronosSource,
     LessonsSource,
     MacroViewSource,
     OpenBBSource,
@@ -86,6 +94,37 @@ class StubOpenBB:
         return max(rows, key=lambda r: (r["ts"], r["id"])) if rows else None
 
 
+class EchoKronos:
+    """A Kronos client that reports the last close it was sent as its path count, so a
+    bar from after the step would show in the prompt as ``999 sampled paths``."""
+
+    async def forecast(self, symbol, bars):
+        last = bars[-1]
+        return KronosForecast(
+            model="stub", revision="r1", interval="1h", horizon_bars=24,
+            paths=int(last.close), last_bar_ts=last.ts, last_close=last.close,
+            share_up=0.5, median=0.0, p10=-0.01, p90=0.01, inference_ms=1,
+        )  # fmt: skip
+
+
+class StubPerps:
+    async def snapshot(self, base):
+        venue = VenueReading("okx", 0.0001, 1e9, 0.01, 0.0002)
+        return DerivativesSnapshot(base=base, venues=(venue,))
+
+
+class LateBarData(StubMarketData):
+    """100 hourly bars closing by the step, then one opening at it (close 999)."""
+
+    async def get_bars(self, symbol, interval, lookback):
+        bars = [
+            Bar(symbol.ticker, "1h", NOW - timedelta(hours=100 - i), 100.0, 100.0, 100.0, 100.0, 1)
+            for i in range(100)
+        ]
+        bars.append(Bar(symbol.ticker, "1h", NOW, 999.0, 999.0, 999.0, 999.0, 1.0))
+        return bars[-lookback:]
+
+
 class StubLessons:
     """Lessons for Bot #1 on BTC/USD, one settled after the step. It ignores ``at`` so
     the Source's own filter and the guard are what keep the later one out."""
@@ -123,6 +162,8 @@ def every_source() -> dict[str, Any]:
         "sec_filings": SecFilingsSource(vendor),
         "polymarket": PolymarketSource(vendor),
         "retail_sentiment": RetailSentimentSource(vendor),
+        KRONOS: KronosSource(EchoKronos()),
+        CRYPTO_DERIVATIVES: CryptoDerivativesSource(StubPerps()),
         **{name: OpenBBSource(name, StubOpenBB()) for name in (EARNINGS, OPTIONS, FUNDAMENTALS)},
         "lessons": LessonsSource(StubLessons()),
     }
@@ -203,6 +244,8 @@ class Case:
     symbol: Any
     version: Any  # what the step may read
     future: tuple[str, ...]  # what it must not
+    params: dict[str, Any] = field(default_factory=dict)  # the subscription's
+    lane: bool = True  # False: replay reads nothing, a live read does (asserted)
 
 
 LOOKAHEAD: dict[str, Case] = {
@@ -215,6 +258,10 @@ LOOKAHEAD: dict[str, Case] = {
     "sec_filings": Case(AAPL, 7, ("10-Q/A", "424.24B")),
     "polymarket": Case(BTC, 3, ("FUTURE",)),
     "retail_sentiment": Case(BTC, 5, ("999",)),
+    # Shadow signals (#144), subscribed into the prompt so the lane can be checked.
+    KRONOS: Case(BTC, None, ("999 sampled",), params={IN_PROMPT: True}),
+    # No point-in-time history at the venues: a replay step reads nothing at all.
+    CRYPTO_DERIVATIVES: Case(BTC, None, (), params={IN_PROMPT: True}, lane=False),
     # OpenBB rows have no older vintage: each is available from its fetch.
     "earnings": Case(AAPL, 21, ("2026-12-31",)),
     "options": Case(AAPL, 31, ("99.9%",)),
@@ -230,16 +277,21 @@ def test_every_subscribable_source_has_a_lookahead_case():
 @pytest.mark.parametrize("name", sorted(LOOKAHEAD))
 async def test_nothing_dated_after_as_of_reaches_a_replayed_prompt(name: str):
     case = LOOKAHEAD[name]
-    builder = ContextBuilder(StubMarketData(), sources=every_source())
-    ctx = await builder.build(
-        case.symbol,
-        now=NOW,
-        triggers=[],
-        as_of=NOW,
-        position_qty=0.5,
-        position=HELD,
-        subscriptions=[Subscription(name)],
-    )
+    data = LateBarData() if name == KRONOS else StubMarketData()  # bars only Kronos reads
+    builder = ContextBuilder(data, sources=every_source())
+    read = {
+        "now": NOW,
+        "triggers": [],
+        "position_qty": 0.5,
+        "position": HELD,
+        "subscriptions": [Subscription(name, case.params)],
+    }
+    ctx = await builder.build(case.symbol, as_of=NOW, **read)
+    if not case.lane:
+        assert name not in ctx.source_versions and name not in ctx.signals
+        live = await builder.build(case.symbol, **read)
+        assert name in live.source_versions  # a live read does serve it: not vacuous
+        return
     assert name in ctx.source_versions  # the lane is there: the check is not vacuous
     if case.version is not None:
         assert ctx.source_versions[name]["version"] == case.version

@@ -20,7 +20,15 @@ ContextBuilder holds every Source to it (``trader.loop.pit``), so no slice dated
 A Bot subscribes to Sources by name in its spec (``sources: [{source, params}]``).
 ``params`` holds the subscription's own settings (FRED's series, a lane budget) plus what
 the ContextBuilder knows only at decide time: ``now`` (the context clock), ``price``,
-``position`` and ``bot_id``.
+``position``, ``bot_id`` and ``market_data`` (the builder's bars provider).
+
+Two Sources are **shadow signals** (#144): the Kronos forecast and the crypto
+derivatives reading. They fetch on use (the Kronos sidecar, ccxt public endpoints) and
+store nothing; the journal records each reading beside the decision (``decisions.signals``)
+so it can be scored against later bars. A subscription reads one into the prompt only
+with ``params.in_prompt: true`` (off by default); otherwise the decide never sees it.
+The Kronos Source reads bars from ``params.market_data``, which replay freezes at
+``as_of``, so a replayed forecast sees only earlier bars.
 
 Every lane is advisory: it feeds the decider only. RiskGuard never imports this module
 (asserted by test; see docs/lessons.md#macro-view-advisory-firewall).
@@ -29,6 +37,7 @@ Every lane is advisory: it feeds the decider only. RiskGuard never imports this 
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
@@ -36,7 +45,9 @@ from typing import Any, Protocol
 
 import structlog
 
-from trader.core.symbols import Symbol
+from trader.core.symbols import AssetClass, Symbol
+from trader.data.derivatives import BASES as DERIVATIVES_BASES
+from trader.data.kronos import KRONOS_INTERVAL, KRONOS_LOOKBACK
 from trader.loop import pit
 
 log = structlog.get_logger(__name__)
@@ -46,6 +57,12 @@ BRIEF = "brief"
 FRED = "fred"
 SENTIMENT = "sentiment"
 HELD_POSITION = "held_position"
+KRONOS = "kronos"
+CRYPTO_DERIVATIVES = "crypto_derivatives"
+#: Sources journaled on every decide and scored before any prompt reads them (#144).
+SHADOW_SIGNALS = frozenset({KRONOS, CRYPTO_DERIVATIVES})
+#: A shadow signal's one setting: the Bot also reads it in its prompt.
+IN_PROMPT = "in_prompt"
 # The OpenBB producer's three (#141); each name is also its ``openbb_snapshots.kind``.
 EARNINGS = "earnings"
 OPTIONS = "options"
@@ -78,6 +95,9 @@ DEFAULT_FRED_SERIES = ("VIXCLS",)
 FRED_LOOKBACK = 10
 # How far back the pinned sentiment read looks for the newest poll before as_of.
 SENTIMENT_HISTORY = 500
+# Fewer bars than this and Kronos has too little context to forecast from.
+KRONOS_MIN_BARS = 64
+KRONOS_BAR = timedelta(hours=1)  # KRONOS_INTERVAL; a bar is known once it has closed
 
 
 # --- the contract -----------------------------------------------------------------------
@@ -138,10 +158,12 @@ def bot_one_subscriptions(
     briefs: bool = False,
     exit_review: bool = False,
     lessons: bool = False,
+    shadow_signals: bool = False,
 ) -> list[dict[str, Any]]:
     """The Sources the pre-Bots flags turned on: FRED and the Macro View always, the brief
     with ``TRADER_BRIEFS_ENABLED``, the held position with ``TRADER_EXIT_REVIEW_ENABLED``,
-    the Lessons with ``TRADER_LESSONS_ENABLED`` (#143).
+    the Lessons with ``TRADER_LESSONS_ENABLED`` (#143), and the shadow signals,
+    journal-only, with ``TRADER_SHADOW_SIGNALS_ENABLED`` (#144).
     Replay's ``macro_view: false`` is the one way to drop the Macro View."""
     subs = [Subscription(FRED, {"series": list(DEFAULT_FRED_SERIES)})]
     if macro_view:
@@ -150,9 +172,17 @@ def bot_one_subscriptions(
         subs.append(Subscription(BRIEF))
     if exit_review:
         subs.append(Subscription(HELD_POSITION))
+    if shadow_signals:
+        subs += [Subscription(KRONOS), Subscription(CRYPTO_DERIVATIVES)]
     if lessons:
         subs.append(Subscription(LESSONS))
     return [s.as_spec() for s in subs]
+
+
+def in_prompt(sub: Subscription) -> bool:
+    """Whether a subscription's lane reaches the prompt. Every Source's does except a
+    shadow signal's, which does only with ``params.in_prompt: true``."""
+    return sub.source not in SHADOW_SIGNALS or sub.params.get(IN_PROMPT) is True
 
 
 def polls_unheld(spec: Iterable[Subscription | Mapping[str, Any]]) -> bool:
@@ -165,9 +195,18 @@ def polls_unheld(spec: Iterable[Subscription | Mapping[str, Any]]) -> bool:
     )
 
 
-def build_sources(db: Any, market_data: Any, *, fred: Any | None = None) -> dict[str, Source]:
+def build_sources(
+    db: Any,
+    market_data: Any,
+    *,
+    fred: Any | None = None,
+    kronos: Any | None = None,
+    derivatives: Any | None = None,
+) -> dict[str, Source]:
     """Every Source, over the store and the market-data provider. Construction does no
-    I/O; a subscription decides which ones a decide actually reads."""
+    I/O; a subscription decides which ones a decide actually reads. Unless passed in, the
+    Kronos client comes from ``TRADER_KRONOS_URL`` (blank = no forecast) and the
+    derivatives one from ``TRADER_DERIVATIVES_VENUES``."""
     from trader.loop.vendor_sources import (
         POLYMARKET,
         RETAIL_SENTIMENT,
@@ -185,6 +224,22 @@ def build_sources(db: Any, market_data: Any, *, fred: Any | None = None) -> dict
         VendorReadsRepo,
     )
 
+    if kronos is None or derivatives is None:
+        from trader.data.derivatives import DerivativesClient
+        from trader.data.kronos import KronosClient
+        from trader.ops.config import get_settings
+
+        settings = get_settings()
+        if kronos is None and settings.kronos_url:
+            kronos = KronosClient(
+                settings.kronos_url,
+                paths=settings.kronos_paths,
+                horizon_bars=settings.signal_horizon_bars,
+            )
+        venues = [v.strip() for v in settings.derivatives_venues.split(",") if v.strip()]
+        if derivatives is None and venues:
+            derivatives = DerivativesClient(venues)
+
     sentiment = SentimentSource(SentimentRepo(db))
     vendor_reads = VendorReadsRepo(db)
     openbb = OpenBBRepo(db)
@@ -195,6 +250,8 @@ def build_sources(db: Any, market_data: Any, *, fred: Any | None = None) -> dict
         FRED: FredSource(fred if fred is not None else getattr(market_data, "fred", None)),
         SENTIMENT: sentiment,
         HELD_POSITION: HeldPositionSource(sentiment),
+        KRONOS: KronosSource(kronos),
+        CRYPTO_DERIVATIVES: CryptoDerivativesSource(derivatives),
         EARNINGS: OpenBBSource(EARNINGS, openbb),
         OPTIONS: OpenBBSource(OPTIONS, openbb),
         FUNDAMENTALS: OpenBBSource(FUNDAMENTALS, openbb),
@@ -867,4 +924,102 @@ class LessonsSource:
             "\n".join(entries),
             tuple(entries),
             available_at=max(row["available_at"] for row in served),
+        )
+
+
+# --- shadow signals (#144) --------------------------------------------------------------
+
+
+def _reading_version(reading: Mapping[str, Any]) -> str:
+    """A shadow signal's Source version: a hash of the reading the journal records. The
+    readings are fetched or sampled, not stored rows, so the content is the identity."""
+    blob = json.dumps(reading, sort_keys=True, default=str)
+    return hashlib.sha256(blob.encode()).hexdigest()[:16]
+
+
+def kronos_line(reading: Mapping[str, Any]) -> str:
+    return (
+        f"{reading['share_up']:.0%} of {reading['paths']} sampled paths end up after"
+        f" {reading['horizon_bars']} x {reading['interval']} bars; forward return median"
+        f" {reading['median']:+.2%}, p10 {reading['p10']:+.2%}, p90 {reading['p90']:+.2%}"
+    )
+
+
+class KronosSource:
+    """A Kronos-small forecast from the sidecar over the symbol's last bars. The bars come
+    from ``params.market_data``, the builder's provider, which replay freezes at
+    ``as_of``; a pinned read keeps only bars before it too. Available when the last bar
+    it saw closed. Version: a reading hash."""
+
+    name = KRONOS
+
+    def __init__(self, client: Any | None) -> None:  # data.kronos.KronosClient
+        self._client = client
+
+    async def read(
+        self, symbol: Symbol, *, as_of: datetime | None, params: Mapping[str, Any]
+    ) -> SourceSlice | None:
+        market_data = params.get("market_data")
+        if self._client is None or market_data is None:
+            return None
+        bars = await market_data.get_bars(symbol, KRONOS_INTERVAL, KRONOS_LOOKBACK)
+        if as_of is not None:
+            bars = [b for b in bars if b.ts < as_of]
+        if len(bars) < KRONOS_MIN_BARS:
+            return None
+        forecast = await self._client.forecast(symbol.ticker, bars)
+        reading = forecast.as_dict()
+        return SourceSlice(
+            self.name,
+            _reading_version(reading),
+            _read_clock(as_of, params),
+            kronos_line(reading),
+            reading,
+            available_at=forecast.last_bar_ts + KRONOS_BAR,
+        )
+
+
+def derivatives_line(reading: Mapping[str, Any]) -> str:
+    def pct(value: float | None, digits: int) -> str:
+        return "n/a" if value is None else f"{value:+.{digits}%}"
+
+    venues = ", ".join(v["venue"] for v in reading["venues"])
+    return (
+        f"{reading['base']} perpetuals ({venues}): funding rate"
+        f" {pct(reading['funding_rate'], 4)} per period, open interest 24h change"
+        f" {pct(reading['oi_change_24h'], 2)}, mark vs index basis {pct(reading['basis'], 3)}"
+    )
+
+
+class CryptoDerivativesSource:
+    """BTC and ETH perp funding, open interest and basis from ccxt public endpoints,
+    fetched on use. Nothing here keeps a point-in-time history, so a pinned read (replay)
+    returns nothing rather than today's numbers; a live reading is available when it is
+    fetched. Version: a reading hash."""
+
+    name = CRYPTO_DERIVATIVES
+
+    def __init__(self, client: Any | None) -> None:  # data.derivatives.DerivativesClient
+        self._client = client
+
+    async def read(
+        self, symbol: Symbol, *, as_of: datetime | None, params: Mapping[str, Any]
+    ) -> SourceSlice | None:
+        base = symbol.ticker.split("/", 1)[0]
+        if (
+            self._client is None
+            or as_of is not None
+            or symbol.asset_class is not AssetClass.CRYPTO
+            or base not in DERIVATIVES_BASES
+        ):
+            return None
+        reading = (await self._client.snapshot(base)).as_dict()
+        clock = _read_clock(as_of, params)
+        return SourceSlice(
+            self.name,
+            _reading_version(reading),
+            clock,
+            derivatives_line(reading),
+            reading,
+            available_at=clock,
         )

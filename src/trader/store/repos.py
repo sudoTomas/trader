@@ -43,6 +43,7 @@ class DecisionsRepo:
         bot_id: int | None = None,
         bot_version: int | None = None,
         source_versions: dict[str, Any] | None = None,
+        signals: dict[str, Any] | None = None,
     ) -> int:
         row = await self._db.fetch_one(
             """
@@ -50,9 +51,9 @@ class DecisionsRepo:
                                    decision, risk_verdicts, desk_verdicts, confirm,
                                    macro_view_version, brief_version, cost_usd, latency_ms,
                                    profile_version, served_by, bot_id, bot_version,
-                                   source_versions)
+                                   source_versions, signals)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s)
+                    %s, %s)
             RETURNING id
             """,
             (
@@ -75,6 +76,7 @@ class DecisionsRepo:
                 bot_id,
                 bot_version,
                 Jsonb(source_versions) if source_versions is not None else None,
+                Jsonb(signals) if signals is not None else None,
             ),
         )
         assert row is not None

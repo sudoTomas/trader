@@ -102,6 +102,9 @@ _Avoid_: snapshot
 **Availability time**:
 The instant a piece of information became public: a view's compile, a poll, a filing's acceptance by SEC, the end of a daily print's day, a vendor read's fetch. A replayed step reads only information whose availability time is at or before it; anything later, or undated, is withheld.
 _Avoid_: timestamp, as-of (the as-of is the step being replayed)
+**Shadow signal**:
+A Source whose readings are journaled on every decide and scored against the bars that came after, before any Bot reads it: the Kronos forecast and the crypto derivatives reading. A Bot reads one in its prompt only when that Bot's switch for it is on, and the switch stays off until the signal's scores pass.
+_Avoid_: feature, indicator (an indicator is computed from the bars in the prompt), alpha
 
 **Blind replay**:
 A replay whose prompts withhold the symbol's identity, calendar dates and dollar values, so the model cannot recall what the asset did over the window. Run beside a named replay of the same window, the gap shows how much of the replay P&L is memory. Sources that name the asset in free text are dropped. Live prompts are never blind.

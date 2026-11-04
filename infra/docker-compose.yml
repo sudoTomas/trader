@@ -83,5 +83,31 @@ services:
     mem_limit: 1g
     memswap_limit: 1g
 
+  kronos:
+    # Kronos forecast sidecar (#144), opt-in: `--profile kronos up -d --build kronos`.
+    # Point the trader at it with TRADER_KRONOS_URL (http://kronos:8095 from the app
+    # container, http://localhost:8095 from a host systemd unit). The trader decides as
+    # usual while it is down. Runbook: docs/runbooks/shadow-signals.md.
+    profiles: ["kronos"]
+    build:
+      context: kronos
+      args:
+        # A CUDA PyTorch base for the GPU box; the default slim image runs on CPU.
+        BASE_IMAGE: ${KRONOS_BASE_IMAGE:-python:3.12-slim}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8095:8095"  # unauthenticated: never expose beyond the host
+    # Acceptance (#144): the sidecar stays under 2 GB. Kronos-small is 24.7M parameters;
+    # the cap is the PyTorch runtime's, and `GET /health` reports the peak.
+    mem_limit: 2g
+    memswap_limit: 2g
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
 volumes:
   trader-db:
