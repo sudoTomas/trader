@@ -703,6 +703,44 @@ class OpenBBRepo:
         )
 
 
+class VendorReadsRepo:
+    """Producer fetches for the vendor Sources (#142): append-only, one row per fetch.
+    ``symbol`` None is a market-wide read (Polymarket)."""
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def add(self, *, source: str, symbol: str | None, payload: dict[str, Any]) -> int:
+        row = await self._db.fetch_one(
+            "INSERT INTO vendor_reads (source, symbol, payload) VALUES (%s, %s, %s) RETURNING id",
+            (source, symbol, Jsonb(payload)),
+        )
+        assert row is not None
+        return row["id"]
+
+    async def latest(self, source: str, symbol: str | None) -> Row | None:
+        rows = await self.recent(source, symbol, limit=1)
+        return rows[0] if rows else None
+
+    async def recent(self, source: str, symbol: str | None, limit: int = 50) -> list[Row]:
+        """Newest first; ``symbol`` None is the market-wide row."""
+        return await self._db.fetch_all(
+            "SELECT * FROM vendor_reads WHERE source = %s AND symbol IS NOT DISTINCT FROM %s"
+            " ORDER BY ts DESC, id DESC LIMIT %s",
+            (source, symbol, limit),
+        )
+
+    async def listing(
+        self, *, source: str | None = None, symbol: str | None = None, limit: int = 50
+    ) -> list[Row]:
+        """Every vendor's rows, newest first, optionally filtered (the operator's view)."""
+        return await self._db.fetch_all(
+            "SELECT * FROM vendor_reads WHERE (%s::text IS NULL OR source = %s)"
+            " AND (%s::text IS NULL OR symbol = %s) ORDER BY ts DESC, id DESC LIMIT %s",
+            (source, source, symbol, symbol, limit),
+        )
+
+
 class UsageRepo:
     """Daily LLM usage rollup (M2). Accumulates real token counts so budgets see real spend."""
 

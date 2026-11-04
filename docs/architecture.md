@@ -116,6 +116,27 @@ SignalScheduler → ContextBuilder → (analyst desk) → Decider → (Confirm) 
   (Nasdaq, SEC, FINRA). A breaker per provider skips one that failed three times running
   for 6 h; a failed fetch writes nothing, so the Source shows its last row with its age
   (flagged `STALE` past 3 d / 2 d / 10 d). A sidecar that is down only means no new rows.
+  A row has no older vintage (a consensus or a chain is only known as of its read), so its
+  availability time is its fetch: replay, and the earnings blackout in replay, see it only
+  from then on.
+- **Point in time** (#142, `loop/pit.py`) — every slice carries its **availability time**
+  (when the newest thing in it became public), and the ContextBuilder reads every Source
+  through one guard: in replay a read is clamped to `as_of` (a clock past it is served as of
+  it) and a slice dated after `as_of`, or undated, is refused. FRED prints count from the end
+  of their day, so an 11:00 step reads yesterday's VIX close. Look-ahead tests cover every
+  subscribable Source (asserted).
+- **Vendor Sources** (#142, `loop/vendor_sources.py`; producers in `research/edgar.py`,
+  `polymarket.py`, `retail.py`, run by `research/vendors.py`) — `sec_filings` (recent
+  8-K/10-Q/10-K and as-filed fundamentals; needs `TRADER_SEC_EDGAR_USER_AGENT`),
+  `polymarket` (market-wide odds on Fed decisions, CPI, recession) and `retail_sentiment`
+  (StockTwits message and label counts, Reddit post counts; its own lane beside X sentiment).
+  Each producer writes `vendor_reads` rows (the id is the Source version) only while some
+  Bot subscribes, at its own cadence, in the background of the tick. EDGAR items carry their
+  acceptance times, so a later row serves the past item by item, restatements at the vintage
+  then on file; Polymarket and retail counts have no vintage and serve replay only from
+  their fetch on. All three are off until a Bot subscribes, and blind replay drops them.
+  `TRADER_POLYMARKET_IN_MACRO_VIEW` (a gate, off) also feeds the latest odds to the Macro
+  View compiler, citable as `[poly:<id>]`. Doors: `vendor_reads`, `collect_vendor`.
 - **Decider** — one Nemotron completion, JSON-schema-validated, 1 retry with the validation
   errors fed back. Transient (infra) vs crash errors classified so infra blips don't arm
   backoff ([transient-vs-crash-backoff](lessons.md#transient-vs-crash-backoff)). Runs in

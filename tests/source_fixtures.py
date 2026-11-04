@@ -3,7 +3,9 @@
 Repo-shaped stubs (``current`` / ``get`` / ``latest`` / ``recent``) over fixed rows, so
 the parity snapshots in ``tests/golden/bot_one_prompts.json`` are reproducible without a
 database. The snapshots were taken on the pre-Sources ContextBuilder (constructor flags);
-the parity test rebuilds every scenario through Sources and compares byte for byte.
+the parity test rebuilds every scenario through Sources and compares byte for byte. The
+two replay snapshots' FRED line moved once, on purpose (#142): a pinned read no longer
+sees a daily print before its day has ended.
 """
 
 from __future__ import annotations

@@ -96,3 +96,29 @@ Each flip is a new, audited version; the spec reads
 `{"source": "sentiment", "params": {"poll_unheld": true}}`. A symbol two Bots would poll
 is still scored once per cadence. Bot #1 follows Settings and is refused. Decision for
 bot-2-largecap: leave it off and revisit after the shadow comparison.
+
+## Vendor Sources: SEC filings, Polymarket odds, retail chatter
+
+Three more Sources (#142), each off until a Bot names it. Subscribing is what starts the
+fetching: a producer runs only for Sources some Bot subscribes to, in the background of
+the tick (EDGAR every 6 h, Polymarket and StockTwits/Reddit every hour).
+
+- `sec_filings` — recent 8-K/10-Q/10-K and as-filed fundamentals for US filers. SEC
+  needs an identity: set `TRADER_SEC_EDGAR_USER_AGENT` (a name and a contact address) in
+  `.env` and restart; without it the Source is simply absent.
+- `polymarket` — odds on `TRADER_POLYMARKET_TOPICS` (Fed decision, CPI, recession). Keyless.
+- `retail_sentiment` — StockTwits message and label counts and Reddit post counts, beside
+  X sentiment (not merged into it). Keyless.
+
+```bash
+trader bot version bot-2-largecap --source sentiment --source brief --source held_position \
+  --source macro_view --source sec_filings --source polymarket --source retail_sentiment
+trader vendors collect sec_filings --symbol AAPL   # one fetch now, to check it answers
+trader vendors history --source sec_filings        # the recorded rows (Source versions)
+```
+
+`--source` replaces the list, so name the existing Sources too. In replay every lane is
+point in time: EDGAR items are dated by SEC acceptance, so a replay before the first fetch
+still sees what was on file then; Polymarket and retail rows count only from their fetch on.
+Feeding the odds to the shared Macro View is a separate gate,
+`TRADER_POLYMARKET_IN_MACRO_VIEW`, through the decide-change gate.

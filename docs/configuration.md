@@ -23,6 +23,7 @@ Gates at a glance (all default closed):
 - `TRADER_BRIEFS_ENABLED` = `false`
 - `TRADER_DESK_ENABLED` = `false`
 - `TRADER_SENTIMENT_TRIGGER_ENABLED` = `false`
+- `TRADER_POLYMARKET_IN_MACRO_VIEW` = `false`
 
 ## Surfaces / auth
 
@@ -119,6 +120,8 @@ Notes, Macro View compilation, briefs, the decision desk and X sentiment. Every 
 | `TRADER_SENTIMENT_SWING_THRESHOLD` | `float` | `0.5` | tuning | Score move between polls that wakes the trader; scores are on [-1, 1]. |
 | `TRADER_SENTIMENT_X_HANDLES` | `str` | *(empty)* | tuning | Comma-separated allowlist of X handles for x_search; empty = open search. |
 | `TRADER_OPENBB_BASE_URL` | `str` | *(empty)* | endpoint | The OpenBB sidecar (`openbb-api`, its own venv or container; `docs/runbooks/deploy.md`), e.g. `http://127.0.0.1:6900` (`http://openbb:6900` inside compose). The OpenBB producer (`trader openbb refresh`, on a timer) reads keyless providers through it and writes the `earnings`, `options` and `fundamentals` Sources a Bot may subscribe to, plus the earnings blackout's report dates. Empty: no producer; those Sources are absent and the blackout fails open. The trader never imports OpenBB and never waits on it to decide. |
+| `TRADER_POLYMARKET_TOPICS` | `str` | `Fed decision,CPI,recession` | tuning | Comma-separated Polymarket search topics for the `polymarket` Source (#142); each keeps its most-traded open markets. Polymarket is keyless and fetched only while some Bot subscribes to the Source. |
+| `TRADER_POLYMARKET_IN_MACRO_VIEW` | `bool` | `false` | gate | Lets the latest Polymarket odds into the Macro View compiler's inputs, citable as `[poly:<id>]`. The Macro View feeds every Bot, so this is a decide-behavior change for all of them: flip only through `docs/runbooks/decide-change-gate.md`. |
 | `TRADER_SCREENER_MIN_DOLLAR_VOLUME_USD` | `float` | `50000000.0` | tuning | Screener liquidity floor: symbols whose 20-day average dollar volume (close x volume) is below this are skipped before ranking. The screener is a query (`GET /screener`, `get_screener`, `trader screener run`); it is not wired into the decide loop. |
 | `TRADER_SCREENER_LOOKBACK_DAYS` | `int` | `90` | tuning | Daily bars the screener fetches per symbol (one or two multi-symbol Alpaca requests per query, nothing stored). Must cover the 60-day momentum window: at least 61 trading days; 90 leaves slack for holidays. |
 | `TRADER_SEAT_MODEL` | `str` | `grok-4.3` | endpoint | Grok model for the desk seats (`trader seat run <seat>`, a standalone process outside `trader-api`). Must be entitled on `/v1/responses` with `x_search` and `web_search` (probe matrix: docs/research/xai-api.md). The seat authenticates with the shared SuperGrok OAuth login by default (cross-process refresh lock, #68); `--credential api_key` pins `XAI_API_KEY` instead. |
@@ -167,3 +170,4 @@ Provider-conventional names without the prefix are the primary spelling; the `TR
 | `ALPACA_API_SECRET` (alias `TRADER_ALPACA_API_SECRET`) | `str` | *(empty)* | credential | Alpaca paper secret, paired with `ALPACA_API_KEY_ID`. |
 | `TWELVE_DATA_API_KEY` (alias `TRADER_TWELVE_DATA_API_KEY`) | `str` | *(empty)* | credential | Twelve Data key, equities-quote fallback only (untouched unless Alpaca equities data fails). Free tier: 8 credits/min, 800/day, 1 credit per quote or time_series call. |
 | `FRED_API_KEY` (alias `TRADER_FRED_API_KEY`) | `str` | *(empty)* | credential | FRED key (https://fred.stlouisfed.org/docs/api/api_key.html) for the macro context line; responses are TTL-cached 1h in-process, so live load is a few calls/day. Absent, the decide prompt carries no FRED line. |
+| `TRADER_SEC_EDGAR_USER_AGENT` (alias `SEC_EDGAR_USER_AGENT`) | `str` | *(empty)* | credential | Who SEC EDGAR sees for the `sec_filings` Source (#142): a name and a contact address, e.g. `Salamander research ops@example.org`. EDGAR is free and keyless but refuses anonymous callers (https://www.sec.gov/os/accessing-edgar-data). Not a secret, but an identity: blank leaves the EDGAR producer out of the build. |

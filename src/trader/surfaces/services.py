@@ -89,6 +89,7 @@ def build_registry(
     profiles: Any | None = None,
     caps: Any | None = None,
     openbb: Any | None = None,
+    vendors: Any | None = None,
 ) -> ServiceRegistry:
     """Construct the registry with the capabilities available in this build.
 
@@ -103,8 +104,9 @@ def build_registry(
     market-data credentials. ``providers`` is the model picker's Provider store
     (``llm.providers.ProviderDesk``) and ``profiles`` its Profile store
     (``llm.profiles.ProfileDesk``), and ``caps`` the Spend caps (``llm.caps.SpendCaps``),
-    all absent in store-less builds. ``openbb`` is the OpenBB producer
-    (``research.openbb.OpenBBProducer``), absent in store-less builds.
+    all absent in store-less builds. ``vendors`` is the vendor producers' desk
+    (``research.vendors.VendorDesk``, #142), absent in store-less builds. ``openbb`` is
+    the OpenBB producer (``research.openbb.OpenBBProducer``, #141), likewise.
     """
     reg = ServiceRegistry()
 
@@ -925,6 +927,38 @@ def build_registry(
             {"symbols": tickers, "status": out["status"], "written": out.get("written")},
         )
         return out
+
+    # --- vendor reads (#142) -------------------------------------------------
+
+    @reg.register(
+        "vendor_reads",
+        kind="query",
+        summary="Recorded SEC EDGAR, Polymarket and StockTwits/Reddit reads, newest first.",
+    )
+    async def vendor_reads(
+        source: str | None = None, symbol: str | None = None, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        from trader.store.repos import VendorReadsRepo
+
+        assert db is not None, "vendor_reads requires a store"
+        rows = await VendorReadsRepo(db).listing(
+            source=source, symbol=symbol, limit=min(limit, 200)
+        )
+        return [{**r, "ts": r["ts"].isoformat()} for r in rows]
+
+    @reg.register(
+        "collect_vendor",
+        kind="command",
+        summary="Fetch one vendor Source's data now (sec_filings, polymarket, retail_sentiment)"
+        " and record it; polymarket needs no symbol.",
+    )
+    async def collect_vendor(source: str, symbol: str | None = None) -> dict[str, Any]:
+        from trader.ops.config import get_settings
+
+        if vendors is None:
+            return {"status": "unavailable", "source": source, "reason": "no store in this build"}
+        target = get_settings().symbol_registry().get(symbol) if symbol else None
+        return await vendors.collect(source, target)
 
     # --- fred macro series ---------------------------------------------------
 
