@@ -105,6 +105,24 @@ SignalScheduler → ContextBuilder → (analyst desk) → Decider → (Confirm) 
   on every door and the desk's Bots page) to have its unheld symbols scored too, at the same
   cadence. Bots under the Supervisor share one poll stamp per symbol, so the polled set is
   held ∪ opted-in Bots' symbols, each once per cadence.
+- **Point in time** (#142, `loop/pit.py`) — every slice carries its **availability time**
+  (when the newest thing in it became public), and the ContextBuilder reads every Source
+  through one guard: in replay a read is clamped to `as_of` (a clock past it is served as of
+  it) and a slice dated after `as_of`, or undated, is refused. FRED prints count from the end
+  of their day, so an 11:00 step reads yesterday's VIX close. Look-ahead tests cover every
+  subscribable Source (asserted).
+- **Vendor Sources** (#142, `loop/vendor_sources.py`; producers in `research/edgar.py`,
+  `polymarket.py`, `retail.py`, run by `research/vendors.py`) — `sec_filings` (recent
+  8-K/10-Q/10-K and as-filed fundamentals; needs `TRADER_SEC_EDGAR_USER_AGENT`),
+  `polymarket` (market-wide odds on Fed decisions, CPI, recession) and `retail_sentiment`
+  (StockTwits message and label counts, Reddit post counts; its own lane beside X sentiment).
+  Each producer writes `vendor_reads` rows (the id is the Source version) only while some
+  Bot subscribes, at its own cadence, in the background of the tick. EDGAR items carry their
+  acceptance times, so a later row serves the past item by item, restatements at the vintage
+  then on file; Polymarket and retail counts have no vintage and serve replay only from
+  their fetch on. All three are off until a Bot subscribes, and blind replay drops them.
+  `TRADER_POLYMARKET_IN_MACRO_VIEW` (a gate, off) also feeds the latest odds to the Macro
+  View compiler, citable as `[poly:<id>]`. Doors: `vendor_reads`, `collect_vendor`.
 - **Shadow signals** (#144) — two more Sources, `kronos` and `crypto_derivatives`, scored
   before any Bot reads them. `kronos` sends the symbol's last 400 1h bars to the Kronos-small
   sidecar (`infra/kronos/`, its own GPU container, `TRADER_KRONOS_URL`) and keeps N sampled

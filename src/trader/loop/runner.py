@@ -163,6 +163,9 @@ class BotRunner:
     # Last poll per ticker. A Supervisor hands every Bot Bot #1's dict, so a symbol two
     # Bots would poll is scored once per cadence, whichever Bot gets there first.
     sentiment_stamps: dict[str, datetime] = field(default_factory=dict)
+    # The vendor producers (#142; research.vendors.VendorDesk), shared by every Bot. Each
+    # tick hands it this Bot's Sources: a vendor no Bot subscribes to is never fetched.
+    vendors: Any | None = None
     # Per-symbol throttle: these symbols journal as shadow — full decide + risk pass,
     # nothing submitted — while the rest of the build trades live-paper, so a new
     # symbol earns its gate without pausing the proven slice
@@ -378,6 +381,9 @@ class BotRunner:
                 for row in rows
             }
             await self._poll_sentiment(now, positions)
+            if self.vendors is not None:
+                # Background: a slow vendor never holds up the stop or the decide.
+                self.vendors.schedule(self.sources or [], self.symbols, now=now)
             marks = await self._marks(now, positions, entries)
             # Holds never reach RiskGuard.evaluate, so the session would otherwise
             # stay frozen until the model wants to trade (#24).

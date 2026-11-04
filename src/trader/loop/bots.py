@@ -44,6 +44,7 @@ from trader.loop.sources import (
     bot_one_subscriptions,
     subscriptions,
 )
+from trader.loop.vendor_sources import VENDOR_SOURCES
 from trader.ops.config import Settings, get_settings
 from trader.risk.breakers import BreakerStore
 from trader.risk.sleeves import sleeve_capital
@@ -61,9 +62,10 @@ REPLAY = "replay"
 LIVE = "live"
 SHADOW = "shadow"
 SYMBOL_MODES = (REPLAY, SHADOW, LIVE)
-#: Every Source a Bot may subscribe to (loop/sources.build_sources wires each one).
+#: Every Source a Bot may subscribe to (loop/sources.build_sources wires each one). The
+#: vendor Sources (#142) are opt-in like the rest: no Bot reads one until it subscribes.
 SOURCE_NAMES = frozenset(
-    {MACRO_VIEW, BRIEF, FRED, SENTIMENT, HELD_POSITION, KRONOS, CRYPTO_DERIVATIVES}
+    {MACRO_VIEW, BRIEF, FRED, SENTIMENT, HELD_POSITION, KRONOS, CRYPTO_DERIVATIVES, *VENDOR_SOURCES}
 )
 # Any constant: the transaction-scoped advisory lock every Owner check takes.
 _OWNER_LOCK = 126

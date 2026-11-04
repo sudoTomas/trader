@@ -110,7 +110,8 @@ Bot #1 follows Settings and is refused: it journals the shadow signals only.
 ## Replay
 
 Kronos replays point-in-time: its bars come from the replay's provider, frozen at each
-step, and the step records the reading under `signals`. Kronos was trained on public
+step, and the step records the reading under `signals`. Its availability time is the close
+of the last bar it saw, so the point-in-time guard (`loop/pit.py`) passes it. Kronos was trained on public
 market data up to its release, so a replay window before that is in-sample for it.
 The derivatives Source reads nothing in replay: the venues' current numbers are not the
 numbers at a past step.

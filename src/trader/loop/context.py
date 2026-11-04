@@ -13,6 +13,8 @@ The builder reads exactly the Sources the Bot version subscribes to, each in its
 budgeted lane, and keeps every slice on the context so the journal can record its Source
 version. The live call reads current state (``as_of=None``); replay passes ``as_of`` so
 every lane is the state that existed at that instant, not whichever row is current today.
+Every Source is read through the point-in-time guard (``trader.loop.pit``, #142): in replay
+a read is clamped to ``as_of`` and a slice dated after it is refused, whatever the Source.
 Every lane is advisory by construction — it feeds the decider only, never RiskGuard (see
 docs/lessons.md#macro-view-advisory-firewall) — and a failing Source drops its lane; it
 never blocks a decide.
@@ -35,6 +37,7 @@ from trader.core.symbols import Symbol
 from trader.core.types import Bar
 from trader.data.base import MarketData, MarketDataError
 from trader.data.indicators import ema, realized_vol, rsi, sma
+from trader.loop.pit import point_in_time
 from trader.loop.scheduler import Trigger
 from trader.loop.sources import (  # noqa: F401 - lane renderers re-exported for callers
     BRIEF,
@@ -63,6 +66,7 @@ from trader.loop.sources import (  # noqa: F401 - lane renderers re-exported for
     unrealized_pnl_frac,
 )
 from trader.loop.sources import subscriptions as _subscriptions
+from trader.loop.vendor_sources import VENDOR_LANES
 
 log = structlog.get_logger(__name__)
 
@@ -218,6 +222,11 @@ class DecisionContext:
                 f" [via {piece.source} {piece.version}]:",
                 f"  {piece.text}",
             ]
+        for piece in self.sources:
+            header = VENDOR_LANES.get(piece.source)
+            if header is not None:
+                lines += ["", f"{header} [via {piece.source} #{piece.version}]:"]
+                lines += [f"  {line}" for line in piece.text.splitlines()]
 
         if self.analysts:
             lines += [
@@ -275,7 +284,8 @@ class ContextBuilder:
         self._data = market_data
         self._intervals = intervals
         self._lookback = lookback
-        self._sources = dict(sources or {})
+        # One as-of rule for every Source, existing or new (#142).
+        self._sources = {name: point_in_time(src) for name, src in (sources or {}).items()}
         self._subscriptions = _subscriptions(subscriptions)
 
     async def build(
