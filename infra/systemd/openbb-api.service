@@ -1,0 +1,27 @@
+# OpenBB sidecar (#141) as a systemd *user* unit: `openbb-api` from its own venv on
+# 127.0.0.1:6900. The trader calls it over HTTP (TRADER_OPENBB_BASE_URL) and never imports
+# OpenBB; when it is down, the earnings/options/fundamentals Sources simply age.
+#
+# Install (pinned versions in infra/openbb/requirements.txt):
+#   uv venv ~/.local/share/openbb/venv --python 3.12
+#   uv pip install --python ~/.local/share/openbb/venv -r infra/openbb/requirements.txt
+#   cp infra/systemd/openbb-api.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now openbb-api
+#   curl -s -o /dev/null -w '%{http_code}\n' 'http://127.0.0.1:6900/api/v1/equity/calendar/earnings?provider=nasdaq'
+# Runbook: docs/runbooks/deploy.md ("OpenBB sidecar").
+[Unit]
+Description=OpenBB sidecar (openbb-api :6900 - earnings, options, fundamentals for trader)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=%h/.local/share/openbb
+# Loopback only: the API is unauthenticated.
+ExecStart=%h/.local/share/openbb/venv/bin/openbb-api --host 127.0.0.1 --port 6900
+Restart=always
+RestartSec=30
+# A scraper box, not a model server: keep it small beside the trader.
+MemoryMax=1G
+
+[Install]
+WantedBy=default.target

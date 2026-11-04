@@ -88,6 +88,7 @@ def build_registry(
     providers: Any | None = None,
     profiles: Any | None = None,
     caps: Any | None = None,
+    openbb: Any | None = None,
 ) -> ServiceRegistry:
     """Construct the registry with the capabilities available in this build.
 
@@ -102,7 +103,8 @@ def build_registry(
     market-data credentials. ``providers`` is the model picker's Provider store
     (``llm.providers.ProviderDesk``) and ``profiles`` its Profile store
     (``llm.profiles.ProfileDesk``), and ``caps`` the Spend caps (``llm.caps.SpendCaps``),
-    all absent in store-less builds.
+    all absent in store-less builds. ``openbb`` is the OpenBB producer
+    (``research.openbb.OpenBBProducer``), absent in store-less builds.
     """
     reg = ServiceRegistry()
 
@@ -865,6 +867,64 @@ def build_registry(
         if sentiment is None:
             return {"status": "unavailable", "reason": "no xAI credential in this build"}
         return await sentiment.get_x_sentiment(get_settings().symbol_registry().get(symbol))
+
+    # --- OpenBB research inputs (#141) ----------------------------------------
+
+    @reg.register(
+        "openbb",
+        kind="query",
+        summary="OpenBB producer rows (earnings, options, fundamentals), newest first: what"
+        " those Sources and the earnings blackout read.",
+    )
+    async def openbb_snapshots(
+        symbol: str | None = None, kind: str | None = None, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        from trader.store.repos import OpenBBRepo
+
+        assert db is not None, "openbb requires a store"
+        rows = await OpenBBRepo(db).recent(
+            kind=kind, symbol=symbol.upper() if symbol else None, limit=min(max(limit, 1), 200)
+        )
+        return [{**r, "ts": r["ts"].isoformat()} for r in rows]
+
+    async def _openbb_symbols() -> list[str]:
+        """Every Bot's US stocks: the names that report earnings and list options."""
+        from trader.core.symbols import AssetClass
+        from trader.loop.bots import BotDesk
+        from trader.ops.config import get_settings
+
+        assert db is not None
+        universe = get_settings().symbol_registry()
+        tickers: set[str] = set()
+        for bot in await BotDesk(db).list():
+            for ticker in bot["spec"].get("symbols") or {}:
+                try:
+                    if universe.get(ticker).asset_class is AssetClass.US_EQUITY:
+                        tickers.add(ticker)
+                except KeyError:
+                    continue
+        return sorted(tickers)
+
+    @reg.register(
+        "refresh_openbb",
+        kind="command",
+        summary="Fetch earnings, options and fundamentals from the OpenBB sidecar now and"
+        " write their Source rows (every Bot's US stocks unless symbols are given).",
+    )
+    async def refresh_openbb(symbols: str | None = None) -> dict[str, Any]:
+        if openbb is None:
+            return {"status": "unavailable", "reason": "no OpenBB producer in this build"}
+        tickers = (
+            [t.strip().upper() for t in symbols.split(",") if t.strip()]
+            if symbols
+            else await _openbb_symbols()
+        )
+        out = await openbb.refresh(tickers)
+        await _audit_command(
+            "refresh_openbb",
+            {"symbols": tickers, "status": out["status"], "written": out.get("written")},
+        )
+        return out
 
     # --- fred macro series ---------------------------------------------------
 

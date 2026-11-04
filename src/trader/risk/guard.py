@@ -17,6 +17,9 @@ Order (deliberate — an audit reader should see the cheap absolute gates first)
                    deterministic stop (and any caller that does not pass ``draft``) is
                    not, so the stop is what protects a fresh position
 5. stop cooldown — a symbol the deterministic stop closed takes no opens for a while
+5b. earnings blackout — a US stock takes no opens or adds from ``earnings_blackout_days``
+                   sessions before its report through the report session. With no
+                   usable calendar it fails open, and its allow verdict says so
 6. sizing clamps — max position fraction, Kelly cap, minimum notional floor
 6b. no-trade band — an open or add below ``no_trade_band_frac`` of the Sleeve's equity
                    (after the clamps) is not worth the spread and fees it pays. Exits
@@ -31,7 +34,7 @@ Order (deliberate — an audit reader should see the cheap absolute gates first)
                    Otherwise a symbol the venue will not fill fractionally gets a share
                    count, rounded down; less than one share is a deny.
 
-Risk-reducing intents (closing//reducing an existing position) skip 5-9: a limit that
+Risk-reducing intents (closing//reducing an existing position) skip 5-9 (5b included): a limit that
 trapped an open position would be a larger risk than the one it guards. Exits are
 never clamped to the approval cap — closes must land. The min hold (4b) is the one
 exception, and it binds the model alone: the stop still closes inside it.
@@ -62,6 +65,7 @@ from trader.core.symbols import AssetClass, Symbol
 from trader.core.types import OrderIntent, Side
 from trader.risk.approvals import ApprovalService
 from trader.risk.breakers import BreakerStore, RiskState
+from trader.risk.earnings import EarningsCalendar, applies, earnings_blackout, load_earnings
 from trader.risk.kelly import vol_adjusted_kelly
 from trader.risk.limits import RiskLimits
 from trader.risk.sleeves import UNATTRIBUTED_BOT_ID, Sleeve, SleeveLedger
@@ -120,6 +124,8 @@ class RiskContext:
     # hold). None = no hold: the stop and every other caller.
     opened_at: datetime | None = None
     sleeve: Sleeve | None = None  # the Bot's share of the account; None = the whole account
+    # The symbol's newest earnings row (the blackout's report date); None = none known.
+    earnings: EarningsCalendar | None = None
 
     @property
     def sizing_equity(self) -> float:
@@ -312,6 +318,19 @@ def evaluate_chain(ctx: RiskContext) -> RiskOutcome:
             f"stopped out at {ctx.stopped_at.isoformat()}; no opens until {until.isoformat()}",
         )
     allow("stop_cooldown", notional)
+
+    # --- 5b. earnings blackout (opens and adds; exits returned above) ---------
+    days = ctx.limits.earnings_blackout_days
+    if days > 0 and applies(ctx.symbol):
+        check = earnings_blackout(ctx.earnings, ctx.symbol, ctx.now, days)
+        if check.blocked:
+            return deny("earnings_blackout", check.reason)
+        if check.failed_open:
+            # No calendar must not freeze trading; the verdict journals that it was skipped.
+            log.warning(
+                "earnings_blackout_failed_open", symbol=ctx.symbol.ticker, reason=check.reason
+            )
+        allow("earnings_blackout", notional, check.reason)
 
     # --- 6. sizing clamps ----------------------------------------------------
     cap = ctx.sizing_equity * ctx.limits.max_position_frac
@@ -572,6 +591,11 @@ class RiskGuard:
                     else None
                 ),
                 sleeve=sleeve,
+                earnings=(
+                    await load_earnings(self._db, symbol.ticker, now)
+                    if self._limits.earnings_blackout_days > 0 and applies(symbol)
+                    else None
+                ),
             )
         )
 

@@ -325,6 +325,20 @@ class Settings(BaseSettings):
             "changes. Trims, closes and the stop always pass. `0` turns the band off."
         ),
     )
+    risk_earnings_blackout_days: int = setting(
+        1,
+        category=TUNING,
+        section="Risk limits (RiskGuard)",
+        description=(
+            "Earnings blackout: RiskGuard denies an open or add on a US stock from this many "
+            "sessions before its earnings report through the report session (verdict "
+            "`earnings_blackout`). Closes, trims and the stop always pass. The report date "
+            "comes from the OpenBB producer's earnings rows (`TRADER_OPENBB_BASE_URL`); with "
+            "no row for the symbol, or one older than 3 days, the check fails open with a "
+            "logged warning and its verdict says so. `0` turns the blackout off."
+        ),
+        ge=0,
+    )
 
     # --- Replay costs ---
     replay_half_spread_bps_equity: float = setting(
@@ -467,6 +481,20 @@ class Settings(BaseSettings):
         category=TUNING,
         section="Research Desk",
         description="Comma-separated allowlist of X handles for x_search; empty = open search.",
+    )
+    openbb_base_url: str = setting(
+        "",
+        category=ENDPOINT,
+        section="Research Desk",
+        description=(
+            "The OpenBB sidecar (`openbb-api`, its own venv or container; "
+            "`docs/runbooks/deploy.md`), e.g. `http://127.0.0.1:6900` (`http://openbb:6900` "
+            "inside compose). The OpenBB producer (`trader openbb refresh`, on a timer) reads "
+            "keyless providers through it and writes the `earnings`, `options` and "
+            "`fundamentals` Sources a Bot may subscribe to, plus the earnings blackout's "
+            "report dates. Empty: no producer; those Sources are absent and the blackout "
+            "fails open. The trader never imports OpenBB and never waits on it to decide."
+        ),
     )
     screener_min_dollar_volume_usd: float = setting(
         50_000_000.0,

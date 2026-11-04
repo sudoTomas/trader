@@ -28,7 +28,11 @@ close of a position the replay opened (or a seed with `opened_at`) less than
 `TRADER_RISK_MIN_HOLD_SECONDS` before leaves the book as it is (`min_hold_denied`; the step
 is marked `min_hold`), and the no-trade band: an open below `TRADER_RISK_NO_TRADE_BAND_FRAC`
 of the run's equity (the Sleeve when `sleeve_usd` is set) never enters the book
-(`no_trade_band_denied`; the step is marked `no_trade_band`).
+(`no_trade_band_denied`; the step is marked `no_trade_band`). The earnings blackout
+(`TRADER_RISK_EARNINGS_BLACKOUT_DAYS`) keeps a stock's opens out of the book from the
+session before its report through the report session, read from the calendar row the
+OpenBB producer had written by that step; a step with no row yet fails open, as live
+(`earnings_blackout_denied`; the step is marked `earnings_blackout`).
 
 Every replayed fill pays the cost model (#139, `TRADER_REPLAY_*`): half-spread (5 bp
 equities/ETFs, 10 bp crypto, while replay has no real quote), a 2 bp fee, Alpaca's 25 bp

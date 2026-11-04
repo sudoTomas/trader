@@ -1,0 +1,67 @@
+{
+  "_comment": "OBBject bodies in openbb-api's shape (ODP v5 field names), trimmed to the fields the producer reads; one per route, keyed by route/provider. Today in the tests is 2026-08-12.",
+  "equity/calendar/earnings/nasdaq": {
+    "results": [
+      {"report_date": "2026-08-26", "symbol": "NVDA", "name": "NVIDIA Corporation", "eps_previous": 0.68, "eps_consensus": 1.01, "num_estimates": 18, "period_ending": "2026-07", "reporting_time": "after-hours", "market_cap": 4100000000000},
+      {"report_date": "2026-09-03", "symbol": "XYZ", "name": "Not watched", "eps_consensus": 0.1, "reporting_time": "not-supplied"},
+      {"report_date": "2026-09-10", "symbol": "AAPL", "name": "Apple Inc.", "eps_previous": 1.46, "eps_consensus": 1.62, "num_estimates": 25, "period_ending": "2026-09", "reporting_time": "pre-market", "market_cap": 3500000000000}
+    ],
+    "provider": "nasdaq",
+    "warnings": null,
+    "chart": null,
+    "extra": {"metadata": {"route": "/equity/calendar/earnings"}}
+  },
+  "equity/fundamental/historical_eps/nasdaq": {
+    "results": [
+      {"symbol": "AAPL", "date": "2026-09-10", "eps_actual": null, "eps_estimated": 1.62, "fiscal_period_ending": "Sep 2026", "surprise_percent": null},
+      {"symbol": "AAPL", "date": "2026-07-30", "eps_actual": 1.57, "eps_estimated": 1.43, "fiscal_period_ending": "Jun 2026", "surprise_percent": 0.0979},
+      {"symbol": "AAPL", "date": "2026-05-01", "eps_actual": 1.65, "eps_estimated": 1.62, "fiscal_period_ending": "Mar 2026", "surprise_percent": 0.0185}
+    ],
+    "provider": "nasdaq"
+  },
+  "derivatives/options/chains/cboe": {
+    "results": {
+      "underlying_symbol": ["AAPL", "AAPL", "AAPL", "AAPL", "AAPL", "AAPL", "AAPL", "AAPL", "AAPL", "AAPL", "AAPL", "AAPL"],
+      "underlying_price": [230.0, 230.0, 230.0, 230.0, 230.0, 230.0, 230.0, 230.0, 230.0, 230.0, 230.0, 230.0],
+      "contract_symbol": ["AAPL260812C00230000", "AAPL260812P00230000", "AAPL260814C00215000", "AAPL260814P00215000", "AAPL260814C00220000", "AAPL260814P00220000", "AAPL260814C00230000", "AAPL260814P00230000", "AAPL260814C00240000", "AAPL260814P00240000", "AAPL260814C00245000", "AAPL260814P00245000"],
+      "expiration": ["2026-08-12", "2026-08-12", "2026-08-14", "2026-08-14", "2026-08-14", "2026-08-14", "2026-08-14", "2026-08-14", "2026-08-14", "2026-08-14", "2026-08-14", "2026-08-14"],
+      "dte": [0, 0, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2],
+      "strike": [230.0, 230.0, 215.0, 215.0, 220.0, 220.0, 230.0, 230.0, 240.0, 240.0, 245.0, 245.0],
+      "option_type": ["call", "put", "call", "put", "call", "put", "call", "put", "call", "put", "call", "put"],
+      "bid": [1.0, 0.9, 15.1, 0.2, 10.4, 0.5, 3.9, 3.4, 0.6, 10.1, 0.2, 15.0],
+      "ask": [1.2, 1.1, 15.5, 0.3, 10.8, 0.7, 4.1, 3.6, 0.8, 10.5, 0.3, 15.4],
+      "mark": [null, null, null, null, null, null, null, null, null, null, null, null],
+      "last_trade_price": [1.1, 1.0, 15.3, 0.25, 10.6, 0.6, 4.0, 3.5, 0.7, 10.3, 0.25, 15.2],
+      "implied_volatility": [0.5, 0.52, 0.36, 0.38, 0.32, 0.34, 0.28, 0.3, 0.26, 0.29, 0.25, 0.28]
+    },
+    "provider": "cboe"
+  },
+  "equity/estimates/consensus/nasdaq": {
+    "results": [
+      {"symbol": "AAPL", "name": "Apple Inc.", "target_high": 300.0, "target_low": 200.0, "target_consensus": 255.5, "target_median": 260.0, "buy_ratings": 30, "hold_ratings": 10, "sell_ratings": 2, "consensus_rating": "Buy"}
+    ],
+    "provider": "nasdaq"
+  },
+  "equity/fundamental/ratios/nasdaq": {
+    "results": [
+      {"period_ending": "2026-03-31", "fiscal_period": "Q2", "net_profit_margin": 0.25, "return_on_equity": 1.45, "current_ratio": 0.9},
+      {"period_ending": "2026-06-30", "fiscal_period": "Q3", "net_profit_margin": 0.24, "return_on_equity": 1.5, "current_ratio": 0.87}
+    ],
+    "provider": "nasdaq"
+  },
+  "equity/ownership/insider_trading/sec": {
+    "results": [
+      {"symbol": "AAPL", "filing_date": "2026-07-02", "transaction_date": "2026-07-01", "owner_name": "Officer One", "transaction_type": "Sale", "acquisition_or_disposition": "Disposition", "securities_transacted": 10000, "transaction_price": 225.0},
+      {"symbol": "AAPL", "filing_date": "2026-06-16", "transaction_date": "2026-06-15", "owner_name": "Director Two", "transaction_type": "Purchase", "acquisition_or_disposition": "Acquisition", "securities_transacted": 500, "transaction_price": 210.0},
+      {"symbol": "AAPL", "filing_date": "2026-03-02", "transaction_date": "2026-03-01", "owner_name": "Officer One", "transaction_type": "Sale", "acquisition_or_disposition": "Disposition", "securities_transacted": 99999, "transaction_price": 240.0}
+    ],
+    "provider": "sec"
+  },
+  "equity/shorts/short_interest/finra": {
+    "results": [
+      {"settlement_date": "2026-07-15", "symbol": "AAPL", "issue_name": "Apple Inc.", "market_class": "NNM", "current_short_position": 114000000, "previous_short_position": 110000000, "avg_daily_volume": 60000000, "days_to_cover": 1.9, "change": 4000000, "change_pct": 3.64},
+      {"settlement_date": "2026-07-31", "symbol": "AAPL", "issue_name": "Apple Inc.", "market_class": "NNM", "current_short_position": 120000000, "previous_short_position": 114000000, "avg_daily_volume": 66000000, "days_to_cover": 1.8, "change": 6000000, "change_pct": 5.26}
+    ],
+    "provider": "finra"
+  }
+}

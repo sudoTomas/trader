@@ -22,6 +22,10 @@ _Avoid_: second decider, override, veto
 The time after a Bot opens a symbol during which RiskGuard refuses the model's close of that position. Only a Draft is held; the stop is not, so the stop is what protects a fresh position.
 _Avoid_: lockup, cooldown (a cooldown follows a stop)
 
+**Earnings blackout**:
+The sessions around a stock's earnings report in which RiskGuard refuses an open or add on it: from the session before the report through the report session. A trim, a close or the stop always passes. Without a recent earnings calendar for the stock the blackout is skipped, never assumed, and the decision records that it was skipped.
+_Avoid_: earnings freeze, quiet period (that is the company's own pre-report silence)
+
 **No-trade band**:
 The smallest open or add worth placing, as a share of the Bot's Sleeve. RiskGuard refuses an open or add below it, because its costs outweigh the change it makes; a trim, a close or the stop is never refused for its size.
 _Avoid_: dust, minimum notional (that is a fixed dollar floor), rebalance threshold
@@ -88,7 +92,7 @@ A breaker trip or a position drift on the whole account. It stops every Bot from
 _Avoid_: global kill, panic
 
 **Source**:
-A body of information a Bot reads when it decides: the Macro View, a brief, sentiment, an economic series, a held position. A Bot subscribes to the Sources it wants. A Source only reads what has already been produced; it never fetches into storage on the live path.
+A body of information a Bot reads when it decides: the Macro View, a brief, sentiment, an economic series, a held position, a stock's earnings calendar, its options market or its fundamentals. A Bot subscribes to the Sources it wants. A Source only reads what has already been produced; it never fetches into storage on the live path.
 _Avoid_: feed, lane (a lane is one section of the prompt), input
 
 **Source version**:

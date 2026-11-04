@@ -35,6 +35,7 @@ from trader.loop.sources import (
     FRED,
     HELD_POSITION,
     MACRO_VIEW,
+    OPENBB_SOURCES,
     POLL_UNHELD,
     SENTIMENT,
     bot_one_subscriptions,
@@ -58,7 +59,7 @@ LIVE = "live"
 SHADOW = "shadow"
 SYMBOL_MODES = (REPLAY, SHADOW, LIVE)
 #: Every Source a Bot may subscribe to (loop/sources.build_sources wires each one).
-SOURCE_NAMES = frozenset({MACRO_VIEW, BRIEF, FRED, SENTIMENT, HELD_POSITION})
+SOURCE_NAMES = frozenset({MACRO_VIEW, BRIEF, FRED, SENTIMENT, HELD_POSITION, *OPENBB_SOURCES})
 # Any constant: the transaction-scoped advisory lock every Owner check takes.
 _OWNER_LOCK = 126
 

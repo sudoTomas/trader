@@ -570,6 +570,36 @@ def sentiment_fetch(symbol: str = typer.Argument(..., help="Symbol, e.g. ETH/USD
     typer.echo(json.dumps(_post("/research/sentiment/fetch", params={"symbol": symbol}), indent=2))
 
 
+openbb_app = typer.Typer(
+    help="OpenBB research inputs: earnings, options, fundamentals (sidecar producer)."
+)
+app.add_typer(openbb_app, name="openbb")
+
+
+@openbb_app.command("show")
+def openbb_show(
+    symbol: str = typer.Option(None, help="Filter to one symbol."),
+    kind: str = typer.Option(None, help="earnings, options or fundamentals."),
+    limit: int = typer.Option(20, help="How many rows, newest first."),
+) -> None:
+    """Print the OpenBB producer's rows (what those Sources and the blackout read)."""
+    params: dict = {"limit": limit}
+    if symbol is not None:
+        params["symbol"] = symbol
+    if kind is not None:
+        params["kind"] = kind
+    typer.echo(json.dumps(_get("/research/openbb", params=params), indent=2))
+
+
+@openbb_app.command("refresh")
+def openbb_refresh(
+    symbols: str = typer.Option(None, help="Comma-separated tickers; default every Bot's stocks."),
+) -> None:
+    """Fetch from the OpenBB sidecar now and write the Source rows (the timer runs this)."""
+    params = {"symbols": symbols} if symbols else None
+    typer.echo(json.dumps(_post("/research/openbb/refresh", params=params), indent=2))
+
+
 fred_app = typer.Typer(help="FRED macro series (VIX etc.) — the prints the decide context sees.")
 app.add_typer(fred_app, name="fred")
 
