@@ -356,6 +356,26 @@ async def test_a_replay_never_reads_a_lesson_settled_after_the_bar(db: Database)
     assert "Lessons from" not in last["prompt"]
 
 
+async def test_a_replay_with_named_sources_still_reads_lessons_when_asked(db: Database):
+    """A Bot version's Source list (``config.sources``) plus ``lessons`` reads the Lessons
+    too: the flag is not dropped just because the run names its Sources."""
+    from trader.eval.replay import ReplayHarness
+
+    await seed_hourly_bars(db)
+    start = NOW - timedelta(hours=1)
+    await seed_lesson(db, "Settled before the window.", start - timedelta(hours=1))
+    harness = ReplayHarness(db, StubLLM([HOLD]), StubMarketData())
+    await harness.run(
+        BTC,
+        start,
+        NOW,
+        label="named-sources-lessons",
+        config={"sources": [{"source": "held_position"}], "lessons": True},
+    )
+    step = await db.fetch_one("SELECT prompt FROM eval_steps ORDER BY id DESC LIMIT 1")
+    assert "Settled before the window." in step["prompt"]
+
+
 async def test_a_blind_replay_drops_the_lessons_source():
     from trader.eval.blind import split_sources
 

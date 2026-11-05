@@ -40,7 +40,7 @@ closes carries the seed's mark-to-bars move as ``unrealized_pnl``. Seed the SAME
 position into the baseline and the candidate; only the block should differ.
 
 The Lessons Source (#143) replays the same way: ``config={"lessons": true}`` adds it to
-Bot #1's lanes (or name it in ``sources``), ``config={"bot_id": n}`` reads Bot ``n``'s
+Bot #1's lanes or to the run's named ``sources``, ``config={"bot_id": n}`` reads Bot ``n``'s
 Lessons (default Bot #1), and each step reads only the Lessons whose Settlement had
 settled by that step (``available_at <= as_of``).
 
@@ -86,6 +86,7 @@ from trader.loop.decider import (
 )
 from trader.loop.scheduler import Trigger
 from trader.loop.sources import (
+    LESSONS,
     bot_one_subscriptions,
     build_sources,
     subscriptions,
@@ -286,6 +287,9 @@ class ReplayHarness:
                 exit_review=exit_review,
                 lessons=bool(config.get("lessons", False)),
             )
+        elif config.get("lessons") and LESSONS not in {s["source"] for s in sources}:
+            # The flag adds the Lessons to a named list too, rather than going silently unread.
+            sources = [*sources, {"source": LESSONS, "params": {}}]
         seed = config.get("exit_review_seed")
         prompt_variant = config.get("prompt_variant", DEFAULT_VARIANT)
         sleeve = config.get("sleeve_usd")
