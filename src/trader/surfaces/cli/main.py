@@ -435,6 +435,23 @@ def provider_set_key(
     _echo_masked(_post(f"/providers/{name}/key", json_body=body))
 
 
+@provider_app.command("set-extra-body")
+def provider_set_extra_body(
+    name: str = typer.Argument(..., help="Provider name."),
+    extra_body: str = typer.Argument(
+        ..., help="""A JSON object, e.g. '{"reasoning":{"enabled":false}}'; '{}' clears."""
+    ),
+) -> None:
+    """Set extra request fields merged into every chat request the Provider's Chains send."""
+    from trader.llm.openai_compat import loads_extra_body
+
+    try:
+        body = {"extra_body": loads_extra_body(extra_body)}
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    _echo_masked(_post(f"/providers/{name}/extra-body", json_body=body))
+
+
 @provider_app.command("rename")
 def provider_rename(
     name: str = typer.Argument(..., help="Current name."),

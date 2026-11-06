@@ -1382,6 +1382,18 @@ def build_registry(
         async def set_provider_key(name: str, api_key: str) -> dict[str, Any]:
             return await providers.set_key(name, api_key)
 
+        @reg.register(
+            "set_provider_extra_body",
+            kind="command",
+            summary="Set a Provider's extra request fields: a JSON object merged into every"
+            ' chat request its Chains send (e.g. {"reasoning": {"enabled": false}}); {}'
+            " clears. chat_template_kwargs only on the Nemotron preset endpoint.",
+        )
+        async def set_provider_extra_body(
+            name: str, extra_body: dict[str, Any] | str
+        ) -> dict[str, Any]:
+            return await providers.set_extra_body(name, extra_body)
+
         @reg.register("rename_provider", kind="command", summary="Rename a model Provider.")
         async def rename_provider(name: str, new_name: str) -> dict[str, Any]:
             return await providers.rename(name, new_name)

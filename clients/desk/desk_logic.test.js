@@ -35,6 +35,7 @@ test('a route cannot carry the API key off box', () => {
 const MODEL_WRITES = [
   ['POST', '/providers'],
   ['POST', '/providers/openrouter/key'],
+  ['POST', '/providers/openrouter/extra-body'],
   ['POST', '/providers/openrouter/rename'],
   ['POST', '/providers/openrouter/prices'],
   ['POST', '/providers/openrouter/prices/clear'],
