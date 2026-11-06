@@ -25,7 +25,7 @@ from psycopg.types.json import Jsonb
 from trader.llm.anthropic import AnthropicClient
 from trader.llm.base import LLMError
 from trader.llm.jev import JevClient
-from trader.llm.nemotron import apply_thinking_guard
+from trader.llm.nemotron import apply_thinking_guard, on_preset_endpoint
 from trader.llm.openai_compat import OpenAIChatClient
 from trader.llm.probe import probe
 from trader.llm.providers import (
@@ -74,10 +74,6 @@ class ProfileNotFound(LookupError):
     """No Profile (or Profile version) by that name."""
 
 
-def _same_endpoint(left: str, right: str) -> bool:
-    return bool(right.strip()) and left.strip().rstrip("/") == right.strip().rstrip("/")
-
-
 class ProfileDesk:
     """Every Profile operation, and the Role routes the shared registry reads per call."""
 
@@ -101,8 +97,8 @@ class ProfileDesk:
         self._anthropic_transport = anthropic_transport
         self._caps = caps
         self._xai_auth = xai_auth
-        # (provider id, provider updated_at, role kind, model) -> client. A key change or
-        # rename bumps updated_at, so the next call builds a fresh client.
+        # (provider id, provider updated_at, role kind, model) -> client. A key, extra body
+        # or name change bumps updated_at, so the next call builds a fresh client.
         self._clients: dict[tuple[Any, ...], Any] = {}
 
     # --- reads ------------------------------------------------------------------------
@@ -342,8 +338,8 @@ class ProfileDesk:
     def _client(
         self, role: str, entry: dict[str, Any], price: tuple[float, float] = (0.0, 0.0)
     ) -> Any:
-        """One client per Provider, model, price and kind of call; rebuilt after a key
-        change (updated_at) or a price change. Probe clients are unpriced: unmetered."""
+        """One client per Provider, model, price and kind of call; rebuilt after a key or
+        extra-body change (updated_at) or a price change. Probe clients are unpriced: unmetered."""
         sentiment = role == "sentiment"
         cache_key = (entry["id"], entry["updated_at"], entry["model"], sentiment, price)
         price_in, price_out = price
@@ -392,12 +388,18 @@ class ProfileDesk:
         else:
             # The Nemotron thinking guard follows the URL, never the preset name: the
             # self-hosted vLLM gets it whatever it is called, and no vendor ever does.
-            on_preset = _same_endpoint(entry["base_url"], self._nemotron_base_url)
+            on_preset = on_preset_endpoint(entry["base_url"], self._nemotron_base_url)
+            extra = dict(entry.get("extra_body") or {})
+            if on_preset:
+                extra = apply_thinking_guard(extra)
+            elif extra.pop("chat_template_kwargs", None) is not None:
+                # Saved while this URL was the preset's; it is not now, so it never leaves.
+                log.warning("vendor_chat_template_kwargs_dropped", provider=entry["name"])
             client = OpenAIChatClient(
                 name=entry["name"],
                 model=entry["model"],
                 base_url=entry["base_url"],
-                extra_body=apply_thinking_guard({}) if on_preset else {},
+                extra_body=extra,
                 grammar_safe=not on_preset,
                 price_in=price_in,
                 price_out=price_out,

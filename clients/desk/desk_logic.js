@@ -14,7 +14,7 @@ const ALLOWED_WRITES = [
   ['POST', /^\/risk\/approvals\/\d+\/resolve\?/],
   // The Models page (#106). Keys travel in the body, once; nothing returns them.
   ['POST', exact('/providers')],
-  ['POST', exact(`/providers/${NAME}/(key|rename|prices|prices/clear)`)],
+  ['POST', exact(`/providers/${NAME}/(key|extra-body|rename|prices|prices/clear)`)],
   ['DELETE', exact(`/providers/${NAME}`)],
   ['POST', exact('/profiles')],
   ['POST', exact(`/profiles/${NAME}/(rename|duplicate|activate|revert)`)],

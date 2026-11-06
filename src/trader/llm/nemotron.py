@@ -40,6 +40,14 @@ def apply_thinking_guard(extra_body: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
+def on_preset_endpoint(base_url: str, nemotron_base_url: str) -> bool:
+    """True when ``base_url`` is the Nemotron preset's endpoint (``TRADER_NEMOTRON_BASE_URL``).
+    Unset, no URL is. Only that endpoint may receive ``chat_template_kwargs``."""
+    return bool(nemotron_base_url.strip()) and (
+        base_url.strip().rstrip("/") == nemotron_base_url.strip().rstrip("/")
+    )
+
+
 #: Baked into every preset request — see module docstring.
 CHAT_TEMPLATE_KWARGS = apply_thinking_guard({})
 

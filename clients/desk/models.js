@@ -182,6 +182,7 @@ function providerRow(p) {
       el('span', { className: 'pill', textContent: p.local ? `${p.preset} · local` : p.preset }),
       mono(p.base_url),
       el('span', { className: 'sub', textContent: p.key || 'no key' }),
+      p.extra_body && Object.keys(p.extra_body).length ? mono(JSON.stringify(p.extra_body)) : null,
       test ? el('span', { className: `pill ${test.ok ? 'ok' : 'bad'}`, textContent: test.text }) : null,
       el('span', { className: 'spacer' }),
       btn('Test', async () => {
@@ -196,6 +197,9 @@ function providerRow(p) {
         renderModels(true);
       }),
       btn('Replace key', () => openEditor('key', p.name, { api_key: '' })),
+      p.kind === 'openai_compat' || p.kind === 'xai'
+        ? btn('Extra body', () => openEditor('extra', p.name, { text: JSON.stringify(p.extra_body || {}) }))
+        : null,
       btn('Remove', async () => {
         if (!(await ask(`Remove ${p.name}?`, 'Its stored key is deleted. A Provider in a current Chain cannot be removed.', 'Remove'))) return;
         act(`Removed ${p.name}`, () => window.trader.del(`/providers/${p.name}`));
@@ -211,6 +215,27 @@ function providerRow(p) {
           if (await act(`Key replaced for ${p.name}`, () => window.trader.post(`/providers/${p.name}/key`, { api_key: key }), { inline: true })) models.editing = null;
           renderModels(true);
         }, { className: 'primary' })),
+      models.refusal ? el('div', { className: 'refusal', textContent: models.refusal }) : null));
+  }
+  if (editingIs('extra', p.name)) {
+    // Extra request fields, merged into every chat request this Provider's Chains send.
+    const draft = models.editing;
+    row.append(el('div', { className: 'editor' },
+      el('div', { className: 'editrow' },
+        input({ value: draft.text, placeholder: '{"reasoning":{"enabled":false}}', ariaLabel: `${p.name} extra body` }, (v) => { draft.text = v; }),
+        btn('Save extra body', async () => {
+          let extra;
+          try {
+            extra = draft.text.trim() ? JSON.parse(draft.text) : {};
+          } catch {
+            models.refusal = 'extra body must be a JSON object';
+            renderModels(true);
+            return;
+          }
+          if (await act(`Extra body saved for ${p.name}`, () => window.trader.post(`/providers/${p.name}/extra-body`, { extra_body: extra }), { inline: true })) models.editing = null;
+          renderModels(true);
+        }, { className: 'primary' })),
+      el('span', { className: 'sub', textContent: 'A JSON object merged into every chat request; {} clears.' }),
       models.refusal ? el('div', { className: 'refusal', textContent: models.refusal }) : null));
   }
   return row;

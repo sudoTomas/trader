@@ -6,6 +6,10 @@ for a hosted one, an API key. Keys are encrypted at rest with Fernet (master key
 no read returns one, only ``••••`` plus its last four characters. Every change is audited
 without the value.
 
+A Provider may also carry extra request fields (``extra_body``), a JSON object merged
+into every chat request a Profile Chain sends it; ``chat_template_kwargs`` is refused on
+any Provider but the Nemotron preset's endpoint, so no vendor ever receives it.
+
 Roles reach Providers through Profiles (``llm.profiles``, #107).
 """
 
@@ -24,7 +28,10 @@ from urllib.parse import urlparse
 import httpx
 import psycopg
 from cryptography.fernet import Fernet, InvalidToken
+from psycopg.types.json import Jsonb
 
+from trader.llm.nemotron import on_preset_endpoint
+from trader.llm.openai_compat import loads_extra_body
 from trader.llm.pricing import PriceBook
 from trader.store.audit import audit
 from trader.store.db import Database
@@ -112,6 +119,7 @@ def _out(row: dict[str, Any]) -> dict[str, Any]:
         "base_url": row["base_url"],
         "local": row["local"],
         "key": _mask(row["key_last4"]),
+        "extra_body": row["extra_body"],
     }
 
 
@@ -127,9 +135,11 @@ class ProviderDesk:
         http: httpx.AsyncClient | None = None,
         anthropic_transport: Any | None = None,  # httpx2 transport, for tests
         clock: Callable[[], float] = time.time,
+        nemotron_base_url: str = "",
     ) -> None:
         self._db = db
         self._actor = actor
+        self._nemotron_base_url = nemotron_base_url
         self._http = http or httpx.AsyncClient(timeout=10.0)
         self._anthropic_transport = anthropic_transport
         self.prices = PriceBook(db, self._http, clock=clock)
@@ -216,6 +226,38 @@ class ProviderDesk:
         if row is None:
             raise ProviderNotFound(name)
         await self._audit("set_provider_key", name, {})
+        return _out(row)
+
+    async def set_extra_body(self, name: str, extra_body: dict[str, Any] | str) -> dict[str, Any]:
+        """Replace a Provider's extra request fields, a JSON object (or its text) merged
+        into every chat request its Chains send. ``{}`` or blank clears them."""
+        if isinstance(extra_body, str):
+            try:
+                extra_body = loads_extra_body(extra_body)
+            except ValueError as exc:
+                raise ProviderError(str(exc)) from exc
+        if not isinstance(extra_body, dict):
+            raise ProviderError("extra body must be a JSON object")
+        row = await self._row(name)
+        if extra_body and row["kind"] not in (OPENAI_COMPAT, XAI):
+            raise ProviderError(
+                f"{name} is {row['kind']}; extra request fields reach OpenAI-chat Providers only"
+            )
+        if "chat_template_kwargs" in extra_body and not on_preset_endpoint(
+            row["base_url"], self._nemotron_base_url
+        ):
+            raise ProviderError(
+                "chat_template_kwargs goes to the Nemotron preset endpoint"
+                f" (TRADER_NEMOTRON_BASE_URL) only; {name} is not it"
+            )
+        row = await self._db.fetch_one(
+            "UPDATE llm_providers SET extra_body = %s, updated_at = now() WHERE name = %s"
+            " RETURNING *",
+            (Jsonb(extra_body), name),
+        )
+        if row is None:
+            raise ProviderNotFound(name)
+        await self._audit("set_provider_extra_body", name, {"extra_body": extra_body})
         return _out(row)
 
     async def rename(self, name: str, new_name: str) -> dict[str, Any]:

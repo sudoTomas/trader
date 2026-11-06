@@ -22,7 +22,7 @@ a client of the API: it adds no trading logic, and RiskGuard still decides every
   and model usage. The Book's broker holdings show each position's stop and how far the
   price is from it.
 - **Models:** each Role's Chain with prices, today's spend against its cap, and an
-  on-demand Probe; Providers (add, test, replace key, remove, find local servers);
+  on-demand Probe; Providers (add, test, replace key, extra request fields, remove, find local servers);
   Profiles (switch, rename, duplicate, history and revert). The header chip names the
   decide model, and a decision's detail names the model and Profile version that served it.
 

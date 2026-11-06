@@ -70,7 +70,9 @@ async def desks(
 ) -> tuple[ProviderDesk, ProfileDesk]:
     # The mock answers the price catalog with a 404 too: tests never leave the machine.
     offline = httpx.AsyncClient(transport=httpx.MockTransport(server))
-    providers = ProviderDesk(db, secrets_key=SECRETS_KEY, http=offline)
+    providers = ProviderDesk(
+        db, secrets_key=SECRETS_KEY, http=offline, nemotron_base_url=nemotron_base_url
+    )
     profiles = ProfileDesk(
         db,
         providers,
@@ -249,6 +251,55 @@ async def test_the_nemotron_guard_follows_the_url_and_nothing_else(db: Database)
     bodies = {host: body for host, _, body in server.calls}
     assert bodies["spark"]["chat_template_kwargs"] == {"enable_thinking": False}
     assert "chat_template_kwargs" not in bodies["box"]
+
+
+async def test_a_providers_extra_body_reaches_its_chain_calls(db: Database):
+    server = ModelServer({("openrouter.ai", "nemo-120b"): DECIDE_OK, ("box", "llama"): DECIDE_OK})
+    providers, profiles = await with_local(db, server, nemotron_base_url="http://box:8000/v1")
+    await providers.add(name="openrouter", preset="openrouter", api_key="sk-or-key-1234")
+    await providers.set_extra_body("openrouter", {"reasoning": {"enabled": False}})
+    # The preset endpoint keeps its guard whatever the Provider asks for.
+    await providers.set_extra_body(
+        "box", {"chat_template_kwargs": {"enable_thinking": True, "reasoning_budget": 0}}
+    )
+    _, registry = env_registry(profiles)
+    await profiles.create("trial")
+    await profiles.set_chain(
+        "trial",
+        "decide",
+        [{"provider": "openrouter", "model": "nemo-120b"}, {"provider": "box", "model": "llama"}],
+    )
+
+    bodies = {host: body for host, _, body in server.calls}
+    assert bodies["openrouter.ai"]["reasoning"] == {"enabled": False}
+    assert "chat_template_kwargs" not in bodies["openrouter.ai"]
+    assert bodies["box"]["chat_template_kwargs"] == {
+        "enable_thinking": False,
+        "reasoning_budget": 0,
+    }
+
+    # A change reaches the next call, like a key change: the cached client is rebuilt.
+    messages = [{"role": "user", "content": "decide"}]
+    await registry.complete("decide", messages)
+    await providers.set_extra_body("openrouter", {"reasoning": {"effort": "low"}})
+    server.calls.clear()
+    await registry.complete("decide", messages)
+    [(_, _, body)] = server.calls
+    assert body["reasoning"] == {"effort": "low"}
+
+
+async def test_template_kwargs_never_leave_once_the_preset_moves_elsewhere(db: Database):
+    server = ModelServer({("box", "llama"): DECIDE_OK})
+    providers, _ = await with_local(db, server, nemotron_base_url="http://box:8000/v1")
+    await providers.set_extra_body("box", {"chat_template_kwargs": {"x": 1}, "top_k": 20})
+    # TRADER_NEMOTRON_BASE_URL now names another host: box is a plain endpoint again.
+    _, moved = await desks(db, server, nemotron_base_url="http://spark:8009/v1")
+    await moved.create("trial")
+    await moved.set_chain("trial", "decide", [{"provider": "box", "model": "llama"}])
+
+    [(_, _, body)] = server.calls
+    assert body["top_k"] == 20
+    assert "chat_template_kwargs" not in body
 
 
 async def test_a_provider_in_a_current_chain_cannot_be_removed(db: Database):

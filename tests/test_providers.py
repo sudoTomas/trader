@@ -30,6 +30,7 @@ async def test_a_hosted_provider_lists_with_its_key_masked(db: Database):
         "base_url": "https://openrouter.ai/api/v1",
         "local": False,
         "key": "••••abcd",
+        "extra_body": {},
     }
     assert await desk(db).list() == [added]
     # At rest the key is ciphertext: the plaintext appears nowhere in the row.
@@ -138,6 +139,75 @@ async def test_unknown_provider_is_a_lookup_error(db: Database):
             await call
 
 
+NO_REASONING = {"reasoning": {"enabled": False}}
+
+
+async def test_extra_body_round_trips_through_the_service_and_is_audited(db: Database):
+    from trader.surfaces.services import build_registry
+
+    registry = build_registry(db, providers=desk(db))
+    await registry.get("add_provider").handler(
+        name="openrouter", preset="openrouter", api_key=OPENROUTER_KEY
+    )
+
+    set_ = await registry.get("set_provider_extra_body").handler(
+        name="openrouter", extra_body=NO_REASONING
+    )
+
+    assert set_["extra_body"] == NO_REASONING
+    [listed] = await registry.get("providers").handler()
+    assert listed["extra_body"] == NO_REASONING
+    # A JSON string is read the way TRADER_DECIDE_EXTRA_BODY is; {} (or blank) clears it.
+    as_text = await desk(db).set_extra_body("openrouter", '{"provider": {"sort": "price"}}')
+    assert as_text["extra_body"] == {"provider": {"sort": "price"}}
+    cleared = await desk(db).set_extra_body("openrouter", {})
+    assert cleared["extra_body"] == {}
+
+    rows = await db.fetch_all(
+        "SELECT action, subject, payload FROM audit_events"
+        " WHERE action = 'set_provider_extra_body' ORDER BY id"
+    )
+    assert [(r["subject"], r["payload"]) for r in rows] == [
+        ("openrouter", {"extra_body": NO_REASONING}),
+        ("openrouter", {"extra_body": {"provider": {"sort": "price"}}}),
+        ("openrouter", {"extra_body": {}}),
+    ]
+    assert OPENROUTER_KEY not in str(rows)
+
+
+async def test_extra_body_refuses_what_must_not_reach_a_vendor(db: Database):
+    d = ProviderDesk(db, secrets_key=SECRETS_KEY, nemotron_base_url="http://spark:8009/v1")
+    await d.add(name="openrouter", preset="openrouter", api_key=OPENROUTER_KEY)
+    await d.add(name="claude", preset="anthropic", api_key="sk-ant-key-1234")
+    await d.add(name="nemo", preset="custom", base_url="http://spark:8009/v1/")
+
+    with pytest.raises(ProviderError, match="chat_template_kwargs"):
+        await d.set_extra_body("openrouter", {"chat_template_kwargs": {"enable_thinking": True}})
+    for bad in ("[1, 2]", "not json", '"text"'):
+        with pytest.raises(ProviderError, match="JSON object"):
+            await d.set_extra_body("openrouter", bad)
+    with pytest.raises(ProviderError, match="OpenAI-chat"):
+        await d.set_extra_body("claude", NO_REASONING)
+    with pytest.raises(ProviderNotFound):
+        await d.set_extra_body("ghost", NO_REASONING)
+    assert {p["name"]: p["extra_body"] for p in await d.list()} == {
+        "claude": {},
+        "nemo": {},
+        "openrouter": {},
+    }
+
+    # On the Nemotron preset's own endpoint the template kwargs are its business.
+    kwargs = {"chat_template_kwargs": {"reasoning_budget": 0}}
+    assert (await d.set_extra_body("nemo", kwargs))["extra_body"] == kwargs
+    # With no Nemotron endpoint configured, no Provider is it.
+    with pytest.raises(ProviderError, match="chat_template_kwargs"):
+        await desk(db).set_extra_body("nemo", kwargs)
+    saved = await db.fetch_all(
+        "SELECT 1 FROM audit_events WHERE action = 'set_provider_extra_body'"
+    )
+    assert len(saved) == 1  # refusals store and audit nothing
+
+
 def provider_http(seen: list, *, status: int = 200) -> httpx.AsyncClient:
     """Mock Provider endpoints: OpenAI-style /models and Ollama's /api/tags."""
 
@@ -215,6 +285,7 @@ PROVIDER_CAPABILITIES = {
     "discover_providers": "query",
     "add_provider": "command",
     "set_provider_key": "command",
+    "set_provider_extra_body": "command",
     "rename_provider": "command",
     "remove_provider": "command",
 }
@@ -315,6 +386,17 @@ def test_api_maps_refusals_to_4xx(clean_db: None):
             "/providers", params={"name": "o", "preset": "openai", "api_key": "k"}, headers=OPERATOR
         )
         assert in_query.status_code == 422
+        ghost = tc.post("/providers/ghost/extra-body", json={"extra_body": {}}, headers=OPERATOR)
+        assert ghost.status_code == 404
+        tc.post("/providers", json={"name": "o", "preset": "ollama"}, headers=OPERATOR)
+        vendor_kwargs = tc.post(
+            "/providers/o/extra-body",
+            json={"extra_body": {"chat_template_kwargs": {}}},
+            headers=OPERATOR,
+        )
+        assert vendor_kwargs.status_code == 422 and "chat_template_kwargs" in vendor_kwargs.text
+        not_object = tc.post("/providers/o/extra-body", json={"extra_body": [1]}, headers=OPERATOR)
+        assert not_object.status_code == 422
 
 
 def test_the_capture_key_cannot_reach_any_provider_route(clean_db: None):
@@ -330,6 +412,7 @@ def test_the_capture_key_cannot_reach_any_provider_route(clean_db: None):
         ("POST", "/providers", {"name": "x", "preset": "ollama"}),
         ("POST", "/providers/x/key", {"api_key": "k"}),
         ("POST", "/providers/x/rename", {"new_name": "y"}),
+        ("POST", "/providers/x/extra-body", {"extra_body": {}}),
         ("DELETE", "/providers/x", None),
     ]
     with TestClient(create_app(api_settings())) as tc:
@@ -390,6 +473,30 @@ def test_providers_are_identical_through_every_door(clean_db: None, monkeypatch)
             await db.close()
 
     direct, via_mcp, rotated = asyncio.run(via_registry_and_mcp())
+
+    # Extra request fields: CLI (a JSON argument) -> API -> service; MCP takes an object.
+    extra = runner.invoke(
+        cli.app, ["provider", "set-extra-body", "openrouter", '{"reasoning":{"enabled":false}}']
+    )
+    assert extra.exit_code == 0, extra.output
+    assert json.loads(extra.output)["extra_body"] == {"reasoning": {"enabled": False}}
+    bad = runner.invoke(cli.app, ["provider", "set-extra-body", "openrouter", "[1]"])
+    assert bad.exit_code != 0
+
+    async def extra_via_mcp() -> dict:
+        db = Database(min_size=1, max_size=1)
+        await db.open()
+        try:
+            async with Client(build_mcp(build_registry(db, providers=desk(db)))) as mcp_client:
+                done = await mcp_client.call_tool(
+                    "set_provider_extra_body",
+                    {"name": "ollama", "extra_body": {"keep_alive": "5m"}},
+                )
+            return done.structured_content
+        finally:
+            await db.close()
+
+    assert asyncio.run(extra_via_mcp())["extra_body"] == {"keep_alive": "5m"}
     assert "7777" in json.dumps(rotated) and "lan-key" not in json.dumps(rotated)
 
     with TestClient(create_app(settings)) as tc:
@@ -402,6 +509,10 @@ def test_providers_are_identical_through_every_door(clean_db: None, monkeypatch)
     assert via_api == via_cli
     assert direct == via_mcp
     assert via_api[0]["key"] == "••••7777"
+    assert {p["name"]: p["extra_body"] for p in via_api} == {
+        "ollama": {"keep_alive": "5m"},
+        "openrouter": {"reasoning": {"enabled": False}},
+    }
 
 
 def test_cli_prompts_for_a_hosted_key_without_echoing_it(clean_db: None, monkeypatch):

@@ -68,6 +68,10 @@ class ProviderKeyIn(BaseModel):
     api_key: str = Field(min_length=1)
 
 
+class ProviderExtraBodyIn(BaseModel):
+    extra_body: dict[str, Any]
+
+
 class ProviderRenameIn(BaseModel):
     new_name: str
 
@@ -433,6 +437,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/providers/{name}/key")
     async def set_provider_key(name: str, body: ProviderKeyIn) -> dict:
         return await registry.get("set_provider_key").handler(name=name, api_key=body.api_key)
+
+    @app.post("/providers/{name}/extra-body")
+    async def set_provider_extra_body(name: str, body: ProviderExtraBodyIn) -> dict:
+        return await registry.get("set_provider_extra_body").handler(
+            name=name, extra_body=body.extra_body
+        )
 
     @app.post("/providers/{name}/rename")
     async def rename_provider(name: str, body: ProviderRenameIn) -> dict:
@@ -845,7 +855,9 @@ def build_providers(db: Database, settings: Settings):
     unset, keyless local Providers still work and keyed ones are refused with a hint."""
     from trader.llm.providers import ProviderDesk
 
-    return ProviderDesk(db, secrets_key=settings.secrets_key)
+    return ProviderDesk(
+        db, secrets_key=settings.secrets_key, nemotron_base_url=settings.nemotron_base_url
+    )
 
 
 def build_caps(db: Database, settings: Settings):
