@@ -1,0 +1,46 @@
+# Nemotron 3.5 Lightning 30B-A3B NVFP4 on vLLM, as a systemd *user* unit, on :8009 (the
+# Nemotron preset URL, TRADER_NEMOTRON_BASE_URL). GB10-specific: see
+# docs/research/2026-11-spark-model-allocation.md (Plan B) and docs/deploy/dgx-spark.md.
+# The recipe is the model card's DGX Spark one (vLLM v0.27.1, DSpark drafter) with the
+# memory share cut from 0.85 to 0.22 so it fits beside qwen-vllm, Kev, Ollama and Kronos.
+#
+# Install:
+#   cp infra/systemd/vllm-lightning.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now vllm-lightning
+# Requires docker access for the user and the GB10 clock cap (nvidia-clock-cap, system
+# unit) — without it the box hard-powers-off under sustained prefill.
+[Unit]
+Description=Nemotron 3.5 Lightning NVFP4 on vLLM (:8009, decide backstop)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStartPre=-/usr/bin/docker rm -f vllm-lightning
+ExecStart=/usr/bin/docker run --rm --name vllm-lightning --gpus all \
+  -v %h/.cache/huggingface:/root/.cache/huggingface \
+  -p 8009:8000 \
+  vllm/vllm-openai:v0.27.1 \
+    --model nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4 \
+    --served-model-name nemotron-3.5-lightning \
+    --host 0.0.0.0 --port 8000 \
+    --moe-backend marlin \
+    --kv-cache-dtype fp8 \
+    --enable-prefix-caching \
+    --gpu-memory-utilization 0.22 \
+    --max-model-len 32768 \
+    --max-num-seqs 4 \
+    --mamba-backend flashinfer \
+    --mamba-cache-mode align \
+    --speculative_config.model nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DSpark \
+    --speculative_config.num_speculative_tokens 3 \
+    --reasoning-parser nemotron_v3 \
+    --tool-call-parser qwen3_coder \
+    --enable-auto-tool-choice
+ExecStop=/usr/bin/docker stop -t 30 vllm-lightning
+# vLLM can exit 0 on EngineDeadError, so restart on every exit.
+Restart=always
+RestartSec=30
+TimeoutStartSec=1200
+
+[Install]
+WantedBy=default.target

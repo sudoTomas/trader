@@ -1,0 +1,48 @@
+# Qwen3.6-35B-A3B NVFP4 on vLLM, as a systemd *user* unit, on :8012 — the local model for
+# coding and agent tools (OpenCode, Hermes). GB10-specific: see
+# docs/research/2026-11-spark-model-allocation.md (Plan B). The recipe is the model card's
+# DGX Spark one with the memory share cut from 0.4 to 0.30 and the context from 256K to
+# 128K. Start it after vllm-lightning: vLLM checks free memory at start.
+#
+# Install:
+#   cp infra/systemd/vllm-qwen.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now vllm-qwen
+# LAN only and unauthenticated, the same trust model as :8009.
+[Unit]
+Description=Qwen3.6-35B-A3B NVFP4 on vLLM (:8012, coding and agents)
+After=network-online.target vllm-lightning.service
+Wants=network-online.target
+
+[Service]
+ExecStartPre=-/usr/bin/docker rm -f vllm-qwen
+ExecStart=/usr/bin/docker run --rm --name vllm-qwen --gpus all \
+  -v %h/.cache/huggingface:/root/.cache/huggingface \
+  -p 8012:8000 \
+  vllm/vllm-openai:v0.27.1 \
+    --model nvidia/Qwen3.6-35B-A3B-NVFP4 \
+    --served-model-name qwen3.6-35b-a3b \
+    --host 0.0.0.0 --port 8000 \
+    --trust-remote-code \
+    --kv-cache-dtype fp8 \
+    --attention-backend flashinfer \
+    --moe-backend marlin \
+    --gpu-memory-utilization 0.30 \
+    --max-model-len 131072 \
+    --max-num-seqs 4 \
+    --max-num-batched-tokens 8192 \
+    --enable-chunked-prefill \
+    --async-scheduling \
+    --enable-prefix-caching \
+    --speculative-config '{"method":"mtp","num_speculative_tokens":3,"moe_backend":"triton"}' \
+    --load-format fastsafetensors \
+    --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_xml \
+    --enable-auto-tool-choice
+ExecStop=/usr/bin/docker stop -t 30 vllm-qwen
+# vLLM can exit 0 on EngineDeadError, so restart on every exit.
+Restart=always
+RestartSec=30
+TimeoutStartSec=1200
+
+[Install]
+WantedBy=default.target
