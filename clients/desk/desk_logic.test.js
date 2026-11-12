@@ -192,6 +192,26 @@ test('the Kev pill reads the Confirm and its skips', () => {
   assert.equal(confirmPill({ draft, p_same_action: 0.6, prefers: 'other_side' }).text, 'Kev · open 60% · prefers other side');
 });
 
+test('the Jev pill reads the new Confirm record', () => {
+  const draft = { action: 'open', side: 'buy' };
+  const base = { draft, answers: { grounded: 0.1 }, rule: [], questions_version: '2026-11-12.1', model: 'jev-1.15', latency_ms: 900, skipped: null };
+  const veto = confirmPill({ ...base, would_veto: true, veto_reason: 'news_against', vetoed: true, verdict: 'veto' });
+  assert.deepEqual([veto.text, veto.tone], ['Jev · veto: news against', 'warn']);
+  assert.equal(veto.title, 'jev-1.15 · 2026-11-12.1');
+  const off = confirmPill({ ...base, would_veto: true, veto_reason: 'ungrounded', vetoed: false, verdict: 'pass' });
+  assert.deepEqual([off.text, off.tone], ['Jev · would veto: ungrounded', 'warn']);
+  const pass = confirmPill({ ...base, would_veto: false, veto_reason: null, vetoed: false, verdict: 'pass' });
+  assert.deepEqual([pass.text, pass.tone], ['Jev · pass', 'ok']);
+  const close = confirmPill({ ...base, draft: { action: 'close', side: 'sell' }, would_veto: false, veto_reason: null, vetoed: false, verdict: 'recorded' });
+  assert.deepEqual([close.text, close.tone], ['Jev · recorded', '']);
+  assert.equal(confirmPill({ ...base, would_veto: true, veto_reason: null, vetoed: true, verdict: 'veto' }).text, 'Jev · veto: unspecified');
+  // A new-shape skip (vetoed: false, no answers) keeps the skipped rendering.
+  assert.deepEqual(confirmPill({ draft, skipped: 'HTTP 500', vetoed: false }), { tone: 'warn', text: 'Jev · skipped', title: 'HTTP 500' });
+  // An old row (journal-only stage) still renders as Kev.
+  const old = confirmPill({ draft, p_same_action: 0.31, prefers: 'hold', verdict: 'journal_only', model: 'kev-latest' });
+  assert.equal(old.text, 'Kev · open 31% · prefers hold');
+});
+
 test('every desk script compiles', () => {
   // Only the page runs in Playwright; this catches a syntax error in the main process too.
   const fs = require('node:fs');

@@ -11,16 +11,25 @@ from typing import Any
 
 from tests.test_loop import context_for
 from trader.llm.base import Completion, LLMError, Usage
+from trader.llm.registry import NoRoute
 
 
 class RoleLLM:
-    """LLMRegistry stand-in with per-role scripted replies; records (role, messages)."""
+    """LLMRegistry stand-in with per-role scripted replies; records (role, messages). A
+    structured ``state`` (Jev's) is recorded as one user message of its JSON, so tests that
+    read every text sent see it too."""
 
     def __init__(self, replies: dict[str, list[str | Exception]]) -> None:
         self.replies = {role: list(seq) for role, seq in replies.items()}
         self.calls: list[tuple[str, list[dict[str, Any]]]] = []
 
-    async def complete(self, role, messages, *, schema=None, max_tokens=1024, temperature=0.2):
+    async def complete(
+        self, role, messages, *, schema=None, max_tokens=1024, temperature=0.2, state=None
+    ):
+        if state is not None:
+            messages = [{"role": "user", "content": json.dumps(state)}]
+        if role not in self.replies:  # an unscripted Role has no route, as in the registry
+            raise NoRoute(f"no LLM provider configured for role '{role}'")
         self.calls.append((role, messages))
         reply = self.replies[role].pop(0)
         if isinstance(reply, Exception):

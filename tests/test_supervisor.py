@@ -450,7 +450,7 @@ async def test_a_bot_s_prompt_variant_selects_its_decide_rules(db: Database):
     seen: list = []
 
     class Recording(Confirmer):
-        async def confirm(self, ctx, decision):
+        async def confirm(self, ctx, decision, position=None):
             from trader.loop.decider import system_prompt
 
             seen.append(system_prompt(ctx))

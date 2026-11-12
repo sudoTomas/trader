@@ -38,11 +38,13 @@ from trader.core.types import Action, Decision, OrderIntent, Side
 from trader.data.base import MarketData, MarketDataError
 from trader.llm.base import Completion
 from trader.llm.registry import LLMRegistry
-from trader.loop.confirm import skipped
+from trader.loop.confirm import skipped, veto_hold
+from trader.loop.confirm_questions import PositionState
 from trader.loop.context import (
     BAR_LOOKBACK,
     DEFAULT_INTERVALS,
     ContextBuilder,
+    DecisionContext,
     compute_indicators,
     unrealized_pnl_frac,
 )
@@ -181,9 +183,10 @@ class BotRunner:
     # Decision desk: analyst lanes before the decide, critic after it.
     # Absent = no desk. Advisory: a crashing desk degrades to a plain decide, never blocks.
     desk: Any | None = None
-    # Confirm seat, first stage (#99): Kev judges every open or close Draft and the
-    # answer is journaled beside it. Journal-only: it never changes the decision.
-    # Absent = no Confirm (TRADER_CONFIRM_PROVIDER empty).
+    # Confirm seat (#99): Jev judges every open or close Draft and the record is
+    # journaled beside it. A vetoed open (the rule fires and TRADER_CONFIRM_VETO_ENABLED
+    # is on) becomes a hold before the critic and RiskGuard; a close is never changed.
+    # A failing Confirm is a journaled skip, never a veto. Absent = no Confirm.
     confirm: Any | None = None  # loop.confirm.Confirmer
     # The Bot this loop runs (#123): every decision, order and parked approval it writes
     # names it. Set at boot once the Bot's version is seeded; None journals no Bot.
@@ -493,6 +496,26 @@ class BotRunner:
         if self.bot_id is None:
             return None
         return await self._sleeves.capital(self.bot_id)
+
+    async def _position_state(self, ctx: DecisionContext) -> PositionState | None:
+        """What Jev is told about this Bot's holding in the symbol; None when flat. The
+        opening rationale comes from this Bot's last executed open, when the journal has
+        one with a rationale (a manual order or an old row has none)."""
+        qty = ctx.position_qty
+        if qty == 0:
+            return None
+        held = ctx.held_position
+        opened = await self._journal.last_open(ctx.symbol.ticker, bot_id=self.bot_id)
+        rationale, opened_at = opened if opened is not None else (None, None)
+        if not (isinstance(rationale, str) and rationale.strip()):
+            rationale, opened_at = None, None
+        return PositionState(
+            side="long" if qty > 0 else "short",
+            quantity=abs(qty),
+            summary="\n".join(held.entries) if held is not None and held.entries else None,
+            opened_at=opened_at,
+            open_rationale=rationale,
+        )
 
     async def _trades_today(self, symbol: Symbol, now: datetime) -> int:
         return await count_trades_today(self.db, symbol, now)
@@ -901,10 +924,13 @@ class BotRunner:
         confirm: dict[str, Any] | None = None
         if self.confirm is not None and decision.intent is not None:
             try:
-                confirm = await self.confirm.confirm(ctx, decision)
-            except Exception as exc:  # noqa: BLE001 - Kev must never stop the loop
+                position = await self._position_state(ctx)
+                confirm = await self.confirm.confirm(ctx, decision, position)
+            except Exception as exc:  # noqa: BLE001 - Jev must never stop the loop
                 log.warning("confirm_failed", symbol=symbol.ticker, error=str(exc)[:300])
                 confirm = skipped(decision, f"error ({type(exc).__name__})")
+            # A vetoed open: the critic and RiskGuard see a hold (the Draft stays in confirm).
+            decision = veto_hold(decision, confirm)
         if self.desk is not None:
             try:
                 decision, desk_verdicts = await self.desk.review(ctx, decision, desk_verdicts or {})

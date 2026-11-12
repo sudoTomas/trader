@@ -108,6 +108,19 @@ class DecisionsRepo:
             (*params, limit),
         )
 
+    async def last_open(self, symbol: str, *, bot_id: int | None) -> Row | None:
+        """The newest executed ``open`` decision for ``symbol`` (and Bot, when given; a
+        row with no Bot is Bot #1's), or None. decisions_symbol_ts_idx serves this."""
+        sql = (
+            "SELECT ts, decision->>'rationale' AS rationale FROM decisions"
+            " WHERE symbol = %s AND status = 'executed' AND decision->>'action' = 'open'"
+        )
+        params: tuple[Any, ...] = (symbol,)
+        if bot_id is not None:
+            sql += " AND coalesce(bot_id, 1) = %s"
+            params += (bot_id,)
+        return await self._db.fetch_one(sql + " ORDER BY ts DESC, id DESC LIMIT 1", params)
+
 
 class OrdersRepo:
     """Orders + their fills (M3 executor). The order row is persisted BEFORE submit."""

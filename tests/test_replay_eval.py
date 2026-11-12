@@ -664,3 +664,188 @@ async def test_replay_without_limits_has_no_stop(db: Database):
     )
     assert len(llm.calls) == 3
     assert run["summary"]["stops"] == 0 and run["summary"]["realized_pnl"] == 0
+
+
+# --- the confirm stage in replay ------------------------------------------------------
+
+
+class JevReplayLLM:
+    """LLMRegistry-shaped: scripted decide replies, and a Jev that answers every asked
+    judgment with ``answers[qid]`` (default 0.9) and records each state it was sent."""
+
+    def __init__(
+        self,
+        decide: list[str],
+        answers: dict[str, float] | None = None,
+        costs: dict[str, float] | None = None,
+    ) -> None:
+        self._decide = list(decide)
+        self.answers = answers or {}
+        self.costs = costs or {}
+        self.states: list[dict] = []
+
+    async def complete(
+        self, role, messages, *, schema=None, max_tokens=1024, temperature=0.2, state=None
+    ):
+        from trader.llm.base import Completion, Usage
+
+        if role == "confirm":
+            self.states.append(state)
+            text = json.dumps(
+                {q: {"type": "noul", "noul": self.answers.get(q, 0.9)} for q in schema}
+            )
+        else:
+            text = self._decide.pop(0)
+        return Completion(
+            text=text,
+            usage=Usage(prompt_tokens=100, completion_tokens=20),
+            cost_usd=self.costs.get(role, 0.0),
+            provider="stub",
+            model="jev-1.15" if role == "confirm" else "stub-model",
+        )
+
+
+UNGROUNDED = {"grounded": 0.1}  # an open the rule vetoes
+
+
+async def _confirm_steps(db: Database, run_id: int) -> list[dict]:
+    rows = await db.fetch_all(
+        "SELECT decision FROM eval_steps WHERE run_id = %s ORDER BY ts", (run_id,)
+    )
+    return [r["decision"] for r in rows]
+
+
+async def test_a_veto_on_replay_turns_the_open_jev_vetoes_into_a_hold(db: Database):
+    await seed_hourly_bars(db)
+    llm = JevReplayLLM([OPEN, HOLD], UNGROUNDED)
+    run = await ReplayHarness(db, llm, StubMarketData()).run(
+        BTC, NOW - timedelta(hours=2), NOW, label="veto-on", config={"confirm_veto": True}
+    )
+    assert run["status"] == "done", run["summary"]
+    assert run["config"]["confirm_veto"] is True
+    # The book stays flat: the vetoed open never fills.
+    assert run["summary"]["actions"] == {"hold": 2}
+    assert run["summary"]["realized_pnl"] == 0 and run["summary"]["unrealized_pnl"] == 0
+    first, second = await _confirm_steps(db, run["id"])
+    assert first["action"] == "hold"
+    assert first["conviction"] == 0.8
+    assert first["rationale"].startswith("confirm veto: ")
+    assert "intent" not in first and "fill_cost" not in first
+    assert first["confirm"]["vetoed"] is True
+    assert first["confirm"]["verdict"] == "veto"
+    assert first["confirm"]["draft"] == {"action": "open", "side": "buy"}
+    assert "confirm" not in second  # a hold Draft is never sent to Jev
+    assert len(llm.states) == 1
+
+
+async def test_a_veto_off_replay_keeps_the_open_and_records_would_veto(db: Database):
+    await seed_hourly_bars(db)
+    llm = JevReplayLLM([OPEN, HOLD], UNGROUNDED)
+    run = await ReplayHarness(db, llm, StubMarketData()).run(
+        BTC, NOW - timedelta(hours=2), NOW, label="veto-off"
+    )
+    assert run["status"] == "done", run["summary"]
+    assert run["config"]["confirm_veto"] is False  # always written, so pairs compare
+    assert run["summary"]["actions"] == {"open": 1, "hold": 1}
+    assert run["summary"]["unrealized_pnl"] != 0  # the open filled
+    first, _ = await _confirm_steps(db, run["id"])
+    assert first["action"] == "open" and first["rationale"] == "momentum"
+    assert first["confirm"]["would_veto"] is True
+    assert first["confirm"]["vetoed"] is False
+    assert first["confirm"]["verdict"] == "pass"
+
+
+async def test_the_run_cost_includes_the_jev_calls(db: Database):
+    await seed_hourly_bars(db)
+    llm = JevReplayLLM([OPEN, HOLD], costs={"decide": 0.01, "confirm": 0.002})
+    run = await ReplayHarness(db, llm, StubMarketData()).run(
+        BTC, NOW - timedelta(hours=2), NOW, label="cost"
+    )
+    assert run["status"] == "done", run["summary"]
+    assert len(llm.states) == 1  # one open judged; the hold is never sent
+    first, _ = await _confirm_steps(db, run["id"])
+    assert first["confirm"]["cost_usd"] == 0.002
+    assert run["summary"]["cost_usd"] == pytest.approx(0.022)
+
+
+async def test_a_replay_without_a_confirm_route_records_no_confirm(db: Database):
+    await seed_hourly_bars(db)
+    run = await ReplayHarness(db, StubLLM([OPEN, CLOSE]), StubMarketData()).run(
+        BTC, NOW - timedelta(hours=2), NOW, label="no-jev", config={"confirm_veto": True}
+    )
+    assert run["status"] == "done", run["summary"]
+    assert run["summary"]["actions"] == {"open": 1, "close": 1}
+    assert all("confirm" not in d for d in await _confirm_steps(db, run["id"]))
+
+
+async def test_replay_tells_jev_the_position_its_own_book_opened(db: Database):
+    """A close is judged against the walk's in-memory book: the side and size it holds,
+    and the rationale and time of the step that opened it (never the live journal)."""
+    await seed_hourly_bars(db)
+    llm = JevReplayLLM([OPEN, CLOSE])
+    start = NOW - timedelta(hours=2)
+    run = await ReplayHarness(db, llm, StubMarketData()).run(
+        BTC, start, NOW, label="held", config={"confirm_veto": True}
+    )
+    assert run["status"] == "done", run["summary"]
+    assert run["summary"]["actions"] == {"open": 1, "close": 1}
+    opened, closed = llm.states
+    assert "position" not in opened
+    held = closed["position"]
+    assert held["side"] == "long"
+    first = await db.fetch_one(
+        "SELECT price FROM eval_steps WHERE run_id = %s ORDER BY ts LIMIT 1", (run["id"],)
+    )
+    assert held["quantity"] == pytest.approx(1000 / float(first["price"]))  # the book's qty
+    assert held["opened_at"] == start.isoformat()
+    assert held["open_rationale"] == "momentum"
+    _, close_step = await _confirm_steps(db, run["id"])
+    assert close_step["confirm"]["verdict"] == "recorded"
+    assert "thesis_broken" in close_step["confirm"]["answers"]
+
+
+def test_eval_run_confirm_veto_on_api_and_cli(clean_db: None, monkeypatch):
+    from fastapi.testclient import TestClient
+    from typer.testing import CliRunner
+
+    import trader.surfaces.api.app as app_mod
+    import trader.surfaces.cli.main as cli
+    from trader.ops.config import Settings
+
+    evaluator = RecordingEvaluator()
+    monkeypatch.setattr(app_mod, "build_evaluator", lambda db, settings, desk=None, **kw: evaluator)
+    settings = Settings(auth_disabled=True)
+    window = {"start": (NOW - timedelta(hours=2)).isoformat(), "end": NOW.isoformat()}
+    with TestClient(app_mod.create_app(settings)) as tc:
+        resp = tc.post("/eval/replay", params={"symbol": "BTC/USD", "confirm_veto": True, **window})
+        assert resp.status_code == 200, resp.text
+    assert evaluator.configs[-1]["confirm_veto"] is True
+
+    monkeypatch.setattr(cli, "_client", lambda: TestClient(app_mod.create_app(settings)))
+    base = ["eval", "run", "--symbol", "BTC/USD", "--start", window["start"]]
+    base += ["--end", window["end"]]
+    result = CliRunner().invoke(cli.app, [*base, "--confirm-veto"])
+    assert result.exit_code == 0, result.output
+    assert evaluator.configs[-1]["confirm_veto"] is True
+    result = CliRunner().invoke(cli.app, [*base, "--no-confirm-veto"])
+    assert result.exit_code == 0, result.output
+    assert "confirm_veto" not in evaluator.configs[-1]  # off: the harness writes False
+
+
+async def test_the_mcp_tool_takes_confirm_veto(db: Database):
+    from mcp.client import Client
+
+    from trader.surfaces.mcp.server import build_mcp
+    from trader.surfaces.services import build_registry
+
+    evaluator = RecordingEvaluator()
+    async with Client(build_mcp(build_registry(db, evaluator=evaluator))) as client:
+        tools = {t.name: t for t in (await client.list_tools()).tools}
+        assert "confirm_veto" in tools["run_replay_eval"].input_schema["properties"]
+        window = {"start": (NOW - timedelta(hours=2)).isoformat(), "end": NOW.isoformat()}
+        await client.call_tool(
+            "run_replay_eval", {"symbol": "BTC/USD", "confirm_veto": True, **window}
+        )
+    assert evaluator.configs[-1]["confirm_veto"] is True
+    audit = await db.fetch_all("SELECT payload FROM audit_events ORDER BY id")
+    assert audit[-1]["payload"]["confirm_veto"] is True

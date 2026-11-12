@@ -5,7 +5,10 @@ desk (EAI-190), a new asset class's first live symbol — goes through the same 
 stages, in order. This formalizes the discipline that protected the money path in v1
 (EAI-128): **one gate at a time, never two overlapping.**
 
-## 1. Replay eval (offline, free)
+## 1. Replay eval (offline; paid Jev calls when a confirm route is set)
+
+A replay never trades, but it calls the decide model, and Jev on every open or close Draft
+when a `confirm` route exists: those Jev calls are paid. The summary's `cost_usd` sums both.
 
 Replay a representative window under the current config (baseline) and under the
 candidate, then compare:
@@ -39,8 +42,8 @@ equities/ETFs, 10 bp crypto, while replay has no real quote), a 2 bp fee, Alpaca
 crypto taker fee, and square-root impact. The summary carries `gross_pnl`, `trading_costs`
 (`spread` / `fee` / `impact` / `total`), `net_pnl` and the `cost_model` it ran with; each
 fill step carries its own `fill_cost`. `realized_pnl` / `unrealized_pnl` stay gross, and
-`cost_usd` is still the model calls. Compare candidates on `net_pnl`: a candidate that
-trades more pays more.
+`cost_usd` is still the model calls (decide, and Jev when a confirm route is set). Compare
+candidates on `net_pnl`: a candidate that trades more pays more.
 
 Runs execute in the background (`POST /eval/replay`, MCP `run_replay_eval`); bars come
 from the read-through cache (first run over a window backfills it), the decider is the
@@ -123,6 +126,35 @@ PnL. Every step's decision records the `held_position` entries the decider saw
 (`trader eval show <id>`), so a close can be read against the block that prompted it. A
 candidate that closes on every dip is as wrong as one that never closes: the lane earns
 its shadow window if exits track the thesis, not the noise.
+
+### Confirm veto (Jev)
+
+Replays run the confirm stage live trading does: when the process registry has a `confirm`
+route, every open or close Draft of a replay is sent to Jev on that route (a `--model` run
+pins decide only; Jev keeps its own route), before the desk's critic. Each step's decision
+records Jev's judgments under `confirm` (`answers`, `would_veto`, `veto_reason`,
+`vetoed`, `verdict`); no confirm route records nothing, and a `--blind` run never sends Jev
+the state and records `skipped: "blind"`. The veto is a replay parameter, not the live
+`TRADER_CONFIRM_VETO_ENABLED`: `--confirm-veto` (API `confirm_veto=true`, MCP
+`run_replay_eval(confirm_veto=true)`) turns an open the rule vetoes into a hold
+(`confirm veto: <reason>`, the book stays flat); off (the default) the open stands and the
+record says `would_veto`. Every run's `config.confirm_veto` says which it was.
+
+The paired check, before the live veto is switched on: replay the same window for each of
+Bot #1's symbols twice, veto off then veto on (one after the other, as above). Each run makes
+one Jev request per open or close step, so state the request count (the off run's opens plus
+closes, twice) and the cost before running it, and keep the exact commands:
+
+```bash
+trader eval run --symbol ETH/USD --start 2026-10-29T00:00:00+00:00 \
+    --end 2026-11-12T00:00:00+00:00 --label confirm-veto-off --no-confirm-veto
+trader eval run --symbol ETH/USD --start 2026-10-29T00:00:00+00:00 \
+    --end 2026-11-12T00:00:00+00:00 --label confirm-veto-on --confirm-veto
+```
+
+What to compare: how many opens were vetoed (steps whose `confirm.vetoed` is true in the on
+run; the off run's `would_veto` opens should be the same steps until the books diverge),
+the `actions` mix, and `net_pnl` on and off. It informs the flip; it is not a gate in code.
 
 ## 2. Shadow window (live inputs, no orders)
 

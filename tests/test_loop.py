@@ -12,6 +12,7 @@ import pytest
 from trader.core.symbols import AssetClass, default_registry, make_symbol
 from trader.core.types import Action, Bar
 from trader.llm.base import Completion, LLMError, Usage
+from trader.llm.registry import NoRoute
 from trader.loop.context import ContextBuilder, compute_indicators
 from trader.loop.decider import DECISION_SCHEMA, Decider, DeciderError, DecisionOutput
 from trader.loop.journal import DENIED, ERROR, SHADOW, SUPPRESSED, Journal
@@ -205,7 +206,11 @@ class StubLLM:
         self._replies = list(replies)
         self.calls: list[list[dict]] = []
 
-    async def complete(self, role, messages, *, schema=None, max_tokens=1024, temperature=0.2):
+    async def complete(
+        self, role, messages, *, schema=None, max_tokens=1024, temperature=0.2, state=None
+    ):
+        if role == "confirm":  # a registry with no Confirm route, as most builds have
+            raise NoRoute("no LLM provider configured for role 'confirm'")
         self.calls.append(messages)
         reply = self._replies.pop(0)
         if isinstance(reply, Exception):

@@ -750,8 +750,9 @@ class Settings(BaseSettings):
         section="LLM endpoints",
         description=(
             "Empty: no Confirm. `jev`: TypeSafe's Jev judgment model is asked about every "
-            "open or close Draft (`TRADER_CONFIRM_*`) and its answer is journaled in the "
-            "decision's `confirm` column. Journal-only: it never changes an order."
+            "open or close Draft (`TRADER_CONFIRM_*`) and its judgments are journaled in the "
+            "decision's `confirm` column. It can only veto an open (a hold instead, behind "
+            "`TRADER_CONFIRM_VETO_ENABLED`); a close is recorded, never vetoed."
         ),
     )
     confirm_base_url: str = setting(
@@ -773,6 +774,15 @@ class Settings(BaseSettings):
         description=(
             "TypeSafe API key for the confirm role; required when `TRADER_CONFIRM_PROVIDER=jev`. "
             "Errors report the HTTP status only."
+        ),
+    )
+    confirm_veto_enabled: bool = setting(
+        True,
+        category=GATE,
+        section="LLM endpoints",
+        description=(
+            "Veto a proposed open when the confirm role's judgments fail the rule in "
+            "loop/confirm_questions.py. Off: still asked and recorded as would_veto."
         ),
     )
     research_base_url: str = setting(
