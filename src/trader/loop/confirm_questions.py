@@ -19,7 +19,7 @@ from trader.core.types import Decision
 from trader.loop.context import DecisionContext
 from trader.loop.sources import BRIEF, FRED, HELD_POSITION, LESSONS, MACRO_VIEW, SourceSlice
 
-QUESTIONS_VERSION = "2026-11-12.1"
+QUESTIONS_VERSION = "2026-11-12.2"
 
 GROUNDED_MIN = 0.25  # veto an open when p(grounded) is below this
 NEWS_AGAINST_MAX = 0.80  # veto an open when p(news_against) is above this
@@ -31,6 +31,7 @@ CLOSES_PER_INTERVAL = 10  # the decide prompt shows the last 10 closes per inter
 # Lanes that are not research: FRED prints are market facts (``market.fred``), the
 # held-position block is the ``position`` field, the Macro View is not symbol-scoped, and
 # Lessons are the Bot's own reflections, not news (neither may feed ``news_against``).
+# The decide prompt still shows both, so they go in ``context`` for ``grounded`` to check.
 _NOT_RESEARCH = frozenset({FRED, HELD_POSITION, MACRO_VIEW, LESSONS})
 
 
@@ -46,9 +47,11 @@ def _noul(instructions: str, true: str, false: str) -> dict[str, Any]:
 
 
 GROUNDED = _noul(
-    "Does every number and fact stated in `draft.rationale` appear in `market` or `research`?",
-    "Each number, level and event the rationale cites can be found in `market` or `research`.",
-    "The rationale cites a number or event that `market` and `research` do not show.",
+    "Does every number and fact stated in `draft.rationale` appear in `market`, `research`"
+    " or `context`?",
+    "Each number, level and event the rationale cites can be found in `market`, `research`"
+    " or `context`.",
+    "The rationale cites a number or event that `market`, `research` and `context` do not show.",
 )
 CATALYST = _noul(
     "Does `draft.rationale` name a specific signal or event behind the trade?",
@@ -180,11 +183,22 @@ def _market(ctx: DecisionContext) -> dict[str, Any]:
     return market
 
 
+def _context(ctx: DecisionContext) -> dict[str, list[str]]:
+    """The advisory lanes the decide prompt shows besides research: the operator's Macro
+    View and the Bot's Lessons, as the prompt renders their entries."""
+    context: dict[str, list[str]] = {}
+    if ctx.macro_view is not None and ctx.macro_view.entries:
+        context["macro_view"] = list(ctx.macro_view.entries)
+    if ctx.lessons is not None and ctx.lessons.detail:
+        context["lessons"] = [str(entry) for entry in ctx.lessons.detail]
+    return context
+
+
 def build_state(
     ctx: DecisionContext, decision: Decision, position: PositionState | None
 ) -> dict[str, Any]:
     """The named JSON state Jev judges: ``symbol``, ``draft``, ``market``, and
-    ``research`` / ``position`` when there is any. No notional: sizing is code's."""
+    ``research`` / ``context`` / ``position`` when there is any. No notional: sizing is code's."""
     intent = decision.intent
     state: dict[str, Any] = {
         "symbol": {"ticker": ctx.symbol.ticker, "asset_class": str(ctx.symbol.asset_class)},
@@ -199,6 +213,9 @@ def build_state(
     research = _research(ctx)
     if research:
         state["research"] = research
+    context = _context(ctx)
+    if context:
+        state["context"] = context
     if position is not None:
         held: dict[str, Any] = {"side": position.side, "quantity": position.quantity}
         if position.summary:
