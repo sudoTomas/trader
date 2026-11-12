@@ -83,10 +83,24 @@ function criticPill(deskVerdicts) {
   return { tone, text: `critic · ${c.verdict.replace(/_/g, ' ')}`, title: c.reason || '' };
 }
 
-// Kev's Confirm (journal-only for now): how likely it found the Draft's own action.
+// The Confirm: Jev's judgments and the open veto (new rows), or Kev's journal-only
+// p_same_action (old rows, which keep their shape).
+const JEV_VERDICTS = ['veto', 'pass', 'recorded'];
+
 function confirmPill(confirm) {
   if (!confirm || !confirm.draft) return null;
-  if (confirm.skipped) return { tone: 'warn', text: 'Kev · skipped', title: confirm.skipped };
+  // A new-shape record always carries vetoed (a skip too); an old one never does.
+  const jev = 'answers' in confirm || 'vetoed' in confirm || JEV_VERDICTS.includes(confirm.verdict);
+  const who = jev ? 'Jev' : 'Kev';
+  if (confirm.skipped) return { tone: 'warn', text: `${who} · skipped`, title: confirm.skipped };
+  if (jev) {
+    const reason = String(confirm.veto_reason || 'unspecified').replace(/_/g, ' ');
+    const title = [confirm.model, confirm.questions_version].filter(Boolean).join(' · ');
+    if (confirm.vetoed) return { tone: 'warn', text: `Jev · veto: ${reason}`, title };
+    if (confirm.would_veto) return { tone: 'warn', text: `Jev · would veto: ${reason}`, title };
+    if (confirm.verdict === 'recorded') return { tone: '', text: 'Jev · recorded', title };
+    return { tone: 'ok', text: 'Jev · pass', title };
+  }
   const agrees = confirm.prefers === confirm.draft.action;
   const prefers = String(confirm.prefers).replace(/_/g, ' ');
   return {
