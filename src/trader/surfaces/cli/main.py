@@ -526,6 +526,14 @@ def eval_run_cmd(
     lessons: bool = typer.Option(
         False, "--lessons", help="Add Bot #1's lessons Source (#143), point-in-time per step."
     ),
+    model: str | None = typer.Option(
+        None,
+        "--model",
+        help=(
+            "provider:model from the model picker (e.g. grok-deep:grok-4.7): replay every"
+            " decide call on it. Unset decides as the live loop would."
+        ),
+    ),
 ) -> None:
     """Start a background replay over [start, end); poll with `trader eval show`."""
     params = {
@@ -543,6 +551,7 @@ def eval_run_cmd(
         # Off stays off the wire, so an older API still takes a named run.
         "blind": blind or None,
         "lessons": lessons or None,
+        "model": model,
     }
     # Unset options stay off the wire (an empty query value is not "unset" to the API).
     params = {k: v for k, v in params.items() if v is not None}

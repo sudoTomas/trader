@@ -1057,7 +1057,10 @@ def build_registry(
     @reg.register(
         "run_replay_eval",
         kind="command",
-        summary="Replay the decide stage over a historical window (background; offline only).",
+        summary=(
+            "Replay the decide stage over a historical window (background; offline only)."
+            " model='provider:model' (the model picker's syntax) replays decide on that model."
+        ),
     )
     async def run_replay_eval(
         symbol: str,
@@ -1071,6 +1074,7 @@ def build_registry(
         exit_review_seed: dict[str, Any] | None = None,
         blind: bool = False,
         lessons: bool = False,
+        model: str | None = None,
     ) -> dict[str, Any]:
         """``blind`` withholds the ticker, calendar dates and dollar values from every
         replayed prompt (#140) and drops the free-text Sources; run it beside a named run
@@ -1082,7 +1086,11 @@ def build_registry(
         optional "opened_at"}) starts the run's crude book with that position held so the
         block has something to review — seed baseline and candidate alike. ``lessons``
         adds Bot #1's lessons Source (#143), each step reading only the Lessons settled
-        by then."""
+        by then. ``model`` (``provider:model``, the model picker's syntax) replays every
+        decide call on that Provider and model instead of the harness registry: a keyless
+        xAI Provider signs with the service's SuperGrok login. It is metered and capped
+        like any replay, recorded in the run's config, and refused (ValueError) before a
+        run exists when the Provider is unknown or cannot decide."""
         import asyncio
         from datetime import datetime
 
@@ -1100,6 +1108,17 @@ def build_registry(
             config["blind"] = True
         if lessons:
             config["lessons"] = True
+        pinned: dict[str, Any] = {}  # execute's keywords; empty = the harness registry
+        if model is not None:
+            from trader.llm.profiles import parse_model_spec
+
+            provider, model_id = parse_model_spec(model)
+            if profiles is None:
+                raise ValueError(
+                    "model needs the Provider store, and this build has no Provider store"
+                )
+            pinned["decide"] = await profiles.client_for("decide", provider, model_id)
+            config["model"] = f"{provider}:{model_id}"
         run_id = await evaluator.create_run(
             sym,
             datetime.fromisoformat(start),
@@ -1107,7 +1126,7 @@ def build_registry(
             label=label,
             config=config,
         )
-        asyncio.create_task(evaluator.execute(run_id, sym), name=f"replay-eval-{run_id}")
+        asyncio.create_task(evaluator.execute(run_id, sym, **pinned), name=f"replay-eval-{run_id}")
         await _audit_command(
             "run_replay_eval", {"run_id": run_id, "symbol": symbol, "label": label, **config}
         )

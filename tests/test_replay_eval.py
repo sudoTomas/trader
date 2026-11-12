@@ -347,12 +347,14 @@ class RecordingEvaluator:
 
     def __init__(self) -> None:
         self.configs: list[dict] = []
+        self.executed: list[dict] = []  # each execute's keyword arguments
 
     async def create_run(self, symbol, start, end, *, label, config) -> int:
         self.configs.append(config)
         return len(self.configs)
 
-    async def execute(self, run_id, symbol) -> dict:
+    async def execute(self, run_id, symbol, **kwargs) -> dict:
+        self.executed.append(kwargs)
         return {"id": run_id, "status": "done"}
 
 
@@ -404,6 +406,134 @@ async def test_registry_forwards_the_research_lane_flags_into_the_run_config(db:
     audit = await db.fetch_all("SELECT payload FROM audit_events ORDER BY id")
     assert audit[-1]["payload"]["briefs"] is False
     assert audit[-1]["payload"]["macro_view"] is False
+    # No model: the harness decides on its own registry, exactly as before.
+    assert evaluator.executed == [{}, {}]
+
+
+async def _wait_done(reg, run_id: int) -> dict:
+    for _ in range(100):
+        row = await reg.get("eval_run").handler(run_id=run_id)
+        if row["status"] != "running":
+            return row
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"run {run_id} never finished")
+
+
+async def test_a_run_replays_decide_on_a_named_provider_and_model(db: Database):
+    from tests.test_profiles import DECIDE_OK, EnvClient, ModelServer, with_local
+    from trader.llm.registry import LLMRegistry
+    from trader.llm.usage import UsageMeter
+    from trader.store.repos import UsageRepo
+    from trader.surfaces.services import build_registry
+
+    await seed_hourly_bars(db)
+    server = ModelServer({("spark", "qwen3:8b"): DECIDE_OK})
+    _, profiles = await with_local(db, server)
+    env = EnvClient("env-decide", HOLD)
+    llm = LLMRegistry({"decide": [env]}, UsageMeter(UsageRepo(db)), profiles=profiles)
+    reg = build_registry(db, evaluator=ReplayHarness(db, llm, StubMarketData()), profiles=profiles)
+    window = {"start": (NOW - timedelta(hours=2)).isoformat(), "end": NOW.isoformat()}
+
+    started = await reg.get("run_replay_eval").handler(
+        symbol="BTC/USD", label="q8", model="spark:qwen3:8b", **window
+    )
+    row = await _wait_done(reg, started["run_id"])
+
+    assert row["status"] == "done", row
+    assert row["summary"]["steps"] == 2
+    assert row["config"]["model"] == "spark:qwen3:8b"
+    assert server.models("spark") == ["qwen3:8b", "qwen3:8b"]  # every step, no Probe
+    assert env.calls == 0
+    # Metered as every replay is: into usage_daily under decide, for the model it used.
+    usage = await db.fetch_all("SELECT role, provider, model, requests FROM usage_daily")
+    assert [(u["role"], u["provider"], u["model"], u["requests"]) for u in usage] == [
+        ("decide", "spark", "qwen3:8b", 2)
+    ]
+    audit = await db.fetch_one(
+        "SELECT payload FROM audit_events WHERE action = 'run_replay_eval' ORDER BY id DESC"
+    )
+    assert audit["payload"]["model"] == "spark:qwen3:8b"
+
+    # Unset, the same harness decides on its own registry again.
+    plain = await reg.get("run_replay_eval").handler(symbol="BTC/USD", **window)
+    row = await _wait_done(reg, plain["run_id"])
+    assert row["status"] == "done" and "model" not in row["config"]
+    assert env.calls == 2
+    assert server.models("spark") == ["qwen3:8b", "qwen3:8b"]
+
+
+async def test_a_bad_model_spec_is_refused_before_any_run_exists(db: Database):
+    from tests.test_profiles import ModelServer, with_local
+    from trader.surfaces.services import build_registry
+
+    server = ModelServer({})
+    providers, profiles = await with_local(db, server)
+    await providers.add(name="kev", preset="jev", api_key="kev-key-12345")
+    window = {"start": (NOW - timedelta(hours=2)).isoformat(), "end": NOW.isoformat()}
+    evaluator = RecordingEvaluator()
+    reg = build_registry(db, evaluator=evaluator, profiles=profiles)
+
+    refusals = {
+        "qwen3": "not provider:model",
+        "ghost:m": "no Provider named 'ghost'",
+        "kev:m": "answers question sets only",
+    }
+    for spec, reason in refusals.items():
+        with pytest.raises(ValueError, match=reason):
+            await reg.get("run_replay_eval").handler(symbol="BTC/USD", model=spec, **window)
+    # A build without the Provider store cannot honour a model either.
+    bare = build_registry(db, evaluator=evaluator)
+    with pytest.raises(ValueError, match="no Provider store"):
+        await bare.get("run_replay_eval").handler(symbol="BTC/USD", model="spark:m", **window)
+
+    assert evaluator.configs == []
+    assert server.calls == []
+    audit = await db.fetch_all("SELECT id FROM audit_events WHERE action = 'run_replay_eval'")
+    assert audit == []
+
+
+def test_eval_run_model_on_api_and_cli(clean_db: None, monkeypatch):
+    from fastapi.testclient import TestClient
+    from typer.testing import CliRunner
+
+    import trader.surfaces.api.app as app_mod
+    import trader.surfaces.cli.main as cli
+    from trader.llm.profiles import ProfileDesk, ProfileError
+    from trader.ops.config import Settings
+
+    pinned = object()
+
+    async def client_for(self, role, provider, model):
+        if provider != "grok-deep":
+            raise ProfileError(f"no Provider named {provider!r}")
+        assert (role, model) == ("decide", "grok-4.7")
+        return pinned
+
+    monkeypatch.setattr(ProfileDesk, "client_for", client_for)
+    evaluator = RecordingEvaluator()
+    monkeypatch.setattr(app_mod, "build_evaluator", lambda db, settings, desk=None, **kw: evaluator)
+    settings = Settings(auth_disabled=True)
+    window = {"start": (NOW - timedelta(hours=2)).isoformat(), "end": NOW.isoformat()}
+
+    with TestClient(app_mod.create_app(settings)) as tc:
+        ok = tc.post(
+            "/eval/replay", params={"symbol": "BTC/USD", "model": "grok-deep:grok-4.7", **window}
+        )
+        bad = tc.post("/eval/replay", params={"symbol": "BTC/USD", "model": "ghost:m", **window})
+    assert ok.status_code == 200, ok.text
+    assert bad.status_code == 422 and "ghost" in bad.json()["detail"]
+    assert evaluator.configs == [
+        {"desk": False, "briefs": True, "macro_view": True, "model": "grok-deep:grok-4.7"}
+    ]
+    assert evaluator.executed == [{"decide": pinned}]
+
+    evaluator.configs.clear()
+    monkeypatch.setattr(cli, "_client", lambda: TestClient(app_mod.create_app(settings)))
+    base = ["eval", "run", "--symbol", "BTC/USD", "--start", window["start"]]
+    base += ["--end", window["end"]]
+    result = CliRunner().invoke(cli.app, [*base, "--model", "grok-deep:grok-4.7"])
+    assert result.exit_code == 0, result.output
+    assert evaluator.configs[-1]["model"] == "grok-deep:grok-4.7"
 
 
 def test_eval_run_lane_flags_on_api_and_cli(clean_db: None, monkeypatch):

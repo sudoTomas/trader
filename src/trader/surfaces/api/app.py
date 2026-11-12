@@ -657,6 +657,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             default=False,
             description="Add Bot #1's lessons Source (#143): only Lessons settled by each step.",
         ),
+        model: str | None = Query(
+            default=None,
+            description=(
+                "provider:model from the model picker (e.g. grok-deep:grok-4.7): every decide"
+                " call goes to it; unset decides as the live loop would."
+            ),
+        ),
     ) -> dict:
         seed: dict | None = None
         if (seed_qty is None) != (seed_entry is None):
@@ -680,8 +687,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 exit_review_seed=seed,
                 blind=blind,
                 lessons=lessons,
+                model=model,
             )
-        except (ValueError, KeyError) as exc:  # bad window / unknown symbol / bad seed
+        # bad window / unknown symbol / bad seed / unknown Provider or one that cannot decide
+        except (ValueError, KeyError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.get("/scorecard")
