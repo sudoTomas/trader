@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const {
   deskRequestUrl, approvalToast, resolveAuditLine, criticPill, confirmPill,
   modelChip, priceText, capText, probeText, servedText, errorText, stopText, stopSummary, configSections,
-  botSentiment,
+  botSentiment, decideModelName,
 } = require('./desk_logic');
 
 const BASE = 'http://127.0.0.1:8080';
@@ -297,4 +297,13 @@ test('the sentiment switch reads the subscription, and says why it cannot move',
   const none = botSentiment(bot('bot-3', [{ source: 'brief', params: {} }]));
   assert.deepEqual([none.on, none.enabled], [false, false]);
   assert.match(none.why, /does not read sentiment/);
+});
+
+test('decideModelName names the model of the newest decision, not a stale usage row', () => {
+  const decisions = [{ served_by: 'grok:grok-4.3' }, { served_by: 'grok:grok-4-1-fast' }];
+  const usage = [{ role: 'decide', model: 'grok-4-1-fast' }, { role: 'decide', model: 'grok-4.3' }];
+  assert.equal(decideModelName(decisions, usage), 'grok-4.3');
+  assert.equal(decideModelName([{ served_by: 'openrouter:deepseek/deepseek-v4.1-flash' }], []), 'deepseek/deepseek-v4.1-flash');
+  assert.equal(decideModelName([{ served_by: null }], usage), 'grok-4-1-fast');
+  assert.equal(decideModelName([], []), null);
 });
