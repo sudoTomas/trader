@@ -22,7 +22,7 @@ from trader.loop.confirm_questions import (
 )
 from trader.loop.context import DecisionContext, FredPrint, Indicators
 from trader.loop.scheduler import Trigger
-from trader.loop.sources import BRIEF, SENTIMENT, BriefSlice, SourceSlice
+from trader.loop.sources import BRIEF, LESSONS, MACRO_VIEW, SENTIMENT, BriefSlice, SourceSlice
 
 
 def test_constants_are_the_agreed_values():
@@ -190,6 +190,18 @@ def test_state_carries_research_lanes_by_name_and_drops_empty_ones():
     assert state["research"]["brief"]["as_of"] == as_of.isoformat()
     assert state["market"]["fred"] == {"VIXCLS": {"value": 14.2, "date": "2026-08-11"}}
     json.dumps(state)
+
+
+def test_macro_view_and_lessons_are_not_research():
+    as_of = datetime(2026, 8, 12, 14, 0, tzinfo=UTC)
+    macro = SourceSlice(MACRO_VIEW, 4, as_of, "Risk-off into FOMC")
+    lessons = SourceSlice(LESSONS, "l7", as_of, "Last breakout open lost 3%")
+    ctx = make_context(sources=(macro, lessons), lessons=lessons)
+    state = build_state(ctx, make_draft(), None)
+    assert "research" not in state
+    assert "news_against" not in questions_for(
+        "open", has_research="research" in state, has_open_rationale=False
+    )
 
 
 def test_state_market_shows_the_last_closes_the_decide_prompt_shows():

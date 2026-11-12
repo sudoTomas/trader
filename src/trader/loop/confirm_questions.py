@@ -17,7 +17,7 @@ from typing import Any
 
 from trader.core.types import Decision
 from trader.loop.context import DecisionContext
-from trader.loop.sources import BRIEF, FRED, HELD_POSITION, SourceSlice
+from trader.loop.sources import BRIEF, FRED, HELD_POSITION, LESSONS, MACRO_VIEW, SourceSlice
 
 QUESTIONS_VERSION = "2026-11-12.1"
 
@@ -28,9 +28,10 @@ CONTESTED_NEWS_MIN = 0.50
 
 CLOSES_PER_INTERVAL = 10  # the decide prompt shows the last 10 closes per interval
 
-# Lanes that are not research: FRED prints are market facts (``market.fred``), and the
-# held-position block is the ``position`` field.
-_NOT_RESEARCH = frozenset({FRED, HELD_POSITION})
+# Lanes that are not research: FRED prints are market facts (``market.fred``), the
+# held-position block is the ``position`` field, the Macro View is not symbol-scoped, and
+# Lessons are the Bot's own reflections, not news (neither may feed ``news_against``).
+_NOT_RESEARCH = frozenset({FRED, HELD_POSITION, MACRO_VIEW, LESSONS})
 
 
 # --- the questions ------------------------------------------------------------------------
