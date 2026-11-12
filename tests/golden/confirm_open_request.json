@@ -1,0 +1,65 @@
+{
+  "model": "jev-latest",
+  "questions": {
+    "catalyst": {
+      "criteria": {
+        "false": "The rationale uses only generic language, such as 'momentum looks good' or 'favourable setup', without naming what it refers to.",
+        "true": "The rationale names a concrete signal or event, such as an indicator level, a price move or a news item."
+      },
+      "instructions": "Does `draft.rationale` name a specific signal or event behind the trade?",
+      "type": "noul"
+    },
+    "grounded": {
+      "criteria": {
+        "false": "The rationale cites a number or event that `market` and `research` do not show.",
+        "true": "Each number, level and event the rationale cites can be found in `market` or `research`."
+      },
+      "instructions": "Does every number and fact stated in `draft.rationale` appear in `market` or `research`?",
+      "type": "noul"
+    },
+    "news_against": {
+      "criteria": {
+        "false": "Everything in `research` points the same way as `draft.side` or carries no direction for `symbol`.",
+        "true": "`research` reports news, sentiment or a forecast pointing the other way from `draft.side`: down for a buy, up for a sell."
+      },
+      "instructions": "Does `research` give a reason to expect `symbol` to move opposite to `draft.side`?",
+      "type": "noul"
+    }
+  },
+  "state": {
+    "draft": {
+      "action": "open",
+      "conviction": 0.8,
+      "rationale": "momentum",
+      "side": "buy"
+    },
+    "market": {
+      "indicators": {
+        "1h": {
+          "ema_12": null,
+          "realized_vol_20": null,
+          "rsi_14": 71.2,
+          "sma_20": 60100.0
+        }
+      },
+      "price": 61250.0,
+      "triggers": [
+        "price_move: {'move_pct': 2.1}"
+      ]
+    },
+    "research": {
+      "brief": {
+        "as_of": "2026-08-12T14:00:00+00:00",
+        "text": "Thesis: ETF inflows steady"
+      },
+      "sentiment": {
+        "as_of": "2026-08-12T14:00:00+00:00",
+        "text": "X sentiment +0.4, volume high"
+      }
+    },
+    "symbol": {
+      "asset_class": "crypto",
+      "ticker": "BTC/USD"
+    }
+  }
+}

@@ -14,13 +14,19 @@ from trader.llm.base import Completion, LLMError, Usage
 
 
 class RoleLLM:
-    """LLMRegistry stand-in with per-role scripted replies; records (role, messages)."""
+    """LLMRegistry stand-in with per-role scripted replies; records (role, messages). A
+    structured ``state`` (Jev's) is recorded as one user message of its JSON, so tests that
+    read every text sent see it too."""
 
     def __init__(self, replies: dict[str, list[str | Exception]]) -> None:
         self.replies = {role: list(seq) for role, seq in replies.items()}
         self.calls: list[tuple[str, list[dict[str, Any]]]] = []
 
-    async def complete(self, role, messages, *, schema=None, max_tokens=1024, temperature=0.2):
+    async def complete(
+        self, role, messages, *, schema=None, max_tokens=1024, temperature=0.2, state=None
+    ):
+        if state is not None:
+            messages = [{"role": "user", "content": json.dumps(state)}]
         self.calls.append((role, messages))
         reply = self.replies[role].pop(0)
         if isinstance(reply, Exception):

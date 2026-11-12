@@ -1,86 +1,44 @@
-"""Confirm — Kev's judgment of an open or close Draft, journal-only in this stage.
+"""Confirm — Jev's judgments of an open or close Draft, and whether an open is vetoed.
 
 Order on a non-hold Draft: context, analyst desk, Draft (decide), **Confirm**, critic,
 RiskGuard, broker. The Confirm always judges the raw Draft, so its column replays the same
 whether or not the critic was up. A hold Draft is never sent.
 
-In this stage the Confirm has no power at all: ``confirm()`` returns a journal record and
-nothing else, the runner never reads it back, and the verdict is always ``journal_only``.
-The margin that will later let it turn a Draft into a hold is chosen from this column by
-replay, then switched on in its own change.
+Jev answers the atomic Noul judgments of ``loop/confirm_questions.py`` (p(true) each) about a
+named JSON state; the rule there decides whether an open would be vetoed. ``confirm()``
+returns the journal record and nothing else: ``vetoed`` (would_veto, the switch on, and an
+open) is the signal the loop applies by turning the Draft into a hold. A close is judged and
+recorded, never vetoed.
 
-Failure is a skip, never a blocked wakeup: when no answer comes back (unreachable, slow,
-HTTP error, malformed answers) the record says ``skipped`` and why, by status text only,
-and the Draft proceeds unchanged.
+Failure is a skip, never a blocked wakeup and never a veto: when no answer comes back
+(unreachable, slow, HTTP error, malformed answers) the record says ``skipped`` and why, by
+status text only, and the Draft proceeds unchanged.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import time
 from typing import Any
 
 import structlog
 
 from trader.core.types import Decision
-from trader.desk.critic import draft_under_review
 from trader.llm.base import LLMError
 from trader.llm.registry import NoRoute
+from trader.loop.confirm_questions import (
+    QUESTIONS_VERSION,
+    PositionState,
+    build_state,
+    evaluate,
+    questions_for,
+)
 from trader.loop.context import DecisionContext
-from trader.loop.decider import system_prompt
 
 log = structlog.get_logger(__name__)
 
 ROLE = "confirm"
-JOURNAL_ONLY = "journal_only"
-
-QUESTIONS: dict[str, Any] = {
-    "action": {
-        "type": "choice",
-        "instructions": (
-            "You are the decision step of a risk-guarded trading agent. Read the decide "
-            "prompt in `prompt` and the agent's operating rules in `rules`, then choose what "
-            "the agent should do now for the symbol in the prompt. Deterministic risk code "
-            "sizes and vets any trade afterwards; your job is only the intent."
-        ),
-        "criteria": {
-            "hold": (
-                "Do nothing now: no defensible edge, the setup is unclear, or a held "
-                "position's thesis still stands."
-            ),
-            "open": (
-                "Open a new position: there is a clear, defensible edge and no position is "
-                "currently held."
-            ),
-            "close": (
-                "Close the held position: its thesis has failed or the edge is gone. Only "
-                "valid when a position is held."
-            ),
-        },
-    },
-    "open_side": {
-        "type": "choice",
-        "instructions": (
-            "If the agent opened a position on the symbol in `prompt` right now, which side has "
-            "the better case?"
-        ),
-        "criteria": {
-            "buy": "Long: the case for the price rising is stronger.",
-            "sell": "Short: the case for the price falling is stronger.",
-        },
-    },
-    "close_side": {
-        "type": "choice",
-        "instructions": (
-            "Suppose the agent closes the position described in `prompt`. Which order side "
-            "closes it?"
-        ),
-        "criteria": {
-            "sell": "Sell: the held position is long, or no position is described.",
-            "buy": "Buy: the held position is short.",
-        },
-    },
-}
 
 
 def draft_of(decision: Decision) -> dict[str, Any]:
@@ -89,39 +47,54 @@ def draft_of(decision: Decision) -> dict[str, Any]:
 
 
 def skipped(decision: Decision, reason: str) -> dict[str, Any]:
-    """The record when no Confirm was produced: the Draft and why, nothing else."""
-    return {"draft": draft_of(decision), "skipped": reason[:200]}
+    """The record when no Confirm was produced: the Draft and why. Never a veto."""
+    return {"draft": draft_of(decision), "skipped": reason[:200], "vetoed": False}
 
 
-def _probabilities(answer: Any) -> dict[str, float]:
-    probs = {str(k): float(v) for k, v in answer["probabilities"].items()}
-    if not probs:
-        raise ValueError("no probabilities")
-    return probs
-
-
-def _top(probs: dict[str, float]) -> str:
-    return max(probs, key=probs.__getitem__)
+def _answers(text: str, asked: dict[str, Any]) -> dict[str, float]:
+    """Each asked judgment's p(true), or ValueError/KeyError/TypeError when any is missing,
+    not a number, or outside [0, 1]."""
+    raw = json.loads(text)
+    answers: dict[str, float] = {}
+    for qid in asked:
+        p = raw[qid]["noul"]
+        if isinstance(p, bool) or not isinstance(p, int | float):
+            raise TypeError(f"{qid} is not a number")
+        if math.isnan(p) or not 0.0 <= p <= 1.0:
+            raise ValueError(f"{qid} is outside [0, 1]")
+        answers[qid] = float(p)
+    return answers
 
 
 class Confirmer:
     """One Jev call per open or close Draft. Returns a journal record, never a Decision;
     None when nothing serves the confirm Role (the column stays NULL)."""
 
-    def __init__(self, llm: Any) -> None:  # LLMRegistry-shaped
+    def __init__(self, llm: Any, *, veto_enabled: bool = True) -> None:  # LLMRegistry-shaped
         self._llm = llm
+        self._veto_enabled = veto_enabled
 
-    async def confirm(self, ctx: DecisionContext, decision: Decision) -> dict[str, Any] | None:
+    async def confirm(
+        self,
+        ctx: DecisionContext,
+        decision: Decision,
+        position: PositionState | None = None,
+    ) -> dict[str, Any] | None:
         draft = draft_of(decision)
-        side_question = f"{draft['action']}_side"
-        questions = {"action": QUESTIONS["action"], side_question: QUESTIONS[side_question]}
-        messages = [
-            {"role": "system", "content": system_prompt(ctx)},
-            {"role": "user", "content": draft_under_review(ctx, decision)},
-        ]
+        if ctx.blind is not None:
+            # The state names the symbol, its prices and dates; a blind step never sends it.
+            return skipped(decision, "blind")
+        state = build_state(ctx, decision, position)
+        questions = questions_for(
+            draft["action"],
+            has_research="research" in state,
+            has_open_rationale=position is not None
+            and isinstance(position.open_rationale, str)
+            and bool(position.open_rationale.strip()),
+        )
         started = time.perf_counter()
         try:
-            completion = await self._llm.complete(ROLE, messages, schema=questions)
+            completion = await self._llm.complete(ROLE, [], schema=questions, state=state)
         except NoRoute:
             return None  # no Confirm configured, or switched off in the active Profile
         except LLMError as exc:
@@ -132,25 +105,35 @@ class Confirmer:
             return skipped(decision, reason)
         latency_ms = round((time.perf_counter() - started) * 1000)
         try:
-            answers = json.loads(completion.text)
-            action = _probabilities(answers["action"])
-            side = _probabilities(answers[side_question])
-        except (KeyError, TypeError, ValueError, AttributeError) as exc:
+            answers = _answers(completion.text, questions)
+        except (KeyError, IndexError, TypeError, ValueError, AttributeError) as exc:
             reason = f"malformed answers: {type(exc).__name__}"
             log.warning("confirm_skipped", symbol=decision.symbol, reason=reason)
             return skipped(decision, reason)
 
-        prefers = _top(action)
-        if prefers == draft["action"] and _top(side) != draft["side"]:
-            prefers = "other_side"
+        is_open = draft["action"] == "open"
+        rule = evaluate(answers, action=draft["action"])
+        vetoed = rule.would_veto and self._veto_enabled and is_open
+        if not is_open:
+            verdict = "recorded"
+        else:
+            verdict = "veto" if vetoed else "pass"
+        if rule.would_veto:
+            log.info(
+                "confirm_would_veto",
+                symbol=decision.symbol,
+                reason=rule.reason,
+                vetoed=vetoed,
+            )
         return {
             "draft": draft,
-            "action": action,
-            "side": side,
-            "p_same_action": action.get(draft["action"], 0.0),
-            "prefers": prefers,
-            "margin": None,
-            "verdict": JOURNAL_ONLY,
+            "answers": answers,
+            "rule": rule.rows,
+            "would_veto": rule.would_veto,
+            "veto_reason": rule.reason,
+            "vetoed": vetoed,
+            "verdict": verdict,
+            "questions_version": QUESTIONS_VERSION,
             "model": completion.model,
             "latency_ms": latency_ms,
             "skipped": None,

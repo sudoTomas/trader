@@ -77,7 +77,11 @@ class RoleLLM:
         self._decide = list(decide)
         self.calls: list[tuple[str, list[dict]]] = []
 
-    async def complete(self, role, messages, *, schema=None, max_tokens=1024, temperature=0.2):
+    async def complete(
+        self, role, messages, *, schema=None, max_tokens=1024, temperature=0.2, state=None
+    ):
+        if state is not None:  # Jev's structured state, recorded as the text it sends
+            messages = [{"role": "user", "content": json.dumps(state)}]
         self.calls.append((role, messages))
         text = {
             "decide": lambda: self._decide.pop(0),
@@ -228,7 +232,9 @@ async def test_every_blind_prompt_withholds_identity_dates_and_dollars(db: Datab
 
     run, llm, blind = await _replay(db, ticker, blind=True)
     roles = {role for role, _ in llm.calls}
-    assert roles == {"decide", "analyst", "critic", "confirm"}  # every prompt was rendered
+    # Every prompt was rendered; the Confirm never sees a blind step (its state is unblinded).
+    assert roles == {"decide", "analyst", "critic"}
+    assert "confirm" in {role for role, _ in named_llm.calls}
     user_prompts = [m[1]["content"] for _role, m in llm.calls]
     assert any("Held position review" in p for p in user_prompts)  # the exit-review block
     assert any("X sentiment" in p for p in user_prompts)
@@ -251,7 +257,7 @@ async def test_every_blind_prompt_withholds_identity_dates_and_dollars(db: Datab
     def count(calls, role):
         return sum(1 for r, _ in calls if r == role)
 
-    for role in ("decide", "critic", "confirm"):  # same steps, same reviews
+    for role in ("decide", "critic"):  # same steps, same reviews
         assert count(named_llm.calls, role) == count(llm.calls, role)
     # The research analyst reads only the research lanes, which a blind run drops.
     assert count(llm.calls, "analyst") == count(llm.calls, "decide")

@@ -19,12 +19,23 @@ from trader.llm.registry import (
     build_decide_client,
     build_llm_registry,
 )
-from trader.loop.confirm import QUESTIONS
 from trader.loop.decider import DECISION_SCHEMA
 from trader.ops.config import Settings
 
 FLAT = "Symbol: ETH/USD (crypto)\nOpen position: 0 units\n"
-ASKED = {"action": QUESTIONS["action"], "open_side": QUESTIONS["open_side"]}
+# A choice question set: the client is generic over Jev's question types.
+ASKED = {
+    "action": {
+        "type": "choice",
+        "instructions": "Choose what the agent should do now.",
+        "criteria": {"hold": "Do nothing.", "open": "Open.", "close": "Close."},
+    },
+    "open_side": {
+        "type": "choice",
+        "instructions": "Which side has the better case?",
+        "criteria": {"buy": "Long.", "sell": "Short."},
+    },
+}
 
 
 def answers():

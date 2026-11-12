@@ -155,15 +155,21 @@ SignalScheduler → ContextBuilder → (analyst desk) → Decider → (Confirm) 
   backoff ([transient-vs-crash-backoff](lessons.md#transient-vs-crash-backoff)). Runs in
   **shadow mode** first: journal the decision, submit nothing. Its output is the
   **Draft**: action, side, notional, cited rationale (a hold is a Draft with no order).
-- **Confirm** (`confirm` role, `TRADER_CONFIRM_*`, absent unless configured) — Kev, a Jev
-  judgment model, answers typed questions about every open or close Draft: the action
-  (hold / open / close) and the side for the Draft's action, as probabilities. It always
-  judges the raw Draft, before the critic. **First stage (#99) is journal-only**: the
-  answer lands in the decision's `confirm` column (`verdict: journal_only`) and nothing
-  reads it back. Unreachable, slow, HTTP error or malformed answers journal a skip with
-  the status text, and the Draft proceeds. The margin that later lets a Confirm turn a
-  Draft into a hold is chosen from this column by replay, in a second change. A Confirm
-  can never open a trade the Draft did not propose or change its notional.
+- **Confirm** (`confirm` role, `TRADER_CONFIRM_*`, absent unless configured) — Jev, a
+  judgment model, answers atomic Noul judgments (p(true) each) about every open or close
+  Draft over a named JSON state (`symbol`, `draft`, `market`, `research`, `position`):
+  whether the rationale is grounded in what the state shows, whether it names a catalyst,
+  whether research points against the side, and for a close whether the opening thesis is
+  broken. It always judges the raw Draft, before the critic. The questions, thresholds and
+  veto rule live together in `loop/confirm_questions.py`; code, not Jev, decides. Only an
+  **open** can be vetoed (`TRADER_CONFIRM_VETO_ENABLED`, default on): a vetoed open becomes
+  a hold; off, the rule's outcome is still recorded as `would_veto`. A close is judged and
+  recorded, never vetoed. The record lands in the decision's `confirm` column (`answers`,
+  `rule`, `would_veto`, `veto_reason`, `vetoed`, `verdict` veto / pass / recorded,
+  `questions_version`); rows from the journal-only stage (#99) keep their old shape.
+  Unreachable, slow, HTTP error or malformed answers journal a skip with the status text,
+  never a veto, and the Draft proceeds; a blind replay step is never sent. A Confirm can
+  never open a trade the Draft did not propose or change its notional.
 - **Critic** (desk, `TRADER_DESK_ENABLED`) — a cross-model second opinion that can only
   approve, shrink or veto the Draft; fails open to a journaled pass-through.
 - **RiskGuard** — ordered, fail-closed chain; each check returns allow / deny(reason) /

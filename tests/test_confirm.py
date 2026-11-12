@@ -1,36 +1,74 @@
-"""Confirm seat, first stage (#99): Kev judges every open or close Draft, journal-only.
+"""Confirm seat: Jev answers atomic Noul judgments about every open or close Draft, and a
+code-side rule (loop/confirm_questions.py) decides whether an open would be vetoed.
 
-Order on a non-hold Draft: Draft, Confirm, critic, RiskGuard. The Confirm's answer goes
-into the decision's own ``confirm`` column and nothing reads it back: in this stage it can
-never change the decision. Kev down, slow, erroring or malformed is a journaled skip.
+Order on a non-hold Draft: Draft, Confirm, critic, RiskGuard. The Confirmer returns the
+record for the decision's ``confirm`` column; the record says whether the open is vetoed
+(``vetoed``), and the loop applies it. Jev down, slow, erroring or malformed is a
+journaled skip and never a veto.
 """
 
 from __future__ import annotations
 
 import json
+import math
+from datetime import UTC, datetime
+from pathlib import Path
 
 import httpx
+import pytest
 
 from tests.test_desk import RoleLLM, analyst_reply, critic_reply
-from tests.test_loop import HOLD, NOW, OPEN, build_runner, context_for
+from tests.test_loop import BTC, HOLD, NOW, OPEN, build_runner, context_for
 from trader.core.types import Action, Decision, OrderIntent, Side
+from trader.llm.base import Completion, LLMError, Usage
 from trader.llm.jev import JevClient
-from trader.llm.registry import LLMRegistry
-from trader.loop.confirm import JOURNAL_ONLY, QUESTIONS, Confirmer
-from trader.loop.decider import SYSTEM_PROMPT
+from trader.llm.registry import LLMRegistry, NoRoute
+from trader.loop.confirm import Confirmer
+from trader.loop.confirm_questions import (
+    QUESTIONS_VERSION,
+    PositionState,
+    build_state,
+    questions_for,
+)
+from trader.loop.context import DecisionContext, Indicators
 from trader.loop.journal import Journal
+from trader.loop.scheduler import Trigger
+from trader.loop.sources import BRIEF, SENTIMENT, BriefSlice, SourceSlice
 
-KEV_DOUBTS = {
-    "action": {"choice": "hold", "probabilities": {"hold": 0.61, "open": 0.31, "close": 0.08}},
-    "open_side": {"choice": "buy", "probabilities": {"buy": 0.7, "sell": 0.3}},
-}
-KEV_AGREES = {
-    "action": {"choice": "open", "probabilities": {"hold": 0.2, "open": 0.72, "close": 0.08}},
-    "open_side": {"choice": "buy", "probabilities": {"buy": 0.8, "sell": 0.2}},
-}
+GOLDEN = Path(__file__).parent / "golden" / "confirm_open_request.json"
 
 
-def kev(seen: list, *, answers=None, status: int = 200, error: Exception | None = None):
+def noul(**answers: float) -> dict:
+    return {qid: {"type": "noul", "noul": p} for qid, p in answers.items()}
+
+
+SOUND = noul(grounded=0.9, catalyst=0.8)  # an open the rule passes
+UNGROUNDED = noul(grounded=0.1, catalyst=0.8)  # an open the rule vetoes
+
+
+class FakeJev:
+    """LLMRegistry stand-in: records each call and answers with ``reply`` (a dict, sent
+    as JSON) or raises it."""
+
+    def __init__(self, reply: dict | Exception, model: str = "jev-1.15") -> None:
+        self.reply = reply
+        self.model = model
+        self.calls: list[dict] = []
+
+    async def complete(self, role, messages, *, schema=None, state=None, **kwargs):
+        self.calls.append({"role": role, "messages": messages, "schema": schema, "state": state})
+        if isinstance(self.reply, Exception):
+            raise self.reply
+        return Completion(
+            text=json.dumps(self.reply),
+            usage=Usage(prompt_tokens=900, completion_tokens=4),
+            cost_usd=0.0,
+            provider="jev",
+            model=self.model,
+        )
+
+
+def jev(seen: list, *, answers=None, status: int = 200, error: Exception | None = None, **kw):
     """A Confirmer on a real JevClient behind a mock transport; ``seen`` logs request bodies."""
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -39,15 +77,15 @@ def kev(seen: list, *, answers=None, status: int = 200, error: Exception | None 
             raise error
         if status != 200:
             return httpx.Response(status, text="secret-bearing body")
-        payload = {"answers": KEV_DOUBTS if answers is None else answers, "usage": {}}
-        return httpx.Response(200, json=payload)
+        payload = {"model": "jev-1.15", "answers": SOUND if answers is None else answers}
+        return httpx.Response(200, json={**payload, "usage": {}})
 
     client = JevClient(
         api_key="k",
-        model="kev-latest",
+        model="jev-latest",
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
-    return Confirmer(LLMRegistry({"confirm": [client]}, None))
+    return Confirmer(LLMRegistry({"confirm": [client]}, None), **kw)
 
 
 def make_draft(action: Action = Action.OPEN, side: Side = Side.BUY) -> Decision:
@@ -60,100 +98,235 @@ def make_draft(action: Action = Action.OPEN, side: Side = Side.BUY) -> Decision:
     )
 
 
+AS_OF = datetime(2026, 8, 12, 14, 0, tzinfo=UTC)
+
+
+def researched_context() -> DecisionContext:
+    """A fixed context with one research lane, for the request snapshot."""
+    brief = SourceSlice(BRIEF, 3, AS_OF, "Thesis: ETF inflows steady", BriefSlice(3, ["x"]))
+    sentiment = SourceSlice(SENTIMENT, 9, AS_OF, "X sentiment +0.4, volume high")
+    return DecisionContext(
+        symbol=BTC,
+        now=NOW,
+        triggers=[Trigger(type="price_move", symbol="BTC/USD", detail={"move_pct": 2.1})],
+        price=61_250.0,
+        bars={"1h": []},
+        indicators={"1h": Indicators(rsi_14=71.2, sma_20=60_100.0, ema_12=None)},
+        brief=brief.detail,
+        sentiment=sentiment,
+        sources=(brief, sentiment),
+    )
+
+
+HELD = PositionState(
+    side="long",
+    quantity=0.5,
+    summary=None,
+    opened_at=datetime(2026, 8, 9, 15, 0, tzinfo=UTC),
+    open_rationale="breakout above 60k on ETF inflows",
+)
+
+
 # --- the Confirmer ------------------------------------------------------------------------
 
 
-async def test_confirm_record_has_the_journal_shape():
-    seen: list = []
-    record = await kev(seen).confirm(await context_for(), make_draft())
+async def test_a_vetoed_open_records_the_veto():
+    record = await Confirmer(FakeJev(UNGROUNDED)).confirm(await context_for(), make_draft())
     latency = record.pop("latency_ms")
     assert isinstance(latency, int) and latency >= 0
     assert record == {
         "draft": {"action": "open", "side": "buy"},
-        "action": {"hold": 0.61, "open": 0.31, "close": 0.08},
-        "side": {"buy": 0.7, "sell": 0.3},
-        "p_same_action": 0.31,
-        "prefers": "hold",
-        "margin": None,
-        "verdict": JOURNAL_ONLY,
-        "model": "kev-latest",
+        "answers": {"grounded": 0.1, "catalyst": 0.8},
+        "rule": [
+            {"reason": "ungrounded", "fired": True},
+            {"reason": "news_against", "fired": False},
+            {"reason": "generic_and_contested", "fired": False},
+        ],
+        "would_veto": True,
+        "veto_reason": "ungrounded",
+        "vetoed": True,
+        "verdict": "veto",
+        "questions_version": QUESTIONS_VERSION,
+        "model": "jev-1.15",
         "skipped": None,
     }
 
 
-async def test_confirm_sends_the_decide_prompt_the_draft_and_the_rules():
-    seen: list = []
-    ctx = await context_for()
-    await kev(seen).confirm(ctx, make_draft())
-    state = seen[0]["state"]
-    assert state["prompt"].startswith(ctx.to_prompt())
-    assert "Draft decision under review:" in state["prompt"]
-    assert '"notional_usd": 500.0' in state["prompt"]
-    assert state["rules"] == SYSTEM_PROMPT
-    # The action choice plus the side question for the Draft's own action.
-    assert seen[0]["questions"] == {
-        "action": QUESTIONS["action"],
-        "open_side": QUESTIONS["open_side"],
-    }
+async def test_with_the_switch_off_a_failing_open_is_recorded_but_passes():
+    confirmer = Confirmer(FakeJev(UNGROUNDED), veto_enabled=False)
+    record = await confirmer.confirm(await context_for(), make_draft())
+    assert (record["would_veto"], record["veto_reason"]) == (True, "ungrounded")
+    assert (record["vetoed"], record["verdict"]) == (False, "pass")
 
 
-async def test_a_close_draft_asks_the_close_side():
-    seen: list = []
-    answers = {
-        "action": {"probabilities": {"hold": 0.3, "open": 0.0, "close": 0.7}},
-        "close_side": {"probabilities": {"sell": 0.2, "buy": 0.8}},
-    }
-    record = await kev(seen, answers=answers).confirm(
-        await context_for(), make_draft(Action.CLOSE, Side.SELL)
-    )
-    assert set(seen[0]["questions"]) == {"action", "close_side"}
+async def test_a_sound_open_passes():
+    record = await Confirmer(FakeJev(SOUND)).confirm(await context_for(), make_draft())
+    assert (record["would_veto"], record["vetoed"], record["verdict"]) == (False, False, "pass")
+    assert record["veto_reason"] is None
+
+
+async def test_a_close_is_recorded_never_vetoed():
+    fake = FakeJev(noul(grounded=0.0, catalyst=0.0))
+    record = await Confirmer(fake).confirm(await context_for(), make_draft(Action.CLOSE, Side.SELL))
     assert record["draft"] == {"action": "close", "side": "sell"}
-    assert record["p_same_action"] == 0.7
-    assert record["prefers"] == "other_side"  # same action, the other side
+    assert (record["would_veto"], record["vetoed"], record["verdict"]) == (
+        False,
+        False,
+        "recorded",
+    )
 
 
-async def test_agreement_prefers_the_drafts_own_action():
-    record = await kev([], answers=KEV_AGREES).confirm(await context_for(), make_draft())
-    assert (record["prefers"], record["p_same_action"]) == ("open", 0.72)
+async def test_jev_gets_the_structured_state_and_the_questions_for_the_draft():
+    fake = FakeJev(SOUND)
+    ctx = await context_for()
+    draft = make_draft()
+    await Confirmer(fake).confirm(ctx, draft)
+    [call] = fake.calls
+    assert call["role"] == "confirm"
+    assert call["messages"] == []  # Jev reads the state, not a chat
+    assert call["state"] == build_state(ctx, draft, None)
+    assert call["state"]["draft"]["rationale"] == "momentum"
+    assert call["schema"] == questions_for("open", has_research=False, has_open_rationale=False)
 
 
-async def test_unreachable_kev_is_a_skip_with_the_status_text():
-    record = await kev([], error=httpx.ConnectTimeout("boom")).confirm(
+async def test_research_adds_news_against():
+    fake = FakeJev(noul(grounded=0.9, catalyst=0.8, news_against=0.95))
+    record = await Confirmer(fake).confirm(researched_context(), make_draft())
+    assert set(fake.calls[0]["schema"]) == {"grounded", "catalyst", "news_against"}
+    assert "research" in fake.calls[0]["state"]
+    assert (record["veto_reason"], record["vetoed"]) == ("news_against", True)
+
+
+async def test_a_close_with_an_open_rationale_asks_thesis_broken():
+    fake = FakeJev(noul(grounded=0.9, catalyst=0.8, thesis_broken=0.7))
+    draft = make_draft(Action.CLOSE, Side.SELL)
+    record = await Confirmer(fake).confirm(await context_for(), draft, HELD)
+    assert set(fake.calls[0]["schema"]) == {"grounded", "catalyst", "thesis_broken"}
+    assert fake.calls[0]["state"]["position"]["open_rationale"] == HELD.open_rationale
+    assert record["answers"]["thesis_broken"] == 0.7
+
+
+async def test_a_close_without_an_open_rationale_omits_thesis_broken():
+    fake = FakeJev(noul(grounded=0.9, catalyst=0.8))
+    draft = make_draft(Action.CLOSE, Side.SELL)
+    for rationale in (None, "", "  "):
+        held = PositionState("long", 0.5, None, None, rationale)
+        await Confirmer(fake).confirm(await context_for(), draft, held)
+        assert set(fake.calls[-1]["schema"]) == {"grounded", "catalyst"}
+
+
+async def test_the_open_request_matches_the_snapshot():
+    seen: list = []
+    await jev(seen).confirm(researched_context(), make_draft())
+    assert seen[0] == json.loads(GOLDEN.read_text())
+
+
+@pytest.mark.parametrize(
+    "answers",
+    [
+        noul(grounded=0.9),  # catalyst missing
+        {"grounded": {"type": "noul", "noul": 0.9}, "catalyst": {"type": "noul"}},
+        noul(grounded=0.9, catalyst=1.7),
+        noul(grounded=-0.1, catalyst=0.5),
+        noul(grounded=math.nan, catalyst=0.5),
+        {"grounded": {"type": "noul", "noul": "high"}, "catalyst": {"type": "noul", "noul": 0.5}},
+        {"grounded": {"type": "noul", "noul": True}, "catalyst": {"type": "noul", "noul": 0.5}},
+        {"grounded": 0.9, "catalyst": 0.5},
+        [],
+    ],
+)
+async def test_malformed_answers_are_a_skip_and_never_a_veto(answers):
+    record = await Confirmer(FakeJev(answers)).confirm(await context_for(), make_draft())
+    assert set(record) == {"draft", "skipped", "vetoed"}
+    assert record["skipped"].startswith("malformed answers")
+    assert record["vetoed"] is False
+
+
+async def test_a_blind_context_never_reaches_jev():
+    """The state is not rendered through the blind view: it names the symbol, its prices
+    and dates. A blinded replay step is a skip, never a Jev call."""
+    from dataclasses import replace
+
+    fake = FakeJev(UNGROUNDED)
+    ctx = replace(await context_for(), blind=object())
+    record = await Confirmer(fake).confirm(ctx, make_draft())
+    assert fake.calls == []
+    assert record == {
+        "draft": {"action": "open", "side": "buy"},
+        "skipped": "blind",
+        "vetoed": False,
+    }
+
+
+async def test_no_route_records_nothing():
+    assert (
+        await Confirmer(FakeJev(NoRoute("confirm"))).confirm(await context_for(), make_draft())
+        is None
+    )
+
+
+async def test_a_provider_error_is_a_skip_with_its_status_text():
+    record = await Confirmer(FakeJev(LLMError("jev: HTTP 500"))).confirm(
+        await context_for(), make_draft()
+    )
+    assert record == {
+        "draft": {"action": "open", "side": "buy"},
+        "skipped": "HTTP 500",
+        "vetoed": False,
+    }
+
+
+async def test_unreachable_jev_is_a_skip_with_the_status_text():
+    record = await jev([], error=httpx.ConnectTimeout("boom")).confirm(
         await context_for(), make_draft()
     )
     assert record == {
         "draft": {"action": "open", "side": "buy"},
         "skipped": "unreachable (ConnectTimeout)",
+        "vetoed": False,
     }
 
 
 async def test_http_500_is_a_skip_and_never_stores_the_body():
-    record = await kev([], status=500).confirm(await context_for(), make_draft())
+    record = await jev([], status=500).confirm(await context_for(), make_draft())
     assert record["skipped"] == "HTTP 500"
     assert "secret" not in json.dumps(record)
 
 
-async def test_malformed_answers_are_a_skip():
-    for answers in ({"action": {"choice": "hold"}}, {"action": {"probabilities": {}}}, {}):
-        record = await kev([], answers=answers).confirm(await context_for(), make_draft())
-        assert set(record) == {"draft", "skipped"}
-        assert record["skipped"].startswith("malformed answers")
+async def test_jev_missing_an_answer_is_a_malformed_skip():
+    record = await jev([], answers=noul(grounded=0.9)).confirm(await context_for(), make_draft())
+    assert record["skipped"].startswith("malformed answers")
+    assert record["vetoed"] is False
+
+
+# --- the settings ---------------------------------------------------------------------------
+
+
+def test_the_veto_switch_defaults_on_and_reads_the_env(monkeypatch):
+    from trader.ops.config import Settings
+    from trader.ops.config_reference import collect_fields
+
+    assert Settings(_env_file=None).confirm_veto_enabled is True
+    monkeypatch.setenv("TRADER_CONFIRM_VETO_ENABLED", "false")
+    assert Settings(_env_file=None).confirm_veto_enabled is False
+    fields = {field.env_name: field for field in collect_fields()}
+    assert fields["TRADER_CONFIRM_VETO_ENABLED"].category == "gate"
 
 
 # --- the runner -----------------------------------------------------------------------------
 
 
 async def test_non_hold_draft_journals_a_confirm(db):
-    results = await build_runner(db, [OPEN], confirm=kev([])).tick(NOW)
+    results = await build_runner(db, [OPEN], confirm=jev([])).tick(NOW)
     row = await Journal(db).get(results[0].decision_id)
-    assert row["confirm"]["verdict"] == JOURNAL_ONLY
-    assert row["confirm"]["action"] == {"hold": 0.61, "open": 0.31, "close": 0.08}
+    assert row["confirm"]["verdict"] == "pass"
+    assert row["confirm"]["answers"] == {"grounded": 0.9, "catalyst": 0.8}
     assert row["confirm"]["draft"] == {"action": "open", "side": "buy"}
 
 
-async def test_hold_draft_never_reaches_kev(db):
+async def test_hold_draft_never_reaches_jev(db):
     seen: list = []
-    results = await build_runner(db, [HOLD], confirm=kev(seen)).tick(NOW)
+    results = await build_runner(db, [HOLD], confirm=jev(seen)).tick(NOW)
     row = await Journal(db).get(results[0].decision_id)
     assert row["confirm"] is None
     assert seen == []
@@ -166,20 +339,24 @@ async def test_no_confirm_configured_writes_no_column(db):
     assert row["decision"]["action"] == "open"
 
 
-async def test_kev_failures_skip_and_the_draft_reaches_the_critic_unchanged(db):
+async def test_jev_failures_skip_and_the_draft_reaches_the_critic_unchanged(db):
     from trader.desk.desk import Desk
 
     for confirmer, reason in (
-        (kev([], error=httpx.ConnectError("refused")), "unreachable (ConnectError)"),
-        (kev([], status=500), "HTTP 500"),
-        (kev([], answers={"action": {"choice": "hold"}}), "malformed answers: KeyError"),
+        (jev([], error=httpx.ConnectError("refused")), "unreachable (ConnectError)"),
+        (jev([], status=500), "HTTP 500"),
+        (jev([], answers=noul(grounded=0.9)), "malformed answers: KeyError"),
     ):
         llm = RoleLLM(
             {"analyst": [analyst_reply("bullish", 0.7, "up")], "critic": [critic_reply("approve")]}
         )
         results = await build_runner(db, [OPEN], desk=Desk(llm), confirm=confirmer).tick(NOW)
         row = await Journal(db).get(results[0].decision_id)
-        assert row["confirm"] == {"draft": {"action": "open", "side": "buy"}, "skipped": reason}
+        assert row["confirm"] == {
+            "draft": {"action": "open", "side": "buy"},
+            "skipped": reason,
+            "vetoed": False,
+        }
         assert row["desk_verdicts"]["critic"]["verdict"] == "approve"
         assert row["desk_verdicts"]["applied"]["notional_before"] == 500.0
         assert row["risk_verdicts"] is not None
@@ -188,11 +365,12 @@ async def test_kev_failures_skip_and_the_draft_reaches_the_critic_unchanged(db):
 async def test_a_crashing_confirmer_is_a_skip(db):
     class Exploding:
         async def confirm(self, ctx, decision):
-            raise RuntimeError("kev on fire")
+            raise RuntimeError("jev on fire")
 
     results = await build_runner(db, [OPEN], confirm=Exploding()).tick(NOW)
     row = await Journal(db).get(results[0].decision_id)
     assert row["confirm"]["skipped"] == "error (RuntimeError)"
+    assert row["confirm"]["vetoed"] is False
     assert row["decision"]["action"] == "open"
 
 
@@ -210,16 +388,16 @@ async def test_confirm_runs_before_the_critic(db):
         {
             "analyst": [analyst_reply("bullish", 0.7, "up")],
             "critic": [critic_reply("approve")],
-            "confirm": [json.dumps(KEV_AGREES)],
+            "confirm": [json.dumps(SOUND)],
         }
     )
     await build_runner(db, [OPEN], desk=Desk(llm), confirm=Confirmer(llm)).tick(NOW)
     assert order == ["analyst", "confirm", "critic"]
 
 
-async def test_confirm_can_never_alter_the_decision(db):
-    """The power ceiling of this stage: whatever Kev says, the Draft the critic and
-    RiskGuard see is the decide output, object for object."""
+async def test_with_the_veto_off_confirm_never_alters_the_decision(db):
+    """Switch off: whatever Jev says, the Draft the critic and RiskGuard see is the decide
+    output, object for object, and the record only says the rule would have vetoed."""
     seen_by_critic: list[Decision] = []
 
     class SpyDesk:
@@ -230,11 +408,8 @@ async def test_confirm_can_never_alter_the_decision(db):
             seen_by_critic.append(decision)
             return decision, info
 
-    certain_hold = {
-        "action": {"probabilities": {"hold": 1.0, "open": 0.0, "close": 0.0}},
-        "open_side": {"probabilities": {"buy": 0.0, "sell": 1.0}},
-    }
-    runner = build_runner(db, [OPEN], desk=SpyDesk(), confirm=kev([], answers=certain_hold))
+    confirmer = jev([], answers=UNGROUNDED, veto_enabled=False)
+    runner = build_runner(db, [OPEN], desk=SpyDesk(), confirm=confirmer)
     decided: list[Decision] = []
     decide = runner._decider.decide
 
@@ -248,23 +423,10 @@ async def test_confirm_can_never_alter_the_decision(db):
     row = await Journal(db).get(results[0].decision_id)
 
     assert seen_by_critic[0] is decided[0]
-    assert row["confirm"]["prefers"] == "hold"
+    assert (row["confirm"]["would_veto"], row["confirm"]["vetoed"]) == (True, False)
     assert row["decision"]["action"] == "open"
     assert row["decision"]["intent"]["notional"] == 500.0
     assert row["risk_verdicts"] is not None
-    # Structurally: the Confirmer returns a record, and the record has no field to apply.
-    assert set(row["confirm"]) == {
-        "draft",
-        "action",
-        "side",
-        "p_same_action",
-        "prefers",
-        "margin",
-        "verdict",
-        "model",
-        "latency_ms",
-        "skipped",
-    }
 
 
 async def test_the_app_confirmer_records_nothing_until_a_confirm_route_exists(db):

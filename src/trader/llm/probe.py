@@ -40,18 +40,20 @@ def _contracts() -> dict[str, Contract]:
     from trader.desk.critic import SYSTEM_PROMPT as CRITIC_PROMPT
     from trader.learning.reflect import REFLECT_SCHEMA, LessonOutput
     from trader.learning.reflect import SYSTEM_PROMPT as REFLECT_PROMPT
-    from trader.loop.confirm import QUESTIONS
+    from trader.loop.confirm_questions import questions_for
     from trader.loop.decider import DECISION_SCHEMA, SYSTEM_PROMPT, DecisionOutput
     from trader.research.briefs import BRIEF_SCHEMA, BriefOutput
     from trader.research.briefs import SYSTEM_PROMPT as BRIEF_PROMPT
     from trader.research.compiler import COMPILE_SCHEMA, CompiledOutput
     from trader.research.compiler import SYSTEM_PROMPT as COMPILE_PROMPT
 
+    confirm_questions = questions_for("open", has_research=False, has_open_rationale=False)
+
     def confirm_answers(text: str) -> None:
         answers = json.loads(text)
-        for name in ("action", "open_side"):
-            if not isinstance(answers[name]["probabilities"], dict):
-                raise ValueError(f"{name} has no probabilities")
+        for name in confirm_questions:
+            if not isinstance(answers[name]["noul"], int | float):
+                raise ValueError(f"{name} has no p(true)")
 
     return {
         "decide": Contract(
@@ -66,7 +68,7 @@ def _contracts() -> dict[str, Contract]:
         "reflect": Contract(REFLECT_PROMPT, REFLECT_SCHEMA, LessonOutput.model_validate_json),
         "confirm": Contract(
             SYSTEM_PROMPT,
-            {"action": QUESTIONS["action"], "open_side": QUESTIONS["open_side"]},
+            confirm_questions,
             confirm_answers,
         ),
     }
