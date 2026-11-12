@@ -74,6 +74,16 @@ class ProfileNotFound(LookupError):
     """No Profile (or Profile version) by that name."""
 
 
+def parse_model_spec(spec: str) -> tuple[str, str]:
+    """``provider:model`` as ``(provider, model)``. Split on the first colon: Provider
+    names have none, and model ids may (``spark:qwen3:8b`` is Provider ``spark``, model
+    ``qwen3:8b``)."""
+    provider, sep, model = spec.strip().partition(":")
+    if not sep or not provider or not model:
+        raise ProfileError(f"{spec!r} is not provider:model")
+    return provider, model
+
+
 class ProfileDesk:
     """Every Profile operation, and the Role routes the shared registry reads per call."""
 
@@ -332,6 +342,15 @@ class ProfileDesk:
         if entries and not clients:
             raise LLMError(f"every Provider in the active Profile's {role} Chain was removed")
         return active["id"], clients
+
+    async def client_for(self, role: str, provider: str, model: str) -> Any:
+        """One Provider's client for ``role`` and ``model``, built and priced exactly as a
+        Chain entry's, outside any Profile: nothing is saved, activated or Probed. A
+        replay eval pins its decide calls to it. Refuses (ProfileError) a Provider that
+        does not exist or whose kind cannot serve ``role``."""
+        (entry,) = await self._resolve_chain(role, [{"provider": provider, "model": model}])
+        price = await self._providers.prices.price(entry, entry["model"])
+        return self._client(role, entry, (price["price_in"], price["price_out"]))
 
     # --- internals --------------------------------------------------------------------
 

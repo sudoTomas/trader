@@ -88,6 +88,12 @@ class LLMRegistry:
         self._profiles = profiles
         self._caps = caps
 
+    def pinned(self, role: str, client: LLMClient) -> LLMRegistry:
+        """A registry serving ``role`` from ``client`` alone, whatever the active Profile
+        says, under this one's meter and Spend caps; every other Role has no route. A
+        replay eval run on a named ``provider:model`` decides through it."""
+        return LLMRegistry({role: [client]}, self._meter, caps=self._caps)
+
     def chain_for(self, role: str) -> list[LLMClient]:
         """The ``.env`` chain for ``role``."""
         chain = self._routes.get(role, [])

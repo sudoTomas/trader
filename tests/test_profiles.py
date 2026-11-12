@@ -860,3 +860,102 @@ def test_cli_reads_a_chain_as_provider_colon_model(monkeypatch):
         ("PUT", "/profiles/trial/roles/confirm", {"chain": []}, "cli"),
     ]
     assert bad.exit_code != 0 and "not provider:model" in bad.output
+
+
+# --- one Provider and model outside any Profile (replay evals) ---------------------------
+
+
+def test_a_model_spec_is_provider_colon_model():
+    from trader.llm.profiles import parse_model_spec
+
+    assert parse_model_spec("spark:qwen3:8b") == ("spark", "qwen3:8b")
+    assert parse_model_spec(" grok-deep:grok-4.7 ") == ("grok-deep", "grok-4.7")
+    for bad in ("spark", ":qwen3", "spark:", ""):
+        with pytest.raises(ProfileError, match="not provider:model"):
+            parse_model_spec(bad)
+
+
+async def test_client_for_builds_one_providers_client_and_saves_nothing(db: Database):
+    server = ModelServer({("spark", "qwen3:8b"): DECIDE_OK})
+    _, profiles = await with_local(db, server)
+    audited = await db.fetch_all("SELECT id FROM audit_events")
+
+    client = await profiles.client_for("decide", "spark", "qwen3:8b")
+    completion = await client.complete([{"role": "user", "content": "decide"}])
+
+    assert (completion.provider, completion.model) == ("spark", "qwen3:8b")
+    assert server.models("spark") == ["qwen3:8b"]  # the call itself; no Probe ran
+    assert await profiles.list() == []
+    assert await db.fetch_all("SELECT id FROM audit_events") == audited
+
+
+async def test_client_for_refuses_unknown_providers_and_kinds_that_cannot_decide(db: Database):
+    server = ModelServer({})
+    providers, profiles = await with_local(db, server)
+    await providers.add(name="kev", preset="jev", api_key="kev-key-12345")
+
+    with pytest.raises(ProfileError, match="no Provider named 'ghost'"):
+        await profiles.client_for("decide", "ghost", "m")
+    with pytest.raises(ProfileError, match="answers question sets only"):
+        await profiles.client_for("decide", "kev", "m")
+    assert server.calls == []
+
+
+async def test_client_for_signs_a_keyless_xai_provider_with_the_login(db: Database):
+    server = ModelServer({("api.x.ai", "grok-4.7"): DECIDE_OK})
+    seen: list[tuple[str, str]] = []
+    providers = ProviderDesk(
+        db, secrets_key=SECRETS_KEY, http=httpx.AsyncClient(transport=httpx.MockTransport(server))
+    )
+    profiles = ProfileDesk(db, providers, transport=signed_by(server, seen), xai_auth=LoginAuth())
+    await providers.add(name="grok-deep", preset="xai")
+
+    client = await profiles.client_for("decide", "grok-deep", "grok-4.7")
+    await client.complete([{"role": "user", "content": "decide"}])
+
+    assert seen == [("grok-4.7", "Bearer oauth-access")]
+
+
+class PaidClient(EnvClient):
+    def price(self) -> tuple[float, float]:
+        return (1.0, 1.0)
+
+
+class CapReached:
+    async def reached(self, role: str) -> bool:
+        return True
+
+
+async def test_a_pinned_registry_serves_only_its_client_metered_and_capped(db: Database):
+    from trader.llm.base import LLMError
+    from trader.llm.registry import LLMRegistry, NoRoute
+    from trader.llm.usage import UsageMeter
+    from trader.store.repos import UsageRepo
+
+    server = ModelServer({("spark", "qwen3:8b"): DECIDE_OK, ("box", "llama"): DECIDE_OK})
+    _, profiles = await with_local(db, server)
+    _, registry = env_registry(profiles, UsageMeter(UsageRepo(db)))
+    await profiles.create("trial")
+    await profiles.set_chain("trial", "decide", [{"provider": "spark", "model": "qwen3:8b"}])
+    await profiles.activate("trial")
+
+    pinned = registry.pinned("decide", await profiles.client_for("decide", "box", "llama"))
+    completion = await pinned.complete("decide", [{"role": "user", "content": "decide"}])
+
+    # The pin wins over the active Profile, and is metered like any other decide call.
+    assert (completion.provider, completion.model, completion.profile_version) == (
+        "box",
+        "llama",
+        None,
+    )
+    usage = await db.fetch_all("SELECT role, provider, model, requests FROM usage_daily")
+    assert [(u["role"], u["provider"], u["model"], u["requests"]) for u in usage] == [
+        ("decide", "box", "llama", 1)
+    ]
+    with pytest.raises(NoRoute):
+        await pinned.complete("analyst", [{"role": "user", "content": "x"}])
+
+    # The caps hold a pinned registry too: a paid pin sits out a capped Role.
+    capped = LLMRegistry({}, None, caps=CapReached()).pinned("decide", PaidClient("paid", "{}"))
+    with pytest.raises(LLMError, match="daily spend cap"):
+        await capped.complete("decide", [{"role": "user", "content": "x"}])

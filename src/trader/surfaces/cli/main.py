@@ -1132,11 +1132,13 @@ app.add_typer(profile_app, name="profile")
 
 
 def _chain_entry(spec: str) -> dict[str, str]:
-    """``provider:model``. Split on the first colon: Provider names have none, and model
-    ids may (``spark:qwen3:8b`` is Provider ``spark``, model ``qwen3:8b``)."""
-    provider, sep, model = spec.partition(":")
-    if not sep or not provider or not model:
-        raise typer.BadParameter(f"{spec!r} is not provider:model")
+    """``provider:model`` (``llm.profiles.parse_model_spec``: split on the first colon)."""
+    from trader.llm.profiles import ProfileError, parse_model_spec
+
+    try:
+        provider, model = parse_model_spec(spec)
+    except ProfileError as exc:
+        raise typer.BadParameter(str(exc)) from exc
     return {"provider": provider, "model": model}
 
 
