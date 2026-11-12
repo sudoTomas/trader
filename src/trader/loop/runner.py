@@ -929,7 +929,7 @@ class BotRunner:
             except Exception as exc:  # noqa: BLE001 - Jev must never stop the loop
                 log.warning("confirm_failed", symbol=symbol.ticker, error=str(exc)[:300])
                 confirm = skipped(decision, f"error ({type(exc).__name__})")
-            if confirm is not None and confirm["vetoed"] and decision.action is Action.OPEN:
+            if confirm is not None and confirm.get("vetoed") and decision.action is Action.OPEN:
                 # The Draft stays in confirm["draft"]; the critic and RiskGuard see a hold.
                 decision = Decision(
                     symbol=decision.symbol,
