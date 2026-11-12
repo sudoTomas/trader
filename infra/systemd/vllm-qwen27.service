@@ -1,0 +1,48 @@
+# Qwen3.8-27B NVFP4 (dense) on vLLM, as a systemd *user* unit, on :8014 — the strong local
+# coding/agent model for OpenCode and Hermes. It takes the memory Nemotron 3.5 Lightning
+# held until 2026-11-12 (Qwen3.6-35B-A3B on :8012 stays the fast model and local backup).
+# docs/research/2026-11-two-spark-cluster.md: ~20-28 tok/s with MTP on GB10, 28 GiB of
+# weights+overhead, ~240K tokens of fp8 KV at a 0.30 share; context capped at 128K here.
+# Reasoning is long by default: clients should send reasoning_effort "medium".
+# Default weight loader on purpose: fastsafetensors staged the checkpoint in host RAM and
+# OOM-froze the box on 2026-11-11.
+#
+# Install:
+#   cp infra/systemd/vllm-qwen27.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now vllm-qwen27
+# LAN only and unauthenticated, the same trust model as :8012.
+[Unit]
+Description=Qwen3.8-27B NVFP4 on vLLM (:8014, coding and agents)
+After=network-online.target vllm-qwen.service
+Wants=network-online.target
+
+[Service]
+ExecStartPre=-/usr/bin/docker rm -f vllm-qwen27
+ExecStart=/usr/bin/docker run --rm --name vllm-qwen27 --gpus all \
+  -v %h/.cache/huggingface:/root/.cache/huggingface \
+  -p 8014:8000 \
+  vllm/vllm-openai:v0.27.1 \
+    --model nvidia/Qwen3.8-27B-NVFP4 \
+    --served-model-name qwen3.8-27b \
+    --host 0.0.0.0 --port 8000 \
+    --trust-remote-code \
+    --kv-cache-dtype fp8 \
+    --attention-backend flashinfer \
+    --gpu-memory-utilization 0.30 \
+    --max-model-len 131072 \
+    --max-num-seqs 4 \
+    --max-num-batched-tokens 8192 \
+    --enable-chunked-prefill \
+    --enable-prefix-caching \
+    --speculative-config '{"method":"mtp","num_speculative_tokens":3}' \
+    --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_coder \
+    --enable-auto-tool-choice
+ExecStop=/usr/bin/docker stop -t 30 vllm-qwen27
+# vLLM can exit 0 on EngineDeadError, so restart on every exit.
+Restart=always
+RestartSec=30
+TimeoutStartSec=1200
+
+[Install]
+WantedBy=default.target
