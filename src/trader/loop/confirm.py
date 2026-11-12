@@ -24,7 +24,7 @@ from typing import Any
 
 import structlog
 
-from trader.core.types import Decision
+from trader.core.types import Action, Decision
 from trader.llm.base import LLMError
 from trader.llm.registry import NoRoute
 from trader.loop.confirm_questions import (
@@ -49,6 +49,19 @@ def draft_of(decision: Decision) -> dict[str, Any]:
 def skipped(decision: Decision, reason: str) -> dict[str, Any]:
     """The record when no Confirm was produced: the Draft and why. Never a veto."""
     return {"draft": draft_of(decision), "skipped": reason[:200], "vetoed": False}
+
+
+def veto_hold(decision: Decision, record: dict[str, Any] | None) -> Decision:
+    """The Draft the rest of the chain sees: a hold when the Confirm vetoed an open, else
+    the Draft unchanged. The Draft itself stays in ``record["draft"]``."""
+    if record is None or not record.get("vetoed") or decision.action is not Action.OPEN:
+        return decision
+    return Decision(
+        symbol=decision.symbol,
+        action=Action.HOLD,
+        conviction=decision.conviction,
+        rationale=f"confirm veto: {record['veto_reason']}",
+    )
 
 
 def _answers(text: str, asked: dict[str, Any]) -> dict[str, float]:

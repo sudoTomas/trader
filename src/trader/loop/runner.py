@@ -38,7 +38,7 @@ from trader.core.types import Action, Decision, OrderIntent, Side
 from trader.data.base import MarketData, MarketDataError
 from trader.llm.base import Completion
 from trader.llm.registry import LLMRegistry
-from trader.loop.confirm import skipped
+from trader.loop.confirm import skipped, veto_hold
 from trader.loop.confirm_questions import PositionState
 from trader.loop.context import (
     BAR_LOOKBACK,
@@ -929,14 +929,8 @@ class BotRunner:
             except Exception as exc:  # noqa: BLE001 - Jev must never stop the loop
                 log.warning("confirm_failed", symbol=symbol.ticker, error=str(exc)[:300])
                 confirm = skipped(decision, f"error ({type(exc).__name__})")
-            if confirm is not None and confirm.get("vetoed") and decision.action is Action.OPEN:
-                # The Draft stays in confirm["draft"]; the critic and RiskGuard see a hold.
-                decision = Decision(
-                    symbol=decision.symbol,
-                    action=Action.HOLD,
-                    conviction=decision.conviction,
-                    rationale=f"confirm veto: {confirm['veto_reason']}",
-                )
+            # A vetoed open: the critic and RiskGuard see a hold (the Draft stays in confirm).
+            decision = veto_hold(decision, confirm)
         if self.desk is not None:
             try:
                 decision, desk_verdicts = await self.desk.review(ctx, decision, desk_verdicts or {})
