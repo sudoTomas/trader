@@ -60,7 +60,7 @@ def veto_hold(decision: Decision, record: dict[str, Any] | None) -> Decision:
         symbol=decision.symbol,
         action=Action.HOLD,
         conviction=decision.conviction,
-        rationale=f"confirm veto: {record['veto_reason']}",
+        rationale=f"confirm veto: {record.get('veto_reason') or 'unspecified'}",
     )
 
 

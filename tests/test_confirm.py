@@ -23,7 +23,7 @@ from trader.core.types import Action, Decision, OrderIntent, Side
 from trader.llm.base import Completion, LLMError, Usage
 from trader.llm.jev import JevClient
 from trader.llm.registry import LLMRegistry, NoRoute
-from trader.loop.confirm import Confirmer
+from trader.loop.confirm import Confirmer, veto_hold
 from trader.loop.confirm_questions import (
     QUESTIONS_VERSION,
     PositionState,
@@ -150,6 +150,12 @@ async def test_a_vetoed_open_records_the_veto():
         "model": "jev-1.15",
         "skipped": None,
     }
+
+
+def test_a_vetoed_record_without_a_reason_still_holds():
+    hold = veto_hold(make_draft(), {"vetoed": True})
+    assert hold.action is Action.HOLD
+    assert hold.rationale == "confirm veto: unspecified"
 
 
 async def test_with_the_switch_off_a_failing_open_is_recorded_but_passes():
