@@ -13,7 +13,12 @@ import pytest
 
 from trader.llm.base import LLMError
 from trader.llm.jev import JEV_PROVIDER, JevClient, is_question_set
-from trader.llm.registry import build_confirm_client, build_decide_client, build_llm_registry
+from trader.llm.registry import (
+    LLMRegistry,
+    build_confirm_client,
+    build_decide_client,
+    build_llm_registry,
+)
 from trader.loop.confirm import QUESTIONS
 from trader.loop.decider import DECISION_SCHEMA
 from trader.ops.config import Settings
@@ -156,3 +161,73 @@ def test_jev_is_only_the_confirm_role():
     assert [c.name for c in registry.chain_for("analyst")] == ["nemotron"]
     for role in ("decide", "analyst", "brief", "compiler", "sentiment", "critic"):
         assert not any(isinstance(c, JevClient) for c in registry._routes.get(role, []))
+
+
+# --- Noul questions and structured state ----------------------------------------------------
+
+NOUL = {
+    "grounded": {
+        "type": "noul",
+        "instructions": "Is the draft grounded in the evidence?",
+        "criteria": {"true": "every claim is in the evidence", "false": "a claim is not"},
+    }
+}
+NOUL_PAYLOAD = {
+    "model": "jev-1.15",
+    "answers": {"grounded": {"type": "noul", "noul": 0.91}},
+    "usage": {"input_tokens": 300, "output_tokens": 5},
+}
+
+
+async def test_a_noul_question_set_is_accepted_and_answered():
+    seen: dict = {}
+    assert is_question_set(NOUL)
+    completion = await make_client(seen, payload=NOUL_PAYLOAD).complete(MESSAGES, schema=NOUL)
+    assert seen["body"]["questions"]["grounded"]["type"] == "noul"
+    assert json.loads(completion.text)["grounded"]["noul"] == 0.91
+    assert completion.model == "jev-1.15"
+
+
+async def test_structured_state_is_sent_verbatim():
+    seen: dict = {}
+    state = {"draft": {"action": "open"}}
+    await make_client(seen, payload=NOUL_PAYLOAD).complete(MESSAGES, schema=NOUL, state=state)
+    assert seen["body"]["state"] == {"draft": {"action": "open"}}
+
+
+class FakeChatClient:
+    """An OpenAI-shaped client that must never see structured state."""
+
+    name = "openai_compat"
+    model = "gpt-test"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def complete(self, messages, **kwargs):
+        self.calls += 1
+        raise AssertionError("a chat client was called with structured state")
+
+
+async def test_registry_passes_state_only_to_jev():
+    seen: dict = {}
+    fake = FakeChatClient()
+    jev = make_client(seen, payload=NOUL_PAYLOAD)
+    registry = LLMRegistry({"confirm": [fake, jev]}, None)
+    state = {"draft": {"action": "open"}}
+    completion = await registry.complete("confirm", [], schema=NOUL, state=state)
+    assert fake.calls == 0
+    assert seen["body"]["state"] == state
+    assert json.loads(completion.text)["grounded"]["noul"] == 0.91
+
+    # Alone, the chat client is skipped and the error list names it.
+    with pytest.raises(LLMError, match="openai_compat:gpt-test takes no structured state"):
+        await LLMRegistry({"confirm": [fake]}, None).complete(
+            "confirm", [], schema=NOUL, state=state
+        )
+    assert fake.calls == 0
+
+    # The pinned registry carries state through the same path.
+    pinned = registry.pinned("confirm", jev)
+    await pinned.complete("confirm", [], schema=NOUL, state={"x": 1})
+    assert seen["body"]["state"] == {"x": 1}

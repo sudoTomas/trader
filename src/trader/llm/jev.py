@@ -3,11 +3,12 @@
 Jev is a judgment model: it takes a state plus typed questions and returns probabilities,
 and it writes no text. This client keeps the ``LLMClient`` shape so the registry routes and
 meters it like any other role, with one difference: for Jev the ``schema`` argument IS the
-question set (``{name: {"type": "choice" | "score", ...}}``), and the completion text is
-Jev's answers as JSON, not a chat reply.
+question set (``{name: {"type": "choice" | "score" | "noul", ...}}``), and the completion
+text is Jev's answers as JSON, not a chat reply.
 
-- the system message becomes Jev's ``state.rules`` and the last user message its
-  ``state.prompt``;
+- a structured ``state`` given to ``complete`` is sent verbatim and the messages are
+  ignored; without one, the system message becomes Jev's ``state.rules`` and the last user
+  message its ``state.prompt``;
 - a JSON schema (anything that is not a question set) is refused, so Jev can never answer
   as a decider, an analyst or a research role even if it were routed there.
 
@@ -27,7 +28,7 @@ from trader.llm.usage import price_per_million
 JEV_PROVIDER = "jev"
 DEFAULT_BASE_URL = "https://api.typesafe.ai/v1/systemone"
 DEFAULT_MODEL = "jev-latest"
-QUESTION_TYPES = frozenset({"choice", "score"})
+QUESTION_TYPES = frozenset({"choice", "score", "noul"})
 
 
 def is_question_set(schema: dict[str, Any] | None) -> bool:
@@ -75,17 +76,16 @@ class JevClient:
         schema: dict[str, Any] | None = None,
         max_tokens: int = 1024,
         temperature: float = 0.2,
+        state: dict[str, Any] | None = None,
     ) -> Completion:
         del max_tokens, temperature  # Jev answers questions; it generates no tokens to cap
         if schema is None or not is_question_set(schema):
             raise LLMError(f"{self.name}: only answers a question set")
-        prompt = next((m["content"] for m in reversed(messages) if m.get("role") == "user"), "")
-        rules = next((m["content"] for m in messages if m.get("role") == "system"), "")
-        body = {
-            "model": self.model,
-            "state": {"prompt": prompt, "rules": rules},
-            "questions": schema,
-        }
+        if state is None:
+            prompt = next((m["content"] for m in reversed(messages) if m.get("role") == "user"), "")
+            rules = next((m["content"] for m in messages if m.get("role") == "system"), "")
+            state = {"prompt": prompt, "rules": rules}
+        body = {"model": self.model, "state": state, "questions": schema}
         try:
             resp = await self._client.post(self._url, headers=self._headers, json=body)
         except httpx.HTTPError as exc:
@@ -96,6 +96,7 @@ class JevClient:
         try:
             payload = resp.json()
             answers = {name: payload["answers"][name] for name in schema}
+            served = payload.get("model") or self.model
             raw_usage = payload.get("usage") or {}
             usage = Usage(
                 prompt_tokens=int(raw_usage.get("input_tokens", 0)),
@@ -111,5 +112,5 @@ class JevClient:
             usage=usage,
             cost_usd=cost,
             provider=self.name,
-            model=self.model,
+            model=served,
         )

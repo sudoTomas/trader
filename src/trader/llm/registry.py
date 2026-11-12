@@ -72,6 +72,11 @@ def is_paid(client: LLMClient) -> bool:
     return price is not None and any(p > 0 for p in price())
 
 
+def takes_state(client: LLMClient) -> bool:
+    """Only Jev takes a structured state; every other client takes chat messages."""
+    return isinstance(client, JevClient) or client.name == JEV_PROVIDER
+
+
 class LLMRegistry:
     """Ordered fallback chain per role, with usage metering on every completion."""
 
@@ -118,7 +123,10 @@ class LLMRegistry:
         schema: dict[str, Any] | None = None,
         max_tokens: int = 1024,
         temperature: float = 0.2,
+        state: dict[str, Any] | None = None,
     ) -> Completion:
+        """``state`` is Jev's structured state: only Jev takes it, so any other client in
+        the Chain is skipped (recorded as an error, never called) when it is given."""
         errors: list[str] = []
         last: LLMError | None = None
         version, chain = await self._chain(role)
@@ -130,9 +138,17 @@ class LLMRegistry:
                 skipped += 1
                 errors.append(f"{client.name}:{client.model} skipped (daily spend cap)")
                 continue
+            if state is not None and not takes_state(client):
+                errors.append(f"{client.name}:{client.model} takes no structured state")
+                continue
+            kwargs: dict[str, Any] = {"state": state} if state is not None else {}
             try:
                 completion = await client.complete(
-                    messages, schema=schema, max_tokens=max_tokens, temperature=temperature
+                    messages,
+                    schema=schema,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    **kwargs,
                 )
             except LLMError as exc:
                 errors.append(str(exc))
