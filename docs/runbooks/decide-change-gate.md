@@ -54,6 +54,24 @@ on one position: it ranks configurations, it does not predict live PnL** (the su
 so in `pnl_model`). Replayed contexts currently exclude the Macro View lane and use the
 `replay` trigger; judge relative differences, not absolutes.
 
+**A model swap needs no Profile change**: `trader eval run --model provider:model` (API
+`model=`, MCP `run_replay_eval(model=...)`) replays every decide call of that run on one
+Provider and model from the model picker, the same `provider:model` syntax as
+`trader profile set`. The client is built exactly as a Chain entry's, so a keyless `xai`
+Provider signs with the service's SuperGrok login (the replay runs inside `trader-api`,
+where that login lives). Unset, decide routes as the live loop's would (the active
+Profile, else `.env`). The calls are metered into `usage_daily` under `decide` and held
+to its Spend cap like any replay; the run's `config.model` records the spec; an unknown
+Provider or one that cannot decide (Jev) is refused with a 422 before a run exists. The
+desk's analysts and critic keep their own routes. Compare two models on the same window:
+
+```bash
+trader eval run --symbol ETH/USD --start 2026-09-13T00:00:00+00:00 \
+    --end 2026-09-20T00:00:00+00:00 --label g47 --model grok-deep:grok-4.7
+trader eval run --symbol ETH/USD --start 2026-09-13T00:00:00+00:00 \
+    --end 2026-09-20T00:00:00+00:00 --label g43 --model grok:grok-4.3
+```
+
 **The desk (EAI-190) has first-class variant plumbing**: `trader eval run --desk` (API
 `desk=true`) replays the same window through analyst fan-out + critic while the live desk
 stays dark. The summary gains a `desk` tally (`approve/shrink/veto/pass_through/skipped`)

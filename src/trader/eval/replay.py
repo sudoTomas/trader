@@ -58,6 +58,10 @@ no-trade band and the costs run unchanged. The Macro View and briefs are dropped
 text that names the asset); the summary's ``blind`` records which Sources were. Every
 step records the ``intent`` the book acted on, so a named and a blind run compare
 directly. Live prompts never blind.
+
+``config={"model": "provider:model"}`` records a run whose decide calls went to one
+Provider and model (the service passes ``execute(..., decide=client)``); the harness
+pins its registry's decide Role to that client, under the same meter and Spend caps.
 """
 
 from __future__ import annotations
