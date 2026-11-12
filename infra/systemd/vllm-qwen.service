@@ -1,16 +1,18 @@
-# Qwen3.6-35B-A3B NVFP4 on vLLM, as a systemd *user* unit, on :8012 — the local model for
-# coding and agent tools (OpenCode, Hermes). GB10-specific: see
+# Qwen3.6-35B-A3B NVFP4 on vLLM, as a systemd *user* unit, on :8012 — the fast general-purpose
+# local model (Mem0 extraction, the trader's local fallback, ad-hoc long-context work). GB10-specific: see
 # docs/research/2026-11-spark-model-allocation.md (Plan B). The recipe is the model card's
-# DGX Spark one with the memory share cut from 0.4 to 0.25, the context from 256K to 32K and the default weight loader (fastsafetensors staged the checkpoint in host RAM and OOMed the box on 2026-11-11)
-# Start it after vllm-lightning: vLLM checks free memory at start.
+# DGX Spark one with the memory share cut from 0.4 to 0.25, the context from 256K to 128K and the default weight loader (fastsafetensors staged the checkpoint in host RAM and OOMed the box on 2026-11-11).
+# The share, not --max-model-len, sizes the KV pool: at 0.25 it holds ~209K tokens, so 128K costs
+# no extra memory (1.6 concurrent 128K requests; more when they are short). Start it after
+# vllm-qwen27 is up: vLLM checks free memory at start.
 #
 # Install:
 #   cp infra/systemd/vllm-qwen.service ~/.config/systemd/user/
 #   systemctl --user daemon-reload && systemctl --user enable --now vllm-qwen
 # LAN only and unauthenticated, the same trust model as :8009.
 [Unit]
-Description=Qwen3.6-35B-A3B NVFP4 on vLLM (:8012, coding and agents)
-After=network-online.target vllm-lightning.service
+Description=Qwen3.6-35B-A3B NVFP4 on vLLM (:8012, general purpose, 128K)
+After=network-online.target
 Wants=network-online.target
 
 [Service]
@@ -27,7 +29,7 @@ ExecStart=/usr/bin/docker run --rm --name vllm-qwen --gpus all \
     --attention-backend flashinfer \
     --moe-backend marlin \
     --gpu-memory-utilization 0.25 \
-    --max-model-len 32768 \
+    --max-model-len 131072 \
     --max-num-seqs 4 \
     --max-num-batched-tokens 8192 \
     --enable-chunked-prefill \
