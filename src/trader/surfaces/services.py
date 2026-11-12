@@ -1058,7 +1058,8 @@ def build_registry(
         "run_replay_eval",
         kind="command",
         summary=(
-            "Replay the decide stage over a historical window (background; offline only)."
+            "Replay the decide stage over a historical window (background; never trades,"
+            " but makes paid Jev calls when a confirm route exists)."
             " model='provider:model' (the model picker's syntax) replays decide on that model."
             " confirm_veto=True turns an open Jev's rule vetoes into a hold."
         ),

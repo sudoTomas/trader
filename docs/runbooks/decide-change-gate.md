@@ -5,7 +5,10 @@ desk (EAI-190), a new asset class's first live symbol — goes through the same 
 stages, in order. This formalizes the discipline that protected the money path in v1
 (EAI-128): **one gate at a time, never two overlapping.**
 
-## 1. Replay eval (offline, free)
+## 1. Replay eval (offline; paid Jev calls when a confirm route is set)
+
+A replay never trades, but it calls the decide model, and Jev on every open or close Draft
+when a `confirm` route exists: those Jev calls are paid. The summary's `cost_usd` sums both.
 
 Replay a representative window under the current config (baseline) and under the
 candidate, then compare:
@@ -39,8 +42,8 @@ equities/ETFs, 10 bp crypto, while replay has no real quote), a 2 bp fee, Alpaca
 crypto taker fee, and square-root impact. The summary carries `gross_pnl`, `trading_costs`
 (`spread` / `fee` / `impact` / `total`), `net_pnl` and the `cost_model` it ran with; each
 fill step carries its own `fill_cost`. `realized_pnl` / `unrealized_pnl` stay gross, and
-`cost_usd` is still the model calls (decide, and Jev when a confirm route is set). Compare candidates on `net_pnl`: a candidate that
-trades more pays more.
+`cost_usd` is still the model calls (decide, and Jev when a confirm route is set). Compare
+candidates on `net_pnl`: a candidate that trades more pays more.
 
 Runs execute in the background (`POST /eval/replay`, MCP `run_replay_eval`); bars come
 from the read-through cache (first run over a window backfills it), the decider is the
