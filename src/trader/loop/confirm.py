@@ -149,5 +149,6 @@ class Confirmer:
             "questions_version": QUESTIONS_VERSION,
             "model": completion.model,
             "latency_ms": latency_ms,
+            "cost_usd": completion.cost_usd,
             "skipped": None,
         }

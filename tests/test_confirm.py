@@ -50,9 +50,12 @@ class FakeJev:
     """LLMRegistry stand-in: records each call and answers with ``reply`` (a dict, sent
     as JSON) or raises it."""
 
-    def __init__(self, reply: dict | Exception, model: str = "jev-1.15") -> None:
+    def __init__(
+        self, reply: dict | Exception, model: str = "jev-1.15", cost_usd: float = 0.0
+    ) -> None:
         self.reply = reply
         self.model = model
+        self.cost_usd = cost_usd
         self.calls: list[dict] = []
 
     async def complete(self, role, messages, *, schema=None, state=None, **kwargs):
@@ -62,7 +65,7 @@ class FakeJev:
         return Completion(
             text=json.dumps(self.reply),
             usage=Usage(prompt_tokens=900, completion_tokens=4),
-            cost_usd=0.0,
+            cost_usd=self.cost_usd,
             provider="jev",
             model=self.model,
         )
@@ -148,8 +151,16 @@ async def test_a_vetoed_open_records_the_veto():
         "verdict": "veto",
         "questions_version": QUESTIONS_VERSION,
         "model": "jev-1.15",
+        "cost_usd": 0.0,
         "skipped": None,
     }
+
+
+async def test_the_record_carries_the_jev_call_cost():
+    record = await Confirmer(FakeJev(SOUND, cost_usd=0.0021)).confirm(
+        await context_for(), make_draft()
+    )
+    assert record["cost_usd"] == 0.0021
 
 
 def test_a_vetoed_record_without_a_reason_still_holds():

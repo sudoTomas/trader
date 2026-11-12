@@ -39,7 +39,7 @@ equities/ETFs, 10 bp crypto, while replay has no real quote), a 2 bp fee, Alpaca
 crypto taker fee, and square-root impact. The summary carries `gross_pnl`, `trading_costs`
 (`spread` / `fee` / `impact` / `total`), `net_pnl` and the `cost_model` it ran with; each
 fill step carries its own `fill_cost`. `realized_pnl` / `unrealized_pnl` stay gross, and
-`cost_usd` is still the model calls. Compare candidates on `net_pnl`: a candidate that
+`cost_usd` is still the model calls (decide, and Jev when a confirm route is set). Compare candidates on `net_pnl`: a candidate that
 trades more pays more.
 
 Runs execute in the background (`POST /eval/replay`, MCP `run_replay_eval`); bars come

@@ -111,7 +111,8 @@ Keep the existing envelope (`draft`, `model`, `latency_ms`, `skipped`) and repla
 `action`/`side`/`p_same_action`/`prefers`/`margin` with: `answers` (id to p(true)),
 `rule` (the rows and whether each fired), `would_veto` (bool), `veto_reason` (code or null),
 `vetoed` (bool: would_veto and switch on and action is open), and a `questions_version` string
-so later analysis can tell question sets apart. `verdict` becomes `veto`, `pass` or
+so later analysis can tell question sets apart, plus `cost_usd` (the Jev call's cost, so a
+replay's summary cost includes Jev). `verdict` becomes `veto`, `pass` or
 `recorded` (closes). Old rows keep their shape; readers must tolerate both.
 
 ## Settings

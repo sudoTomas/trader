@@ -166,7 +166,7 @@ SignalScheduler → ContextBuilder → (analyst desk) → Decider → (Confirm) 
   a hold; off, the rule's outcome is still recorded as `would_veto`. A close is judged and
   recorded, never vetoed. The record lands in the decision's `confirm` column (`answers`,
   `rule`, `would_veto`, `veto_reason`, `vetoed`, `verdict` veto / pass / recorded,
-  `questions_version`); rows from the journal-only stage (#99) keep their old shape.
+  `questions_version`, `cost_usd`); rows from the journal-only stage (#99) keep their old shape.
   Unreachable, slow, HTTP error or malformed answers journal a skip with the status text,
   never a veto, and the Draft proceeds; a blind replay step is never sent. A Confirm can
   never open a trade the Draft did not propose or change its notional.

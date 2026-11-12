@@ -673,9 +673,15 @@ class JevReplayLLM:
     """LLMRegistry-shaped: scripted decide replies, and a Jev that answers every asked
     judgment with ``answers[qid]`` (default 0.9) and records each state it was sent."""
 
-    def __init__(self, decide: list[str], answers: dict[str, float] | None = None) -> None:
+    def __init__(
+        self,
+        decide: list[str],
+        answers: dict[str, float] | None = None,
+        costs: dict[str, float] | None = None,
+    ) -> None:
         self._decide = list(decide)
         self.answers = answers or {}
+        self.costs = costs or {}
         self.states: list[dict] = []
 
     async def complete(
@@ -693,7 +699,7 @@ class JevReplayLLM:
         return Completion(
             text=text,
             usage=Usage(prompt_tokens=100, completion_tokens=20),
-            cost_usd=0.0,
+            cost_usd=self.costs.get(role, 0.0),
             provider="stub",
             model="jev-1.15" if role == "confirm" else "stub-model",
         )
@@ -747,6 +753,19 @@ async def test_a_veto_off_replay_keeps_the_open_and_records_would_veto(db: Datab
     assert first["confirm"]["would_veto"] is True
     assert first["confirm"]["vetoed"] is False
     assert first["confirm"]["verdict"] == "pass"
+
+
+async def test_the_run_cost_includes_the_jev_calls(db: Database):
+    await seed_hourly_bars(db)
+    llm = JevReplayLLM([OPEN, HOLD], costs={"decide": 0.01, "confirm": 0.002})
+    run = await ReplayHarness(db, llm, StubMarketData()).run(
+        BTC, NOW - timedelta(hours=2), NOW, label="cost"
+    )
+    assert run["status"] == "done", run["summary"]
+    assert len(llm.states) == 1  # one open judged; the hold is never sent
+    first, _ = await _confirm_steps(db, run["id"])
+    assert first["confirm"]["cost_usd"] == 0.002
+    assert run["summary"]["cost_usd"] == pytest.approx(0.022)
 
 
 async def test_a_replay_without_a_confirm_route_records_no_confirm(db: Database):

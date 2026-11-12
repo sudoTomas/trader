@@ -606,6 +606,7 @@ class ReplayHarness:
                 decision = blinder.unblind(decision, equity=ctx.equity)
             actions[decision.action.value] = actions.get(decision.action.value, 0) + 1
             cost += result.completion.cost_usd or 0.0
+            cost += (confirm or {}).get("cost_usd") or 0.0  # the Jev call, when one was made
 
             # Crude sim: one position, mark-to-bars, every fill pays the cost model.
             # Ranks configs only.
@@ -745,7 +746,7 @@ class ReplayHarness:
             "trading_costs": paid.as_dict(),
             "net_pnl": round(gross - paid.total, 6),
             "cost_model": self._costs.as_dict(),
-            "cost_usd": round(cost, 6),  # the model calls, not the fills
+            "cost_usd": round(cost, 6),  # the model calls (decide and Jev), not the fills
             "pnl_model": (
                 "mark-to-bars, one position, fills pay cost_model — ranks configs, not live PnL"
             ),
