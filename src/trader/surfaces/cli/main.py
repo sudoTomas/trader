@@ -526,6 +526,14 @@ def eval_run_cmd(
     lessons: bool = typer.Option(
         False, "--lessons", help="Add Bot #1's lessons Source (#143), point-in-time per step."
     ),
+    model: str | None = typer.Option(
+        None,
+        "--model",
+        help=(
+            "provider:model from the model picker (e.g. grok-deep:grok-4.7): replay every"
+            " decide call on it. Unset decides as the live loop would."
+        ),
+    ),
 ) -> None:
     """Start a background replay over [start, end); poll with `trader eval show`."""
     params = {
@@ -543,6 +551,7 @@ def eval_run_cmd(
         # Off stays off the wire, so an older API still takes a named run.
         "blind": blind or None,
         "lessons": lessons or None,
+        "model": model,
     }
     # Unset options stay off the wire (an empty query value is not "unset" to the API).
     params = {k: v for k, v in params.items() if v is not None}
@@ -1132,11 +1141,13 @@ app.add_typer(profile_app, name="profile")
 
 
 def _chain_entry(spec: str) -> dict[str, str]:
-    """``provider:model``. Split on the first colon: Provider names have none, and model
-    ids may (``spark:qwen3:8b`` is Provider ``spark``, model ``qwen3:8b``)."""
-    provider, sep, model = spec.partition(":")
-    if not sep or not provider or not model:
-        raise typer.BadParameter(f"{spec!r} is not provider:model")
+    """``provider:model`` (``llm.profiles.parse_model_spec``: split on the first colon)."""
+    from trader.llm.profiles import ProfileError, parse_model_spec
+
+    try:
+        provider, model = parse_model_spec(spec)
+    except ProfileError as exc:
+        raise typer.BadParameter(str(exc)) from exc
     return {"provider": provider, "model": model}
 
 

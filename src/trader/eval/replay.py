@@ -58,6 +58,10 @@ no-trade band and the costs run unchanged. The Macro View and briefs are dropped
 text that names the asset); the summary's ``blind`` records which Sources were. Every
 step records the ``intent`` the book acted on, so a named and a blind run compare
 directly. Live prompts never blind.
+
+``config={"model": "provider:model"}`` records a run whose decide calls went to one
+Provider and model (the service passes ``execute(..., decide=client)``); the harness
+pins its registry's decide Role to that client, under the same meter and Spend caps.
 """
 
 from __future__ import annotations
@@ -81,6 +85,7 @@ from trader.loop.decider import (
     DEFAULT_VARIANT,
     EXIT_REVIEW_PROMPT,
     PROMPT_VARIANTS,
+    ROLE,
     Decider,
     DeciderError,
 )
@@ -184,6 +189,7 @@ class ReplayHarness:
     ) -> None:
         self._db = db
         self._repo = EvalRepo(db)
+        self._llm = llm
         self._decider = Decider(llm)
         self._market = ReplayMarketData(BarsCache(db, provider))
         # The same Sources the live loop reads, every one wired; each run's subscriptions
@@ -263,8 +269,15 @@ class ReplayHarness:
             config=config or {},
         )
 
-    async def execute(self, run_id: int, symbol: Symbol) -> dict[str, Any]:
-        """Walk the run's window. Always finishes the row (done/failed)."""
+    async def execute(
+        self, run_id: int, symbol: Symbol, *, decide: Any | None = None
+    ) -> dict[str, Any]:
+        """Walk the run's window. Always finishes the row (done/failed).
+
+        ``decide`` is one LLM client every decide call goes to (a ``provider:model``
+        run, built by ``ProfileDesk.client_for``), under the harness registry's meter and
+        Spend caps; None decides on the harness registry as the live loop would."""
+        decider = self._decider if decide is None else Decider(self._llm.pinned(ROLE, decide))
         run = await self._repo.get_run(run_id)
         assert run is not None
         config = run["config"] or {}
@@ -315,6 +328,7 @@ class ReplayHarness:
                 sleeve=float(sleeve) if sleeve is not None else None,
                 blind=blind,
                 bot_id=config.get("bot_id"),
+                decider=decider,
             )
             await self._repo.finish_run(run_id, status="done", summary=summary)
         except Exception as exc:  # noqa: BLE001 - a failed run must say so, not hang
@@ -398,7 +412,9 @@ class ReplayHarness:
         sleeve: float | None = None,
         blind: dict[str, Any] | None = None,  # the run's blind record; None = named
         bot_id: int | None = None,  # whose Lessons a lessons subscription reads (None: #1)
+        decider: Decider | None = None,  # None: the harness's own
     ) -> dict[str, Any]:
+        decider = decider or self._decider
         context = self._context
         blinder = Blinder(symbol, step=self._step) if blind is not None else None
         equity = self._equity if sleeve is None else sleeve
@@ -521,7 +537,7 @@ class ReplayHarness:
 
             started = time.perf_counter()
             try:
-                result = await self._decider.decide(ctx)
+                result = await decider.decide(ctx)
             except DeciderError as exc:
                 errors += 1
                 await self._repo.add_step(
