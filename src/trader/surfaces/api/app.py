@@ -1011,7 +1011,7 @@ def build_runner(
         desk=desk if settings.desk_enabled else None,
         # Always present: with nothing serving the confirm Role (no .env Jev, no Profile
         # Chain, or switched off) it returns no record and the column stays NULL.
-        confirm=Confirmer(llm),
+        confirm=Confirmer(llm, veto_enabled=settings.confirm_veto_enabled),
     )
 
 

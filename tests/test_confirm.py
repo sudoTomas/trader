@@ -364,7 +364,7 @@ async def test_jev_failures_skip_and_the_draft_reaches_the_critic_unchanged(db):
 
 async def test_a_crashing_confirmer_is_a_skip(db):
     class Exploding:
-        async def confirm(self, ctx, decision):
+        async def confirm(self, ctx, decision, position=None):
             raise RuntimeError("jev on fire")
 
     results = await build_runner(db, [OPEN], confirm=Exploding()).tick(NOW)
@@ -429,6 +429,143 @@ async def test_with_the_veto_off_confirm_never_alters_the_decision(db):
     assert row["risk_verdicts"] is not None
 
 
+CLOSE = '{"action":"close","conviction":0.7,"rationale":"done","side":"sell","notional_usd":100}'
+
+
+class SpyGuard:
+    """Wraps the real RiskGuard and records whether evaluate was called."""
+
+    def __init__(self, db) -> None:
+        from tests.test_loop import LIMITS
+        from trader.risk.guard import RiskGuard
+
+        self._guard = RiskGuard(db, LIMITS)
+        self.calls = 0
+
+    def __getattr__(self, name):
+        return getattr(self._guard, name)
+
+    async def evaluate(self, *args, **kwargs):
+        self.calls += 1
+        return await self._guard.evaluate(*args, **kwargs)
+
+
+class Stub:
+    """A Confirmer stand-in that records the position it was handed and returns ``record``."""
+
+    def __init__(self, record: dict) -> None:
+        self.record = record
+        self.positions: list = []
+
+    async def confirm(self, ctx, decision, position=None):
+        self.positions.append(position)
+        return self.record
+
+
+async def hold_btc(db, qty: float = 0.5) -> None:
+    from trader.store.repos import PositionsRepo
+
+    await PositionsRepo(db).upsert(
+        symbol="BTC/USD", asset_class="crypto", qty=qty, avg_entry_price=60_000.0
+    )
+
+
+async def test_a_vetoed_open_becomes_a_hold_before_riskguard(db):
+    guard = SpyGuard(db)
+    results = await build_runner(db, [OPEN], guard=guard, confirm=jev([], answers=UNGROUNDED)).tick(
+        NOW
+    )
+    row = await Journal(db).get(results[0].decision_id)
+    assert guard.calls == 0
+    assert row["decision"]["action"] == "hold"
+    assert row["decision"]["rationale"] == "confirm veto: ungrounded"
+    assert row["decision"]["conviction"] == 0.8
+    assert row["confirm"]["vetoed"] is True
+    assert row["confirm"]["draft"] == {"action": "open", "side": "buy"}
+    assert row["risk_verdicts"] is None
+    assert row["status"] == "shadow"  # recorded through the hold path
+
+
+async def test_with_the_veto_off_the_open_reaches_riskguard(db):
+    guard = SpyGuard(db)
+    confirmer = jev([], answers=UNGROUNDED, veto_enabled=False)
+    results = await build_runner(db, [OPEN], guard=guard, confirm=confirmer).tick(NOW)
+    row = await Journal(db).get(results[0].decision_id)
+    assert guard.calls == 1
+    assert row["decision"]["action"] == "open"
+    assert row["confirm"]["would_veto"] is True
+    assert row["confirm"]["vetoed"] is False
+
+
+async def test_a_close_is_never_replaced(db):
+    """Even a record that claims a veto never turns a close into a hold."""
+    await hold_btc(db)
+    guard = SpyGuard(db)
+    stub = Stub({"vetoed": True, "veto_reason": "ungrounded", "verdict": "veto"})
+    results = await build_runner(db, [CLOSE], guard=guard, confirm=stub).tick(NOW)
+    row = await Journal(db).get(results[0].decision_id)
+    assert guard.calls == 1
+    assert row["decision"]["action"] == "close"
+
+
+async def test_a_held_position_reaches_confirm_with_its_open_rationale(db):
+    journal = Journal(db)
+    opened = await journal.record(
+        trigger="heartbeat",
+        status="executed",
+        symbol="BTC/USD",
+        asset_class="crypto",
+        decision=Decision(
+            symbol="BTC/USD",
+            action=Action.OPEN,
+            conviction=0.8,
+            rationale="breakout above 60k on ETF inflows",
+            intent=OrderIntent(symbol="BTC/USD", side=Side.BUY, notional=500.0),
+        ),
+    )
+    opened_at = (await journal.get(opened))["ts"]
+    await hold_btc(db, qty=0.5)
+    stub = Stub({"vetoed": False, "verdict": "recorded"})
+    await build_runner(db, [CLOSE], confirm=stub).tick(NOW)
+    (position,) = stub.positions
+    assert position == PositionState(
+        side="long",
+        quantity=0.5,
+        summary=None,
+        opened_at=datetime.fromisoformat(opened_at),
+        open_rationale="breakout above 60k on ETF inflows",
+    )
+
+
+async def test_a_short_without_a_journaled_open_has_no_rationale(db):
+    await hold_btc(db, qty=-2.0)
+    stub = Stub({"vetoed": False, "verdict": "recorded"})
+    await build_runner(db, [CLOSE], confirm=stub).tick(NOW)
+    (position,) = stub.positions
+    assert (position.side, position.quantity) == ("short", 2.0)
+    assert (position.opened_at, position.open_rationale) == (None, None)
+
+
+async def test_a_flat_book_passes_no_position(db):
+    stub = Stub({"vetoed": False, "verdict": "pass"})
+    await build_runner(db, [OPEN], confirm=stub).tick(NOW)
+    assert stub.positions == [None]
+
+
+async def test_an_add_can_be_vetoed_and_its_state_names_the_position(db):
+    await hold_btc(db, qty=0.5)
+    seen: list = []
+    guard = SpyGuard(db)
+    results = await build_runner(
+        db, [OPEN], guard=guard, confirm=jev(seen, answers=UNGROUNDED)
+    ).tick(NOW)
+    row = await Journal(db).get(results[0].decision_id)
+    assert guard.calls == 0
+    assert row["decision"]["action"] == "hold"
+    assert row["confirm"]["vetoed"] is True
+    assert seen[0]["state"]["position"]["side"] == "long"
+
+
 async def test_the_app_confirmer_records_nothing_until_a_confirm_route_exists(db):
     """The app always builds a Confirmer (a Profile can add the Role at runtime, #107);
     with no .env Jev and no Profile Chain it returns no record, so the column stays NULL."""
@@ -445,3 +582,6 @@ async def test_the_app_confirmer_records_nothing_until_a_confirm_route_exists(db
     )
     assert configured.llm.chain_for("confirm")[0].model == "jev-latest"
     assert [c.name for c in configured.llm.chain_for("confirm")] == ["jev"]
+    assert plain.confirm._veto_enabled is True
+    off = build_app_runner(db, Settings(_env_file=None, confirm_veto_enabled=False, **keys))
+    assert off.confirm._veto_enabled is False
