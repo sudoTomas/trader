@@ -10,6 +10,7 @@ re-run the call offline and compare.
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import datetime
 from typing import Any
 
 import structlog
@@ -116,6 +117,13 @@ class Journal:
     ) -> list[dict[str, Any]]:
         rows = await self._repo.recent(limit, symbol=symbol, bot_id=bot_id)
         return [{**r, "ts": r["ts"].isoformat()} for r in rows]
+
+    async def last_open(self, symbol: str, *, bot_id: int | None) -> tuple[str, datetime] | None:
+        """Rationale and time of the executed decision that last opened (or added to)
+        ``symbol`` for this Bot; None when there is none (a manual order, another Bot,
+        a position older than the journal)."""
+        row = await self._repo.last_open(symbol, bot_id=bot_id)
+        return None if row is None else (row["rationale"], row["ts"])
 
     async def get(self, decision_id: int) -> dict[str, Any] | None:
         row = await self._repo.get(decision_id)

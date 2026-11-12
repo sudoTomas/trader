@@ -8,6 +8,7 @@ from pathlib import Path
 import psycopg.errors
 import pytest
 
+from trader.loop.journal import Journal
 from trader.store.audit import audit
 from trader.store.db import Database
 from trader.store.migrate import MigrationError, run_migrations
@@ -136,6 +137,63 @@ async def test_decisions_journal_round_trip(db: Database):
     assert row["decision"] == {"action": "hold"}
     assert row["risk_verdicts"][0]["check"] == "paper_gate"
     assert [r["id"] for r in await repo.recent()] == [decision_id]
+
+
+async def _journal_row(
+    db: Database,
+    *,
+    action: str,
+    rationale: str,
+    ts: datetime,
+    status: str = "executed",
+    symbol: str = "AAPL",
+    bot_id: int | None = 1,
+) -> int:
+    decision_id = await DecisionsRepo(db).insert(
+        trigger="heartbeat",
+        status=status,
+        symbol=symbol,
+        decision={"action": action, "rationale": rationale},
+        bot_id=bot_id,
+    )
+    await db.execute("UPDATE decisions SET ts = %s WHERE id = %s", (ts, decision_id))
+    return decision_id
+
+
+async def test_last_open_is_the_newest_executed_open(db: Database):
+    await _journal_row(db, action="open", rationale="first thesis", ts=NOW - timedelta(days=3))
+    await _journal_row(db, action="open", rationale="add thesis", ts=NOW - timedelta(days=2))
+    # Neither a later close, a non-executed open nor another symbol's open counts.
+    await _journal_row(db, action="close", rationale="took profit", ts=NOW - timedelta(days=1))
+    await _journal_row(
+        db, action="open", rationale="denied", ts=NOW - timedelta(hours=5), status="denied"
+    )
+    await _journal_row(db, action="open", rationale="msft", ts=NOW, symbol="MSFT")
+
+    assert await Journal(db).last_open("AAPL", bot_id=1) == (
+        "add thesis",
+        NOW - timedelta(days=2),
+    )
+
+
+async def test_last_open_ignores_another_bots_open(db: Database):
+    await db.execute("INSERT INTO bots (id, name) VALUES (2, 'bot-2')")
+    await _journal_row(db, action="open", rationale="bot one", ts=NOW - timedelta(days=2))
+    await _journal_row(db, action="open", rationale="bot two", ts=NOW, bot_id=2)
+    # A row with no Bot is Bot #1's.
+    await _journal_row(
+        db, action="open", rationale="unattributed", ts=NOW - timedelta(days=1), bot_id=None
+    )
+
+    journal = Journal(db)
+    assert await journal.last_open("AAPL", bot_id=1) == ("unattributed", NOW - timedelta(days=1))
+    assert await journal.last_open("AAPL", bot_id=2) == ("bot two", NOW)
+
+
+async def test_last_open_is_none_without_an_executed_open(db: Database):
+    await _journal_row(db, action="close", rationale="closed", ts=NOW)
+    assert await Journal(db).last_open("AAPL", bot_id=1) is None
+    assert await Journal(db).last_open("MSFT", bot_id=1) is None
 
 
 async def test_orders_idempotency_and_fill_dedupe(db: Database):
