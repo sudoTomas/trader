@@ -124,6 +124,35 @@ PnL. Every step's decision records the `held_position` entries the decider saw
 candidate that closes on every dip is as wrong as one that never closes: the lane earns
 its shadow window if exits track the thesis, not the noise.
 
+### Confirm veto (Jev)
+
+Replays run the confirm stage live trading does: when the process registry has a `confirm`
+route, every open or close Draft of a replay is sent to Jev on that route (a `--model` run
+pins decide only; Jev keeps its own route), before the desk's critic. Each step's decision
+records Jev's judgments under `confirm` (`answers`, `would_veto`, `veto_reason`,
+`vetoed`, `verdict`); no confirm route records nothing, and a `--blind` run never sends Jev
+the state and records `skipped: "blind"`. The veto is a replay parameter, not the live
+`TRADER_CONFIRM_VETO_ENABLED`: `--confirm-veto` (API `confirm_veto=true`, MCP
+`run_replay_eval(confirm_veto=true)`) turns an open the rule vetoes into a hold
+(`confirm veto: <reason>`, the book stays flat); off (the default) the open stands and the
+record says `would_veto`. Every run's `config.confirm_veto` says which it was.
+
+The paired check, before the live veto is switched on: replay the same window for each of
+Bot #1's symbols twice, veto off then veto on (one after the other, as above). Each run makes
+one Jev request per open or close step, so state the request count (the off run's opens plus
+closes, twice) and the cost before running it, and keep the exact commands:
+
+```bash
+trader eval run --symbol ETH/USD --start 2026-10-29T00:00:00+00:00 \
+    --end 2026-11-12T00:00:00+00:00 --label confirm-veto-off --no-confirm-veto
+trader eval run --symbol ETH/USD --start 2026-10-29T00:00:00+00:00 \
+    --end 2026-11-12T00:00:00+00:00 --label confirm-veto-on --confirm-veto
+```
+
+What to compare: how many opens were vetoed (steps whose `confirm.vetoed` is true in the on
+run; the off run's `would_veto` opens should be the same steps until the books diverge),
+the `actions` mix, and `net_pnl` on and off. It informs the flip; it is not a gate in code.
+
 ## 2. Shadow window (live inputs, no orders)
 
 Only if the replay comparison favors the candidate: run it against live data without

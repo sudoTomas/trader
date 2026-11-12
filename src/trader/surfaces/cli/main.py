@@ -534,6 +534,11 @@ def eval_run_cmd(
             " decide call on it. Unset decides as the live loop would."
         ),
     ),
+    confirm_veto: bool = typer.Option(
+        False,
+        "--confirm-veto/--no-confirm-veto",
+        help="Apply Jev's open veto (a vetoed open becomes a hold); off records would_veto.",
+    ),
 ) -> None:
     """Start a background replay over [start, end); poll with `trader eval show`."""
     params = {
@@ -552,6 +557,7 @@ def eval_run_cmd(
         "blind": blind or None,
         "lessons": lessons or None,
         "model": model,
+        "confirm_veto": confirm_veto or None,
     }
     # Unset options stay off the wire (an empty query value is not "unset" to the API).
     params = {k: v for k, v in params.items() if v is not None}

@@ -11,6 +11,7 @@ from typing import Any
 
 from tests.test_loop import context_for
 from trader.llm.base import Completion, LLMError, Usage
+from trader.llm.registry import NoRoute
 
 
 class RoleLLM:
@@ -27,6 +28,8 @@ class RoleLLM:
     ):
         if state is not None:
             messages = [{"role": "user", "content": json.dumps(state)}]
+        if role not in self.replies:  # an unscripted Role has no route, as in the registry
+            raise NoRoute(f"no LLM provider configured for role '{role}'")
         self.calls.append((role, messages))
         reply = self.replies[role].pop(0)
         if isinstance(reply, Exception):

@@ -1060,6 +1060,7 @@ def build_registry(
         summary=(
             "Replay the decide stage over a historical window (background; offline only)."
             " model='provider:model' (the model picker's syntax) replays decide on that model."
+            " confirm_veto=True turns an open Jev's rule vetoes into a hold."
         ),
     )
     async def run_replay_eval(
@@ -1075,6 +1076,7 @@ def build_registry(
         blind: bool = False,
         lessons: bool = False,
         model: str | None = None,
+        confirm_veto: bool = False,
     ) -> dict[str, Any]:
         """``blind`` withholds the ticker, calendar dates and dollar values from every
         replayed prompt (#140) and drops the free-text Sources; run it beside a named run
@@ -1090,7 +1092,10 @@ def build_registry(
         decide call on that Provider and model instead of the harness registry: a keyless
         xAI Provider signs with the service's SuperGrok login. It is metered and capped
         like any replay, recorded in the run's config, and refused (ValueError) before a
-        run exists when the Provider is unknown or cannot decide."""
+        run exists when the Provider is unknown or cannot decide. A replay with a confirm
+        route asks Jev about every open or close Draft, as live does; ``confirm_veto`` turns
+        an open the rule vetoes into a hold (off: recorded as ``would_veto`` only). Replay
+        one window both ways to see the veto's effect."""
         import asyncio
         from datetime import datetime
 
@@ -1108,6 +1113,8 @@ def build_registry(
             config["blind"] = True
         if lessons:
             config["lessons"] = True
+        if confirm_veto:
+            config["confirm_veto"] = True
         pinned: dict[str, Any] = {}  # execute's keywords; empty = the harness registry
         if model is not None:
             from trader.llm.profiles import parse_model_spec

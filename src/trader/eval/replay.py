@@ -62,6 +62,16 @@ directly. Live prompts never blind.
 ``config={"model": "provider:model"}`` records a run whose decide calls went to one
 Provider and model (the service passes ``execute(..., decide=client)``); the harness
 pins its registry's decide Role to that client, under the same meter and Spend caps.
+
+Replays run the confirm stage live trading does: every open or close Draft goes to Jev
+(``loop.confirm.Confirmer``) on the harness registry's ``confirm`` Role, never the pinned
+decide client, before the desk's critic. The step records Jev's judgments under its
+decision's ``confirm``. ``config={"confirm_veto": true}`` turns an open the rule vetoes
+into a hold, as the live switch does; off (the default, always written to the run's
+config) the open stands and the record says ``would_veto``. Replay the same window both
+ways to see what the veto does. A close is judged against the walk's own book: its side,
+size, and the rationale and time of the step that opened it. A registry with no confirm
+route records nothing; a blind step never sends Jev the state and records ``skipped``.
 """
 
 from __future__ import annotations
@@ -80,6 +90,8 @@ from trader.data.bars_cache import BarsCache
 from trader.data.base import MarketData, MarketDataError
 from trader.eval.blind import DEFAULT_ALIAS, Blinder, names_symbol, split_sources
 from trader.eval.costs import FillCost, ReplayCosts
+from trader.loop.confirm import Confirmer, skipped, veto_hold
+from trader.loop.confirm_questions import PositionState
 from trader.loop.context import ContextBuilder, DecisionContext
 from trader.loop.decider import (
     DEFAULT_VARIANT,
@@ -260,13 +272,15 @@ class ReplayHarness:
                     f" names the symbol {symbol.ticker}; a blind run cannot use it"
                 )
             config = {**config, "blind": True}
+        # Always recorded, so a veto-on and a veto-off run of one window compare.
+        config = {**(config or {}), "confirm_veto": bool((config or {}).get("confirm_veto"))}
         return await self._repo.create_run(
             label=label,
             symbol=symbol.ticker,
             interval="1h",
             start_ts=start,
             end_ts=end,
-            config=config or {},
+            config=config,
         )
 
     async def execute(
@@ -329,6 +343,8 @@ class ReplayHarness:
                 blind=blind,
                 bot_id=config.get("bot_id"),
                 decider=decider,
+                # The harness registry: a pinned decide client serves decide alone.
+                confirmer=Confirmer(self._llm, veto_enabled=bool(config.get("confirm_veto"))),
             )
             await self._repo.finish_run(run_id, status="done", summary=summary)
         except Exception as exc:  # noqa: BLE001 - a failed run must say so, not hang
@@ -413,6 +429,7 @@ class ReplayHarness:
         blind: dict[str, Any] | None = None,  # the run's blind record; None = named
         bot_id: int | None = None,  # whose Lessons a lessons subscription reads (None: #1)
         decider: Decider | None = None,  # None: the harness's own
+        confirmer: Confirmer | None = None,  # None: no confirm stage
     ) -> dict[str, Any]:
         decider = decider or self._decider
         context = self._context
@@ -433,6 +450,8 @@ class ReplayHarness:
         # block's age line (the seed's own, else the window start; the sim's own opens
         # stamp the step they land on).
         opened_at: datetime | None = None
+        # The rationale of the step that opened the book's position (a seed has none).
+        open_rationale: str | None = None
         # When the min hold runs from (RiskGuard's min_hold): the sim's own open, or a seed
         # that says when it was opened. A seed of unknown age is not held.
         held_from: datetime | None = None
@@ -498,6 +517,7 @@ class ReplayHarness:
                 realized += (ctx.price - entry) * qty
                 qty = 0.0
                 opened_at = held_from = None
+                open_rationale = None
                 stopped_at = as_of
                 stops += 1
                 actions["close"] = actions.get("close", 0) + 1
@@ -553,6 +573,30 @@ class ReplayHarness:
                 continue
 
             decision = result.decision
+            confirm: dict[str, Any] | None = None
+            if confirmer is not None and decision.intent is not None:
+                # As live: Jev judges the raw Draft before the critic; a failure is a skip.
+                try:
+                    position = (
+                        PositionState(
+                            side="long" if qty > 0 else "short",
+                            quantity=abs(qty),
+                            summary=(
+                                "\n".join(ctx.held_position.entries)
+                                if ctx.held_position is not None and ctx.held_position.entries
+                                else None
+                            ),
+                            opened_at=opened_at if open_rationale is not None else None,
+                            open_rationale=open_rationale,
+                        )
+                        if qty != 0.0
+                        else None
+                    )
+                    confirm = await confirmer.confirm(ctx, decision, position)
+                except Exception as exc:  # noqa: BLE001 - as live, Jev never fails a step
+                    log.warning("replay_confirm_failed", run_id=run_id, error=str(exc)[:300])
+                    confirm = skipped(decision, f"error ({type(exc).__name__})")
+                decision = veto_hold(decision, confirm)
             if use_desk:
                 decision, desk_info = await self._desk.review(ctx, decision, desk_info or {})
                 desk_tally[desk_info["critic"]["verdict"]] += 1
@@ -602,6 +646,7 @@ class ReplayHarness:
                     qty = side * decision.intent.notional / ctx.price
                     entry = ctx.price
                     opened_at = held_from = as_of
+                    open_rationale = decision.rationale
                 elif decision.action.value == "close" and qty != 0.0 and holding:
                     held = True
                     min_hold_denied += 1  # RiskGuard's min_hold would deny it
@@ -610,6 +655,7 @@ class ReplayHarness:
                     realized += (ctx.price - entry) * qty
                     qty = 0.0
                     opened_at = held_from = None
+                    open_rationale = None
             if fill is not None:
                 paid += fill
 
@@ -648,6 +694,8 @@ class ReplayHarness:
                 decision_row["signals"] = ctx.signals
             if desk_info is not None:
                 decision_row["desk"] = desk_info
+            if confirm is not None:
+                decision_row["confirm"] = confirm
             await self._repo.add_step(
                 run_id,
                 ts=as_of,

@@ -456,3 +456,26 @@ async def test_the_mcp_tool_takes_blind(db: Database):
         window = {"start": START.isoformat(), "end": END.isoformat()}
         await client.call_tool("run_replay_eval", {"symbol": "BTC/USD", "blind": True, **window})
     assert evaluator.configs[-1]["blind"] is True
+
+
+async def test_a_blind_replay_never_asks_jev_and_records_why(db: Database):
+    """Jev's state names the symbol, its prices and dates: a blind step never sends it,
+    veto on or off, and the step says the Confirm was skipped as blind."""
+    await _seed(db, BTC, 60_000.0, "Bitcoin")
+    llm = RoleLLM([_open(10), CLOSE])
+    run = await ReplayHarness(db, llm, StubMarketData()).run(
+        BTC,
+        START,
+        START + timedelta(hours=2),
+        label="blind-confirm",
+        config={"blind": True, "sleeve_usd": 5000, "confirm_veto": True},
+    )
+    assert run["status"] == "done", run["summary"]
+    assert [role for role, _ in llm.calls] == ["decide", "decide"]  # zero Jev calls
+    steps = await db.fetch_all(
+        "SELECT decision FROM eval_steps WHERE run_id = %s ORDER BY ts", (run["id"],)
+    )
+    assert [s["decision"]["action"] for s in steps] == ["open", "close"]
+    for step in steps:
+        assert step["decision"]["confirm"]["skipped"] == "blind"
+        assert step["decision"]["confirm"]["vetoed"] is False

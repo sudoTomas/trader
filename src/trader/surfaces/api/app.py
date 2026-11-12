@@ -664,6 +664,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 " call goes to it; unset decides as the live loop would."
             ),
         ),
+        confirm_veto: bool = Query(
+            default=False,
+            description="Apply Jev's open veto (a vetoed open becomes a hold); off records it.",
+        ),
     ) -> dict:
         seed: dict | None = None
         if (seed_qty is None) != (seed_entry is None):
@@ -688,6 +692,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 blind=blind,
                 lessons=lessons,
                 model=model,
+                confirm_veto=confirm_veto,
             )
         # bad window / unknown symbol / bad seed / unknown Provider or one that cannot decide
         except (ValueError, KeyError) as exc:
