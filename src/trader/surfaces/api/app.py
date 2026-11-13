@@ -944,12 +944,17 @@ async def _start_calls(
         assert desk is not None
         await desk.process()
 
+    async def on_idle() -> None:  # open calls move with the bars, not only with posts
+        assert desk is not None
+        await desk.score_pending()
+
     poller = ChannelPoller(
         db,
         reader,
         channel_id=settings.calls_channel_id,
         recheck=settings.calls_recheck_posts,
         on_new=on_new,
+        on_idle=on_idle,
     )
     desk = CallsDesk(db, settings, market, llm, poller)
     task = asyncio.create_task(

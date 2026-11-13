@@ -166,6 +166,26 @@ async def test_poll_is_idempotent_after_a_failure(db) -> None:
     assert await rows(db) == failed_then_ok
 
 
+async def test_run_forever_runs_on_idle_on_a_pass_that_stored_nothing(db) -> None:
+    await ChannelPostsRepo(db).upsert_version(post(1), channel_id=CHANNEL, backfilled=True)
+    reader = FakeReader([post(1), post(2)])
+    calls: list[str] = []
+    stopping = asyncio.Event()
+
+    async def on_new() -> None:
+        calls.append("new")
+
+    async def on_idle() -> None:
+        calls.append("idle")
+        stopping.set()
+
+    poller = ChannelPoller(
+        db, reader, channel_id=CHANNEL, recheck=10, on_new=on_new, on_idle=on_idle
+    )
+    await asyncio.wait_for(poller.run_forever(0.01, stopping), timeout=5)
+    assert calls == ["new", "idle"]  # post 2 stored, then a pass with nothing new
+
+
 async def test_run_forever_skips_on_new_when_nothing_was_stored(db) -> None:
     await ChannelPostsRepo(db).upsert_version(post(1), channel_id=CHANNEL, backfilled=True)
     called: list[int] = []
@@ -219,6 +239,7 @@ def lifespan_spies(monkeypatch, reader):
                     "interval": interval_seconds,
                     "task": asyncio.current_task().get_name(),
                     "on_new": self._on_new,
+                    "on_idle": self._on_idle,
                 }
             )
             try:
@@ -246,6 +267,7 @@ def test_lifespan_runs_the_poller_while_connected(clean_db: None, monkeypatch) -
         assert runs and runs[0]["interval"] == 7.0
         assert runs[0]["task"] == "trader-calls-poller"
         assert runs[0]["on_new"] is not None  # the desk's process() after a stored pass
+        assert runs[0]["on_idle"] is not None  # its score_pending() after an empty one
         # The CallsDesk shares that poller and answers the calls capabilities.
         assert tc.get("/calls/scorecard").status_code == 200
     assert runs[0].get("ended") is True

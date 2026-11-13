@@ -37,12 +37,14 @@ class ChannelPoller:
         channel_id: int,
         recheck: int,
         on_new: Callable[[], Awaitable[None]] | None = None,
+        on_idle: Callable[[], Awaitable[object]] | None = None,
     ) -> None:
         self._posts = ChannelPostsRepo(db)
         self._reader = reader
         self._channel_id = channel_id
         self._recheck = recheck
         self._on_new = on_new
+        self._on_idle = on_idle
         # A poll during a backfill would store the history ahead of it as live posts.
         self._lock = asyncio.Lock()
 
@@ -90,7 +92,8 @@ class ChannelPoller:
 
     async def run_forever(self, interval_seconds: float, stopping: asyncio.Event) -> None:
         """A poll every ``interval_seconds`` until ``stopping``; a failed pass is logged.
-        ``on_new`` runs after a pass that stored anything."""
+        ``on_new`` runs after a pass that stored anything, ``on_idle`` after one that
+        stored nothing (the calls desk rescores its open calls there)."""
         while not stopping.is_set():
             try:
                 counts = await self.poll_once()
@@ -98,6 +101,8 @@ class ChannelPoller:
                     log.info("calls_poll_stored", **counts)
                     if self._on_new is not None:
                         await self._on_new()
+                elif self._on_idle is not None:
+                    await self._on_idle()
             except Exception as exc:  # noqa: BLE001 - polling must never take the process down
                 # The error type only: a Telegram error's text could quote the channel.
                 log.warning("calls_poll_failed", error=type(exc).__name__)

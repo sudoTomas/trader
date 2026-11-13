@@ -198,10 +198,82 @@ async def test_unscorable_call_does_not_break_the_scorecard(db) -> None:
     by_status = {s["msg_id"]: s for s in await CallScoresRepo(db).all(CHANNEL)}
     assert by_status[2]["status"] == "unscorable" and not by_status[2]["tradeable"]
     assert by_status[3]["result"]["reason"]
-    # Unscorable rows are not rescored on the next pass; open ones are.
+    # Rows unscorable for want of bars are rescored on the next pass; a closed one is not.
+    assert by_status[1]["status"] == "closed"
     market.asked.clear()
     await desk.score_pending()
-    assert {t for t, *_ in market.asked} <= {"DOGE/USD"}
+    assert {t for t, *_ in market.asked} == {"PENGU/USD", "WLD/USD"}
+
+
+async def test_a_call_unscorable_for_want_of_bars_is_rescored_when_they_arrive(db) -> None:
+    await seed_call(db, 1, "DOGE")
+    market = FakeMarket(fail={"DOGE/USD": ConnectionError("alpaca is down")})
+    desk = desk_for(db, StubLLM([]), market)
+    await desk.score_pending()
+    (row,) = await CallScoresRepo(db).all(CHANNEL)
+    assert row["status"] == "unscorable"
+    assert row["result"]["reason"] == "bars unavailable: ConnectionError"
+
+    market.fail.clear()  # the outage ends
+    assert await desk.score_pending() == 1
+    (row,) = await CallScoresRepo(db).all(CHANNEL)
+    assert row["status"] == "closed" and row["tradeable"] is True
+
+
+async def test_invalid_levels_are_stored_unscorable_not_retried(db) -> None:
+    await ChannelPostsRepo(db).upsert_version(
+        raw(1, "DOGE call", at=T0), channel_id=CHANNEL, backfilled=True
+    )
+    await CallParsesRepo(db).add(
+        channel_id=CHANNEL,
+        msg_id=1,
+        version=1,
+        kind="call",
+        payload={"kind": "call", "call": {"coin": "DOGE"}, "update": None, "flags": []},
+        model=None,
+        profile_version=None,
+        cost_usd=None,
+        error=None,
+    )
+    market = FakeMarket()
+    desk = desk_for(db, StubLLM([]), market)
+
+    assert await desk.score_pending() == 1
+    (row,) = await CallScoresRepo(db).all(CHANNEL)
+    assert (row["status"], row["tradeable"]) == ("unscorable", False)
+    assert row["result"]["reason"] == "invalid levels"
+    assert await desk.score_pending() == 0  # stored, so not retried every pass
+    card = await desk.scorecard()  # and the scorecard still answers
+    assert card["calls"] == 1 and card["unscorable"] == 1
+
+
+async def test_a_scoring_failure_is_stored_unscorable_not_retried(db) -> None:
+    await seed_call(db, 1, "DOGE")
+    await ChannelPostsRepo(db).upsert_version(
+        raw(2, "DOGE ???", at=T0 + timedelta(minutes=20), reply_to=1),
+        channel_id=CHANNEL,
+        backfilled=True,
+    )
+    parses = CallParsesRepo(db)
+    await parses.add(
+        channel_id=CHANNEL,
+        msg_id=2,
+        version=1,
+        kind="update",
+        payload={"kind": "update", "call": None, "update": {"event": "nonsense"}, "flags": []},
+        model=None,
+        profile_version=None,
+        cost_usd=None,
+        error=None,
+    )
+    await parses.set_link(CHANNEL, 2, 1)
+    desk = desk_for(db, StubLLM([]), FakeMarket())
+
+    assert await desk.score_pending() == 1
+    (row,) = await CallScoresRepo(db).all(CHANNEL)
+    assert (row["status"], row["tradeable"]) == ("unscorable", False)
+    assert row["result"]["reason"] == "score failed: ValidationError"
+    assert await desk.score_pending() == 0
 
 
 async def test_a_fresh_call_waits_for_its_entry_bar(db) -> None:
@@ -268,3 +340,53 @@ async def test_sleeve_pnl_mirrors_allocation_times_leverage(db) -> None:
     assert card["sleeve_pnl_usd"] == 35.0  # $10,000 x 0.5% x 7 x +10%
     assert card["net_return_mean"] == 0.10
     assert card["untradeable"] == {"calls": 1, "net_return_mean": -0.02}
+
+
+async def put_score(db, msg_id: int, *, net: float, touch: str, status: str = "closed") -> None:
+    await CallScoresRepo(db).put(
+        CHANNEL,
+        msg_id,
+        status=status,
+        tradeable=True,
+        result={"status": status, "net_return": net, "first_touch": touch},
+    )
+
+
+async def test_tp1_rate_counts_only_resolved_calls(db) -> None:
+    await seed_call(db, 1, "DOGE")
+    await seed_call(db, 2, "ETH", at=T0 + timedelta(hours=1))
+    await put_score(db, 1, net=0.05, touch="tp1")
+    await put_score(db, 2, net=0.0, touch="neither", status="open")  # not a miss yet
+
+    card = await desk_for(db, StubLLM([]), FakeMarket()).scorecard()
+
+    assert card["tradeable"] == 2 and card["tp1_before_stop"] == 1
+    assert card["tp1_rate"] == 1.0
+
+
+async def gate_card(db, scores: list[tuple[float, str]]) -> dict:
+    """Backfilled calls plus one live call 30 days old, with the given (net, first_touch)."""
+    await seed_call(db, 1, "DOGE")
+    await seed_call(db, 2, "ETH", at=T0 + timedelta(hours=1))
+    await seed_call(db, 3, "SOL", at=datetime.now(UTC) - timedelta(days=30), backfilled=False)
+    for msg_id, (net, touch) in enumerate(scores, start=1):
+        await put_score(db, msg_id, net=net, touch=touch)
+    return await desk_for(db, StubLLM([]), FakeMarket()).scorecard()
+
+
+async def test_the_gate_fails_on_pnl_alone(db) -> None:
+    card = await gate_card(db, [(0.05, "tp1"), (-0.10, "tp1"), (0.0, "stop")])
+
+    assert card["live_days"] >= 28 and card["tp1_rate"] >= 0.5
+    assert card["sleeve_pnl_usd"] < 0
+    assert card["gate_pass"] is False
+    assert card["gate_reasons"] == ["sleeve net P&L $-5.00 is not positive"]
+
+
+async def test_the_gate_fails_on_tp1_rate_alone(db) -> None:
+    card = await gate_card(db, [(0.30, "tp1"), (-0.02, "stop"), (-0.02, "stop")])
+
+    assert card["live_days"] >= 28 and card["sleeve_pnl_usd"] > 0
+    assert card["tp1_rate"] == 1 / 3
+    assert card["gate_pass"] is False
+    assert card["gate_reasons"] == ["1 of 3 resolved tradeable calls reached TP1 before the stop"]

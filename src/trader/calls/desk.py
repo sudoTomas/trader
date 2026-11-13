@@ -20,7 +20,7 @@ import structlog
 from trader.calls.link import link_updates
 from trader.calls.parse import CallLevels, CallParser, CallUpdate
 from trader.calls.poller import ChannelPoller
-from trader.calls.score import _unscorable, simulate, size_usd
+from trader.calls.score import CallScore, _unscorable, simulate, size_usd
 from trader.core.symbols import AssetClass, make_symbol
 from trader.eval.costs import costs_from_settings
 from trader.ops.config import Settings
@@ -33,11 +33,14 @@ log = structlog.get_logger(__name__)
 BARS_LEAD = timedelta(minutes=15)
 #: A call younger than this with no entry bar yet is left unscored, not unscorable.
 ENTRY_GRACE = timedelta(hours=1)
+#: The reason prefix of a call unscorable because its bars fetch raised or came back
+#: empty; such rows are rescored on later passes (the bars may arrive, the outage end).
+BARS_UNAVAILABLE = "bars unavailable"
 #: Posts parsed per ``parse_pending`` batch.
 PARSE_BATCH = 50
 #: The gate's live period, in days since the first live post.
 GATE_LIVE_DAYS = 28
-#: The gate's share of tradeable calls that reach TP1 before the stop.
+#: The gate's share of resolved tradeable calls that reach TP1 before the stop.
 GATE_TP1_RATE = 0.5
 
 
@@ -100,7 +103,8 @@ class CallsDesk:
         return {"backfill": counts, **await self.process(rescore=True)}
 
     async def score_pending(self) -> int:
-        """Score calls with no score or status ``open``; the number stored."""
+        """Score calls with no score, status ``open``, or unscorable for want of bars;
+        the number stored. The background poller runs it on every pass with no new post."""
         async with self._lock:
             return await self._score(rescore=False)
 
@@ -108,21 +112,50 @@ class CallsDesk:
         if self._market is None:
             log.warning("calls_score_skipped", reason="no market data in this build")
             return 0
-        existing = {s["msg_id"]: s["status"] for s in await self._scores.all(self._channel_id)}
+        existing = {s["msg_id"]: s for s in await self._scores.all(self._channel_id)}
         stored = 0
         for call in await self._parses.calls(self._channel_id):
-            status = existing.get(call["msg_id"])
-            if not rescore and status is not None and status != "open":
+            if not rescore and not _due(existing.get(call["msg_id"])):
                 continue
             try:
                 if await self._score_one(call):
                     stored += 1
             except Exception as exc:  # noqa: BLE001 - one bad call must not stop the batch
+                # Only a failed write lands here; the next pass retries it.
                 log.warning("calls_score_failed", msg_id=call["msg_id"], error=type(exc).__name__)
         return stored
 
     async def _score_one(self, call: Row) -> bool:
-        levels = CallLevels.model_validate(call["payload"]["call"])
+        try:
+            levels = CallLevels.model_validate(call["payload"]["call"])
+        except Exception:  # noqa: BLE001 - a stored payload that no longer validates
+            await self._scores.put(
+                self._channel_id,
+                call["msg_id"],
+                status="unscorable",
+                tradeable=False,
+                result={"status": "unscorable", "reason": "invalid levels"},
+            )
+            return True
+        try:
+            score = await self._simulate(call, levels)
+        except Exception as exc:  # noqa: BLE001 - stored as a result, never retried forever
+            log.warning("calls_score_failed", msg_id=call["msg_id"], error=type(exc).__name__)
+            score = _unscorable(levels, f"score failed: {type(exc).__name__}")
+        if score is None:
+            return False
+        await self._scores.put(
+            self._channel_id,
+            call["msg_id"],
+            status=score.status,
+            # Tradeable: a long with bars to enter on (an unscorable call never counts).
+            tradeable=levels.side == "long" and score.status != "unscorable",
+            result=score.as_dict(),
+        )
+        return True
+
+    async def _simulate(self, call: Row, levels: CallLevels) -> CallScore | None:
+        """The call's score, or None when it is too fresh for its entry bar."""
         posted_at = call["posted_at"].astimezone(UTC)
         now = datetime.now(UTC)
         bars: list = []
@@ -131,12 +164,12 @@ class CallsDesk:
             symbol = make_symbol(f"{levels.coin}/USD", AssetClass.CRYPTO)
             bars = await self._market.get_bars_between(symbol, "15m", posted_at - BARS_LEAD, now)
         except Exception as exc:  # noqa: BLE001 - an unlisted coin is a result, not an error
-            reason = f"bars unavailable: {type(exc).__name__}"
+            reason = f"{BARS_UNAVAILABLE}: {type(exc).__name__}"
         if reason is None and not bars:
-            reason = f"no bars for {levels.coin}/USD"
+            if now - posted_at < ENTRY_GRACE:
+                return None  # the entry bar has not printed yet
+            reason = f"{BARS_UNAVAILABLE}: no bars for {levels.coin}/USD"
         if reason is not None:
-            if now - posted_at < ENTRY_GRACE and not reason.startswith("bars unavailable"):
-                return False
             score = _unscorable(levels, reason)
         else:
             updates = [
@@ -153,23 +186,18 @@ class CallsDesk:
                 asset_class=AssetClass.CRYPTO,
             )
             if score.status == "unscorable" and now - posted_at < ENTRY_GRACE:
-                return False  # the entry bar has not printed yet
-        await self._scores.put(
-            self._channel_id,
-            call["msg_id"],
-            status=score.status,
-            # Tradeable: a long with bars to enter on (an unscorable call never counts).
-            tradeable=levels.side == "long" and score.status != "unscorable",
-            result=score.as_dict(),
-        )
-        return True
+                return None  # the entry bar has not printed yet
+        return score
 
     async def scorecard(self) -> dict[str, Any]:
+        """The call scorecard. ``tp1_rate`` is ``tp1_before_stop`` over the *resolved*
+        tradeable calls (first_touch tp1 or stop): an open call that has touched neither
+        is not a miss yet. P&L and ``net_return_mean`` are over closed tradeable calls."""
         calls = await self._parses.calls(self._channel_id)
         scores = {s["msg_id"]: s for s in await self._scores.all(self._channel_id)}
         sleeve = self._settings.calls_sleeve_usd
 
-        tradeable = open_ = unscorable = closed = tp1 = 0
+        tradeable = open_ = unscorable = closed = tp1 = resolved = 0
         sleeve_pnl = 0.0
         nets: list[float] = []
         other = {"calls": 0, "nets": []}
@@ -177,8 +205,11 @@ class CallsDesk:
             lambda: {"calls": 0, "tradeable": 0, "closed": 0, "tp1_before_stop": 0, "nets": []}
         )
         for call in calls:
-            levels = CallLevels.model_validate(call["payload"]["call"])
-            coin = coins[levels.coin]
+            try:
+                levels = CallLevels.model_validate(call["payload"]["call"])
+            except Exception:  # noqa: BLE001 - scored "invalid levels", counted as such
+                levels = None
+            coin = coins[levels.coin if levels is not None else "?"]
             coin["calls"] += 1
             score = scores.get(call["msg_id"])
             if score is None:
@@ -194,10 +225,12 @@ class CallsDesk:
                 continue
             tradeable += 1
             coin["tradeable"] += 1
+            if result.get("first_touch", "neither") != "neither":
+                resolved += 1
             if result.get("first_touch") == "tp1":
                 tp1 += 1
                 coin["tp1_before_stop"] += 1
-            if status == "closed":
+            if status == "closed" and levels is not None:
                 net = result["net_return"]
                 nets.append(net)
                 coin["closed"] += 1
@@ -206,7 +239,7 @@ class CallsDesk:
 
         live_days = await self._live_days()
         backfilled = any(c["backfilled"] for c in calls)
-        tp1_rate = tp1 / tradeable if tradeable else 0.0
+        tp1_rate = tp1 / resolved if resolved else 0.0
         reasons: list[str] = []
         if not backfilled:
             reasons.append("no backfilled calls yet: run the backfill")
@@ -215,7 +248,9 @@ class CallsDesk:
         if sleeve_pnl <= 0:
             reasons.append(f"sleeve net P&L ${sleeve_pnl:,.2f} is not positive")
         if tp1_rate < GATE_TP1_RATE:
-            reasons.append(f"{tp1} of {tradeable} tradeable calls reached TP1 before the stop")
+            reasons.append(
+                f"{tp1} of {resolved} resolved tradeable calls reached TP1 before the stop"
+            )
         return {
             "calls": len(calls),
             "tradeable": tradeable,
@@ -301,6 +336,14 @@ class CallsDesk:
                 }
             )
         return out
+
+
+def _due(score: Row | None) -> bool:
+    """Whether a call's stored score is due a rescore on a normal pass."""
+    if score is None or score["status"] == "open":
+        return True
+    reason = score["result"].get("reason") or ""
+    return score["status"] == "unscorable" and reason.startswith(BARS_UNAVAILABLE)
 
 
 def _mean(values: list[float]) -> float | None:
