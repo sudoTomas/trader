@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 from trader.calls.link import link_updates
 from trader.calls.reader import RawPost
-from trader.store.repos import CallParsesRepo, ChannelPostsRepo
+from trader.store.repos import CallParsesRepo, CallScoresRepo, ChannelPostsRepo
 
 CHANNEL = -1003097376178
 T0 = datetime(2026, 11, 1, 12, 0, tzinfo=UTC)
@@ -103,3 +103,16 @@ async def test_a_reply_cycle_or_missing_parent_falls_back(db) -> None:
     assert await link_updates(db, CHANNEL) == 3
     for msg_id in (2, 3, 4):
         assert await links_to(db, msg_id) == 1
+
+
+async def test_linking_an_update_to_a_scored_call_drops_its_score(db) -> None:
+    # A closed score never rescores on a normal pass; the update must still take effect.
+    await store(db, 1, "call", coin="DOGE")
+    await store(db, 2, "call", coin="SOL")
+    scores = CallScoresRepo(db)
+    for msg_id in (1, 2):
+        await scores.put(CHANNEL, msg_id, status="closed", tradeable=True, result={})
+    await store(db, 3, "update", coin=None, reply_to=1)
+
+    assert await link_updates(db, CHANNEL) == 1
+    assert [s["msg_id"] for s in await scores.all(CHANNEL)] == [2]

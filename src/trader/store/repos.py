@@ -969,6 +969,12 @@ class CallScoresRepo:
             "SELECT * FROM call_scores WHERE channel_id = %s ORDER BY msg_id", (channel_id,)
         )
 
+    async def drop(self, channel_id: int, msg_id: int) -> None:
+        """Forget a call's score, so the next pass scores it afresh."""
+        await self._db.execute(
+            "DELETE FROM call_scores WHERE channel_id = %s AND msg_id = %s", (channel_id, msg_id)
+        )
+
 
 class UsageRepo:
     """Daily LLM usage rollup (M2). Accumulates real token counts so budgets see real spend."""
