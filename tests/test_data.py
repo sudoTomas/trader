@@ -396,3 +396,99 @@ async def test_alpaca_bars_request_reaches_back_past_todays_midnight():
     start = datetime.fromisoformat(seen["params"]["start"])
     assert start.tzinfo is not None
     assert start <= datetime.now(tz=UTC) - timedelta(hours=100)  # covers the lookback
+
+
+# --- alpaca bars by window (calls scorer) -------------------------------------
+
+DOGE = make_symbol("DOGE/USD", AssetClass.CRYPTO)
+_WIN_START = datetime(2026, 8, 11, 10, 0, tzinfo=UTC)
+_WIN_END = datetime(2026, 8, 11, 11, 0, tzinfo=UTC)
+
+
+async def test_alpaca_bars_between_send_the_window_and_follow_pages_ascending():
+    calls: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        params = dict(request.url.params)
+        calls.append({"path": request.url.path, **params})
+        if "page_token" not in params:
+            rows = [
+                {"t": "2026-08-11T10:00:00Z", "o": 1, "h": 2, "l": 0.5, "c": 1.5, "v": 9},
+                {"t": "2026-08-11T10:15:00Z", "o": 1.5, "h": 2, "l": 1, "c": 1.8, "v": 9},
+            ]
+            return httpx.Response(200, json={"bars": {"DOGE/USD": rows}, "next_page_token": "P2"})
+        rows = [{"t": "2026-08-11T10:30:00Z", "o": 1.8, "h": 2, "l": 1, "c": 1.9, "v": 9}]
+        return httpx.Response(200, json={"bars": {"DOGE/USD": rows}, "next_page_token": None})
+
+    data = AlpacaData("k", "s", client=mock_client(handler))
+    bars = await data.get_bars_between(DOGE, "15m", _WIN_START, _WIN_END)
+
+    assert calls[0]["path"] == "/v1beta3/crypto/us/bars"
+    assert calls[0]["symbols"] == "DOGE/USD" and calls[0]["timeframe"] == "15Min"
+    assert datetime.fromisoformat(calls[0]["start"]) == _WIN_START
+    assert datetime.fromisoformat(calls[0]["end"]) == _WIN_END
+    assert calls[0]["sort"] == "asc"
+    assert len(calls) == 2 and calls[1]["page_token"] == "P2"
+    assert calls[1]["start"] == calls[0]["start"] and calls[1]["end"] == calls[0]["end"]
+    assert [b.close for b in bars] == [1.5, 1.8, 1.9]
+    assert [b.ts for b in bars] == sorted(b.ts for b in bars)
+    assert all(b.symbol == "DOGE/USD" and b.interval == "15m" for b in bars)
+
+
+async def test_alpaca_bars_between_refuses_a_bad_interval_or_window():
+    data = AlpacaData("k", "s", client=mock_client(lambda r: httpx.Response(500)))
+    with pytest.raises(MarketDataError, match="unsupported interval"):
+        await data.get_bars_between(DOGE, "4h", _WIN_START, _WIN_END)
+    with pytest.raises(MarketDataError, match="timezone-aware"):
+        await data.get_bars_between(DOGE, "15m", _WIN_START.replace(tzinfo=None), _WIN_END)
+    assert await data.get_bars_between(DOGE, "15m", _WIN_END, _WIN_START) == []
+
+
+async def test_alpaca_bars_between_fails_rather_than_truncate_past_the_page_cap():
+    """A window deeper than the page cap is an error, not a silently shorter history: a
+    scorer handed a truncated window would grade a closed call as still open."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        row = {"t": "2026-08-11T10:00:00Z", "o": 1, "h": 1, "l": 1, "c": 1, "v": 1}
+        return httpx.Response(200, json={"bars": {"DOGE/USD": [row]}, "next_page_token": "MORE"})
+
+    data = AlpacaData("k", "s", client=mock_client(handler))
+    with pytest.raises(MarketDataError, match="page cap"):
+        await data.get_bars_between(DOGE, "15m", _WIN_START, _WIN_END)
+
+
+async def test_alpaca_equity_bars_between_use_sip_and_clamp_the_end():
+    from datetime import timedelta
+
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        seen["params"] = dict(request.url.params)
+        return httpx.Response(200, json={"bars": {"SPY": []}})
+
+    data = AlpacaData("k", "s", client=mock_client(handler))
+    now = datetime.now(tz=UTC)
+    assert await data.get_bars_between(SPY, "15m", now - timedelta(days=2), now) == []
+    assert seen["path"] == "/v2/stocks/bars"
+    assert seen["params"]["feed"] == "sip"
+    assert datetime.now(tz=UTC) - datetime.fromisoformat(seen["params"]["end"]) >= timedelta(
+        minutes=15
+    )
+
+
+class _WindowProvider(_StubProvider):
+    async def get_bars_between(self, symbol, interval, start, end):
+        self.calls += 1
+        if self._fail:
+            raise MarketDataError(f"{self.name} down")
+        return self._bars
+
+
+async def test_composite_forwards_bars_between_and_skips_providers_without_it():
+    sentinel = json.loads('{"x": 2}')
+    no_window = _StubProvider("no-window")
+    windowed = _WindowProvider("windowed", bars=[sentinel])
+    md = CompositeMarketData({AssetClass.CRYPTO: [no_window, windowed]})
+    assert await md.get_bars_between(DOGE, "15m", _WIN_START, _WIN_END) == [sentinel]
+    assert windowed.calls == 1

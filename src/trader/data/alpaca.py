@@ -184,6 +184,68 @@ class AlpacaData:
             for row in reversed(rows)  # desc from the API -> ascending for consumers
         ]
 
+    async def get_bars_between(
+        self, symbol: Symbol, interval: str, start: datetime, end: datetime
+    ) -> list[Bar]:
+        """Every ``interval`` bar whose open is in ``[start, end]``, ascending (the calls
+        scorer, which needs a post's whole window rather than the latest ``lookback``).
+
+        ``sort=asc`` with explicit ``start``/``end``, followed through
+        ``next_page_token`` (docs/lessons.md#alpaca-pagination-cap). A window still
+        paging at the cap raises rather than returning a silently shorter history.
+        Equities take sip with the end clamped to the free-tier delay, like
+        ``get_bars``. Nothing is stored.
+        """
+        try:
+            timeframe = _TIMEFRAMES[interval]
+        except KeyError:
+            raise MarketDataError(f"alpaca_data: unsupported interval '{interval}'") from None
+        if start.tzinfo is None or end.tzinfo is None:
+            raise MarketDataError("alpaca_data: start and end must be timezone-aware")
+        spelled = symbol.for_provider(PROVIDER)
+        params: dict[str, Any] = {
+            "symbols": spelled,
+            "timeframe": timeframe,
+            "limit": _MULTI_LIMIT,
+            "sort": "asc",
+        }
+        if symbol.asset_class is AssetClass.CRYPTO:
+            path = "/v1beta3/crypto/us/bars"
+        else:
+            path = "/v2/stocks/bars"
+            params["feed"] = "sip"
+            params["adjustment"] = "split"
+            end = min(end, datetime.now(tz=UTC) - _SIP_HISTORICAL_DELAY)
+        if end <= start:
+            return []
+        params["start"] = start.isoformat()
+        params["end"] = end.isoformat()
+        payload = await self._get(path, params)
+        rows = list((payload.get("bars") or {}).get(spelled, []))
+        pages = 1
+        while payload.get("next_page_token"):
+            if pages >= 50:
+                raise MarketDataError(
+                    f"alpaca_data: {symbol.ticker} {interval} window exceeds the page cap"
+                )
+            payload = await self._get(path, {**params, "page_token": payload["next_page_token"]})
+            rows += (payload.get("bars") or {}).get(spelled, [])
+            pages += 1
+        rows.sort(key=lambda r: r["t"])  # asc across pages, defensively
+        return [
+            Bar(
+                symbol=symbol.ticker,
+                interval=interval,
+                ts=_parse_ts(row["t"]),
+                open=float(row["o"]),
+                high=float(row["h"]),
+                low=float(row["l"]),
+                close=float(row["c"]),
+                volume=float(row["v"]),
+            )
+            for row in rows
+        ]
+
     async def get_daily_bars_multi(
         self, symbols: Sequence[str], lookback_days: int
     ) -> dict[str, list[Bar]]:
