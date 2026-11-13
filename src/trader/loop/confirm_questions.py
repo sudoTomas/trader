@@ -19,7 +19,7 @@ from trader.core.types import Decision
 from trader.loop.context import DecisionContext
 from trader.loop.sources import BRIEF, FRED, HELD_POSITION, LESSONS, MACRO_VIEW, SourceSlice
 
-QUESTIONS_VERSION = "2026-11-12.2"
+QUESTIONS_VERSION = "2026-11-13.1"
 
 GROUNDED_MIN = 0.25  # veto an open when p(grounded) is below this
 NEWS_AGAINST_MAX = 0.80  # veto an open when p(news_against) is above this
@@ -185,12 +185,16 @@ def _market(ctx: DecisionContext) -> dict[str, Any]:
 
 def _context(ctx: DecisionContext) -> dict[str, list[str]]:
     """The advisory lanes the decide prompt shows besides research: the operator's Macro
-    View and the Bot's Lessons, as the prompt renders their entries."""
+    View, the Bot's Lessons and the analyst desk's reads, as the prompt renders them.
+    The desk's reads are the analysts' opinions, not news, so they stay out of ``research``
+    (and ``news_against``); rationales cite them, so ``grounded`` must see them."""
     context: dict[str, list[str]] = {}
     if ctx.macro_view is not None and ctx.macro_view.entries:
         context["macro_view"] = list(ctx.macro_view.entries)
     if ctx.lessons is not None and ctx.lessons.detail:
         context["lessons"] = [str(entry) for entry in ctx.lessons.detail]
+    if ctx.analysts:
+        context["analyst_desk"] = list(ctx.analysts)
     return context
 
 
