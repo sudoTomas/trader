@@ -7,7 +7,7 @@ const REFRESH_MS = 5000;
 const RESEARCH_MS = 60000;
 const TICK_SECONDS = 60; // TRADER_LOOP_TICK_SECONDS default; the API does not expose it
 
-const store = { config: null, decisions: [], scorecard: null, audit: [], approvals: [], positions: [], orders: [], usage: null, risk: null, loop: null, view: null, notes: [], account: null, brokerPositions: [], history: null, brokerError: null };
+const store = { config: null, decisions: [], scorecard: null, audit: [], approvals: [], positions: [], orders: [], usage: null, risk: null, loop: null, view: null, notes: [], account: null, brokerPositions: [], history: null, brokerError: null, callsScorecard: null, calls: [], callsOff: null };
 const openKeys = new Set(); // expanded ledger rows and table rows survive refreshes
 const seenKeys = new Set(); // rows already shown once; anything new gets the arrival motion
 let firstLedger = true;
@@ -615,6 +615,77 @@ function renderScorecard() {
   );
 }
 
+// ---------- Telegram calls (Bots page) ----------
+// The channel's calls scored as the Phase 2 Bot would trade them. The gate is reported,
+// not enforced: nothing here trades. A 409 means calls are off or no session is stored.
+const CALL_PILL = { closed: 'pill ok', open: 'pill live', unscorable: 'pill warn' };
+
+async function refreshCalls() {
+  try {
+    const [sc, rows] = await Promise.all([window.trader.get('/calls/scorecard'), window.trader.get('/calls?limit=100')]);
+    Object.assign(store, { callsScorecard: sc, calls: rows || [], callsOff: null });
+  } catch (err) {
+    const text = errorText(err);
+    if (text.startsWith('Telegram calls are off')) Object.assign(store, { callsScorecard: null, calls: [], callsOff: text });
+    // otherwise keep the last figures: an API blip should not blank the panel
+  }
+}
+
+function callDetail(c) {
+  const r = c.score?.result || {};
+  const parts = [];
+  if (r.reason) parts.push(el('div', { className: 'k', textContent: 'Why' }), el('p', { textContent: r.reason }));
+  if (c.updates?.length) {
+    parts.push(el('div', { className: 'k', textContent: 'Updates' }), ...c.updates.map((u) => {
+      const up = u.update || {};
+      const what = [words(up.event), up.tp_level ? `TP${up.tp_level}` : '', up.new_stop != null ? `stop ${num(up.new_stop, 6)}` : ''].filter(Boolean).join(' · ');
+      return el('div', { className: 'sub' }, when(u.posted_at), ` · ${what}`);
+    }));
+  }
+  const meta = [`msg ${c.msg_id}`, c.backfilled ? 'backfilled' : 'live'];
+  if (r.entry != null) meta.push(`filled ${num(r.entry, 6)}`);
+  if (r.slippage_pct != null) meta.push(`${Number(r.slippage_pct).toFixed(2)}% from the stated entry`);
+  if (r.first_touch && c.score?.status !== 'unscorable') meta.push(`first touch ${r.first_touch}`);
+  if (r.hours_held != null) meta.push(`${Number(r.hours_held).toFixed(1)}h held`);
+  parts.push(el('div', { className: 'sub', textContent: meta.join(' · ') }));
+  return el('div', { className: 'detail' }, ...parts);
+}
+
+function renderCalls() {
+  if (store.callsOff) {
+    $('calls').replaceChildren(el('div', { className: 'card' },
+      empty('Telegram calls off', 'Set TRADER_CALLS_ENABLED=true and store a session with `trader telegram login`.')));
+    return;
+  }
+  const sc = store.callsScorecard;
+  if (!sc) {
+    $('calls').replaceChildren(el('div', { className: 'card' },
+      empty('No calls scorecard', 'This API is older than the Calls panel, or it is not reachable.')));
+    return;
+  }
+  const reasons = sc.gate_pass ? [] : sc.gate_reasons || [];
+  $('calls').replaceChildren(
+    el('div', { className: 'tiles' }, ...scorecardTiles(sc).map((t) => tile(t.value, t.label, t.sub, t.tone))),
+    el('div', { className: 'card' },
+      reasons.length ? el('div', { className: 'sub', textContent: `Gate not yet: ${reasons.join(' · ')}` }) : null,
+      table([
+        { h: 'Posted', get: (c) => when(c.posted_at) },
+        { h: 'Coin', get: (c) => mono(callRow(c).coin) },
+        { h: 'Side', get: (c) => callRow(c).side },
+        { h: 'Entry', get: (c) => callRow(c).entry, r: true },
+        { h: 'TPs', get: (c) => callRow(c).tps, r: true, minor: true },
+        { h: 'Stop', get: (c) => callRow(c).stop, r: true },
+        { h: 'Status', get: (c) => {
+          const row = callRow(c);
+          return el('span', { className: 'chainline' },
+            el('span', { className: CALL_PILL[row.status] || 'pill', textContent: row.status }),
+            row.tradeable === false ? el('span', { className: 'pill', title: 'Not counted in the gate: a short, or no Alpaca bars', textContent: 'untradeable' }) : null);
+        } },
+        { h: 'Net', get: (c) => callRow(c).net, r: true },
+      ], store.calls, { key: (c) => `call${c.msg_id}`, detail: callDetail }) || empty('No calls yet', 'Calls land here once the poller has read and parsed the channel.')),
+  );
+}
+
 // ---------- research ----------
 function withCitations(s) {
   const out = el('span');
@@ -778,6 +849,7 @@ function renderAll() {
   renderBrief();
   renderModels();
   renderBots();
+  renderCalls();
   renderSettings();
 }
 
@@ -810,6 +882,7 @@ async function refresh() {
     load('/config', 'config'),
     refreshModels(),
     refreshBots(),
+    refreshCalls(),
   ]);
   renderAll();
   $('updated').textContent = `Updated ${new Date().toLocaleTimeString()}`;
