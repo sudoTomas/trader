@@ -1624,7 +1624,8 @@ def build_registry(
         "calls_backfill",
         kind="command",
         summary="Store the calls channel's whole history as backfilled (levels-only"
-        " parses), then parse, link and rescore every call. Audited.",
+        " parses) and return; parse, link and rescore every call run in the background"
+        " (watch call_scorecard). Audited.",
     )
     async def calls_backfill() -> dict[str, Any]:
         out = await _calls().backfill()

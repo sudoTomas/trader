@@ -8,6 +8,11 @@ Every write is idempotent, so a pass that fails half way is simply redone by the
 Until the backfill has stored something the poller stores nothing: posts read before it
 would be stored as live and count toward the live weeks of the gate.
 
+``run_forever`` owns the Telegram connection: it connects before its first pass (retrying
+with backoff, so a boot never waits on Telegram) and reconnects before any pass that
+finds the reader disconnected (Telethon gives up its own reconnects after a while).
+``status`` reports the connection, the last good pass and the last error type.
+
 Logs carry counts and errors only, never post text or anything from the session.
 """
 
@@ -15,6 +20,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
+from typing import Any
 
 import structlog
 
@@ -26,6 +33,8 @@ log = structlog.get_logger(__name__)
 
 #: Posts asked of ``newer`` per page.
 PAGE = 200
+#: The first wait after a failed connect; it doubles per failure up to the poll interval.
+RETRY_SECONDS = 5.0
 
 
 class ChannelPoller:
@@ -36,7 +45,7 @@ class ChannelPoller:
         *,
         channel_id: int,
         recheck: int,
-        on_new: Callable[[], Awaitable[None]] | None = None,
+        on_new: Callable[[], Awaitable[object]] | None = None,
         on_idle: Callable[[], Awaitable[object]] | None = None,
     ) -> None:
         self._posts = ChannelPostsRepo(db)
@@ -47,6 +56,22 @@ class ChannelPoller:
         self._on_idle = on_idle
         # A poll during a backfill would store the history ahead of it as live posts.
         self._lock = asyncio.Lock()
+        self._last_ok: datetime | None = None
+        self._last_error: str | None = None
+
+    @property
+    def connected(self) -> bool:
+        return self._reader.is_connected()
+
+    def status(self) -> dict[str, Any]:
+        """``connected``; ``last_ok``, when the last background pass succeeded (ISO, UTC);
+        ``last_error``, the error type of the last failed connect or pass (None once a
+        pass succeeds again)."""
+        return {
+            "connected": self.connected,
+            "last_ok": self._last_ok.isoformat() if self._last_ok else None,
+            "last_error": self._last_error,
+        }
 
     async def poll_once(self) -> dict[str, int]:
         """Store new posts and edits of the newest ``recheck``; ``{"new": n, "edited": m}``."""
@@ -87,16 +112,31 @@ class ChannelPoller:
                     p, channel_id=self._channel_id, backfilled=True
                 ):
                     stored += 1
-            log.info("calls_backfill_done", channel_id=self._channel_id, stored=stored)
+            log.info("calls_backfill_stored", channel_id=self._channel_id, stored=stored)
             return {"stored": stored}
 
-    async def run_forever(self, interval_seconds: float, stopping: asyncio.Event) -> None:
+    async def run_forever(
+        self,
+        interval_seconds: float,
+        stopping: asyncio.Event,
+        *,
+        retry_seconds: float = RETRY_SECONDS,
+    ) -> None:
         """A poll every ``interval_seconds`` until ``stopping``; a failed pass is logged.
+        Before each pass, a disconnected reader is connected; a failed connect waits
+        ``retry_seconds``, doubling per failure up to ``interval_seconds``, and tries again.
         ``on_new`` runs after a pass that stored anything, ``on_idle`` after one that
-        stored nothing (the calls desk rescores its open calls there)."""
+        stored nothing."""
+        backoff = retry_seconds
         while not stopping.is_set():
+            if not await self._connect():
+                await _sleep(stopping, min(backoff, interval_seconds))
+                backoff = min(backoff * 2, interval_seconds)
+                continue
+            backoff = retry_seconds
             try:
                 counts = await self.poll_once()
+                self._last_ok, self._last_error = datetime.now(UTC), None
                 if counts["new"] or counts["edited"]:
                     log.info("calls_poll_stored", **counts)
                     if self._on_new is not None:
@@ -105,8 +145,27 @@ class ChannelPoller:
                     await self._on_idle()
             except Exception as exc:  # noqa: BLE001 - polling must never take the process down
                 # The error type only: a Telegram error's text could quote the channel.
-                log.warning("calls_poll_failed", error=type(exc).__name__)
-            try:
-                await asyncio.wait_for(stopping.wait(), timeout=interval_seconds)
-            except TimeoutError:
-                pass
+                self._last_error = type(exc).__name__
+                log.warning("calls_poll_failed", error=self._last_error)
+            await _sleep(stopping, interval_seconds)
+
+    async def _connect(self) -> bool:
+        """Connect the reader unless it is connected; whether it is now."""
+        if self._reader.is_connected():
+            return True
+        try:
+            await self._reader.connect()
+        except Exception as exc:  # noqa: BLE001 - a dead login or network: retried
+            self._last_error = type(exc).__name__
+            log.warning("calls_connect_failed", error=self._last_error)
+            return False
+        log.info("calls_connected", channel_id=self._channel_id)
+        return True
+
+
+async def _sleep(stopping: asyncio.Event, seconds: float) -> None:
+    """Wait ``seconds``, or less when ``stopping`` is set."""
+    try:
+        await asyncio.wait_for(stopping.wait(), timeout=seconds)
+    except TimeoutError:
+        pass

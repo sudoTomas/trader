@@ -740,7 +740,8 @@ def calls_poll() -> None:
 
 @calls_app.command("backfill")
 def calls_backfill() -> None:
-    """Store the channel's whole history, then parse, link and rescore every call."""
+    """Store the channel's whole history; parse, link and rescore run in the background
+    (watch with `trader calls scorecard`)."""
     typer.echo(json.dumps(_post("/calls/backfill"), indent=2))
 
 

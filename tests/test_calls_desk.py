@@ -3,12 +3,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 
-from trader.calls.desk import PARSE_BATCH, CallsDesk
-from trader.calls.poller import ChannelPoller
+import pytest
+
+from trader.calls.desk import PARSE_BATCH, CallsDesk, CallsDisconnected
 from trader.calls.reader import RawPost
 from trader.core.types import Bar
 from trader.llm.base import Completion, Usage
@@ -78,8 +80,18 @@ class StubLLM:
 
 
 class FakeReader:
-    def __init__(self, posts: list[RawPost]) -> None:
+    def __init__(self, posts: list[RawPost], *, connected: bool = True) -> None:
         self.posts = posts
+        self.connected = connected
+
+    async def connect(self) -> None:
+        self.connected = True
+
+    def is_connected(self) -> bool:
+        return self.connected
+
+    async def disconnect(self) -> None:
+        self.connected = False
 
     async def newer(self, channel_id: int, min_id: int, limit: int = 200) -> list[RawPost]:
         return [p for p in sorted(self.posts, key=lambda p: p.msg_id) if p.msg_id > min_id][:limit]
@@ -115,11 +127,12 @@ class FakeMarket:
 
 
 def desk_for(db, llm, market, reader=None, **kw) -> CallsDesk:
-    s = settings(**kw)
-    poller = None
-    if reader is not None:
-        poller = ChannelPoller(db, reader, channel_id=CHANNEL, recheck=0)
-    return CallsDesk(db, s, market, llm, poller)
+    return CallsDesk(db, settings(calls_recheck_posts=0, **kw), market, llm, reader)
+
+
+async def score(desk: CallsDesk) -> int:
+    """One normal pass (nothing pending to parse in these tests); the scores stored."""
+    return (await desk.process())["scored"]
 
 
 async def seed_call(
@@ -192,7 +205,7 @@ async def test_unscorable_call_does_not_break_the_scorecard(db) -> None:
     market = FakeMarket(fail={"PENGU/USD": [], "WLD/USD": RuntimeError("no such asset")})
     desk = desk_for(db, StubLLM([]), market)
 
-    assert await desk.score_pending() == 3
+    assert await score(desk) == 3
     card = await desk.scorecard()
 
     assert card["calls"] == 3
@@ -207,10 +220,10 @@ async def test_unscorable_call_does_not_break_the_scorecard(db) -> None:
     # Right away nothing is fetched again; an hour on, only the fetch that raised is
     # retried. An empty fetch past the grace (an unlisted coin) waits for a backfill.
     market.asked.clear()
-    assert await desk.score_pending() == 0
+    assert await score(desk) == 0
     assert market.asked == []
     await age_scores(db, hours=2)
-    await desk.score_pending()
+    await score(desk)
     assert {t for t, *_ in market.asked} == {"WLD/USD"}
     market.asked.clear()
     await desk.process(rescore=True)
@@ -221,15 +234,15 @@ async def test_a_call_unscorable_for_want_of_bars_is_rescored_when_they_arrive(d
     await seed_call(db, 1, "DOGE")
     market = FakeMarket(fail={"DOGE/USD": ConnectionError("alpaca is down")})
     desk = desk_for(db, StubLLM([]), market)
-    await desk.score_pending()
+    await score(desk)
     (row,) = await CallScoresRepo(db).all(CHANNEL)
     assert row["status"] == "unscorable"
     assert row["result"]["reason"] == "bars unavailable: ConnectionError"
 
     market.fail.clear()  # the outage ends
-    assert await desk.score_pending() == 0  # retried at most hourly
+    assert await score(desk) == 0  # retried at most hourly
     await age_scores(db, hours=1, minutes=1)
-    assert await desk.score_pending() == 1
+    assert await score(desk) == 1
     (row,) = await CallScoresRepo(db).all(CHANNEL)
     assert row["status"] == "closed" and row["tradeable"] is True
 
@@ -251,17 +264,17 @@ async def test_an_open_call_is_rescored_at_most_hourly(db) -> None:
     await seed_call(db, 1, "DOGE")
     market = FakeMarket(fail={"DOGE/USD": flat_bars(T0)})
     desk = desk_for(db, StubLLM([]), market)
-    assert await desk.score_pending() == 1
+    assert await score(desk) == 1
     (row,) = await CallScoresRepo(db).all(CHANNEL)
     assert row["status"] == "open"
 
     market.asked.clear()
-    assert await desk.score_pending() == 0
+    assert await score(desk) == 0
     await age_scores(db, minutes=59)
-    assert await desk.score_pending() == 0
+    assert await score(desk) == 0
     assert market.asked == []
     await age_scores(db, minutes=2)
-    assert await desk.score_pending() == 1
+    assert await score(desk) == 1
     assert len(market.asked) == 1
 
 
@@ -270,14 +283,14 @@ async def test_no_bars_after_the_post_is_classed_as_no_bars(db) -> None:
     await seed_call(db, 1, "DOGE")
     market = FakeMarket(fail={"DOGE/USD": flat_bars(T0 - timedelta(minutes=15), n=1)})
     desk = desk_for(db, StubLLM([]), market)
-    assert await desk.score_pending() == 1
+    assert await score(desk) == 1
     (row,) = await CallScoresRepo(db).all(CHANNEL)
     assert row["status"] == "unscorable"
     assert row["result"]["reason"] == "bars unavailable: no bars after post for DOGE/USD"
 
     await age_scores(db, hours=2)
     market.asked.clear()
-    assert await desk.score_pending() == 0
+    assert await score(desk) == 0
     assert market.asked == []
     market.fail.clear()
     assert (await desk.process(rescore=True))["scored"] == 1
@@ -303,11 +316,11 @@ async def test_invalid_levels_are_stored_unscorable_not_retried(db) -> None:
     market = FakeMarket()
     desk = desk_for(db, StubLLM([]), market)
 
-    assert await desk.score_pending() == 1
+    assert await score(desk) == 1
     (row,) = await CallScoresRepo(db).all(CHANNEL)
     assert (row["status"], row["tradeable"]) == ("unscorable", False)
     assert row["result"]["reason"] == "invalid levels"
-    assert await desk.score_pending() == 0  # stored, so not retried every pass
+    assert await score(desk) == 0  # stored, so not retried every pass
     card = await desk.scorecard()  # and the scorecard still answers
     assert card["calls"] == 1 and card["unscorable"] == 1
 
@@ -334,18 +347,18 @@ async def test_a_scoring_failure_is_stored_unscorable_not_retried(db) -> None:
     await parses.set_link(CHANNEL, 2, 1)
     desk = desk_for(db, StubLLM([]), FakeMarket())
 
-    assert await desk.score_pending() == 1
+    assert await score(desk) == 1
     (row,) = await CallScoresRepo(db).all(CHANNEL)
     assert (row["status"], row["tradeable"]) == ("unscorable", False)
     assert row["result"]["reason"] == "score failed: ValidationError"
-    assert await desk.score_pending() == 0
+    assert await score(desk) == 0
 
 
 async def test_a_fresh_call_waits_for_its_entry_bar(db) -> None:
     await seed_call(db, 1, "DOGE", at=datetime.now(UTC) - timedelta(minutes=5), backfilled=False)
     desk = desk_for(db, StubLLM([]), FakeMarket(fail={"DOGE/USD": []}))
 
-    assert await desk.score_pending() == 0
+    assert await score(desk) == 0
     assert await CallScoresRepo(db).all(CHANNEL) == []
 
 
@@ -353,7 +366,7 @@ async def test_scorecard_gate_needs_28_live_days_and_positive_pnl(db) -> None:
     await seed_call(db, 1, "DOGE")
     await seed_call(db, 2, "ETH", at=T0 + timedelta(hours=1))
     desk = desk_for(db, StubLLM([]), FakeMarket())
-    await desk.score_pending()
+    await score(desk)
 
     card = await desk.scorecard()
 
@@ -470,3 +483,84 @@ async def test_process_parses_past_one_batch(db) -> None:
 
     assert out["parsed"] == {"other": n}
     assert await posts.unparsed(CHANNEL, 10) == []
+
+
+async def test_an_idle_pass_parses_posts_left_pending(db) -> None:
+    # A spend-cap stop, a model error or an interrupted backfill left posts unparsed;
+    # a poll pass that stores nothing new still parses them.
+    reader = FakeReader([raw(1, "DOGE long", at=T0)])
+    posts = ChannelPostsRepo(db)
+    await posts.upsert_version(reader.posts[0], channel_id=CHANNEL, backfilled=True)
+    desk = desk_for(
+        db, StubLLM([call_reply("DOGE")]), FakeMarket(), reader, calls_poll_seconds=0.01
+    )
+    stopping = asyncio.Event()
+    task = asyncio.create_task(desk.run(stopping))
+    for _ in range(500):
+        if await CallParsesRepo(db).get(CHANNEL, 1) is not None:
+            break
+        await asyncio.sleep(0.01)
+    stopping.set()
+    await asyncio.wait_for(task, timeout=5)
+
+    assert (await CallParsesRepo(db).get(CHANNEL, 1))["kind"] == "call"
+    assert [s["msg_id"] for s in await CallScoresRepo(db).all(CHANNEL)] == [1]
+
+
+async def test_while_telegram_is_down_reads_answer_and_commands_refuse(db) -> None:
+    await seed_call(db, 1, "DOGE")
+    desk = desk_for(db, StubLLM([]), FakeMarket(), FakeReader([], connected=False))
+
+    for command in (desk.poll, desk.backfill):
+        with pytest.raises(CallsDisconnected, match="not connected"):
+            await command()
+    card = await desk.scorecard()
+    assert card["calls"] == 1
+    assert card["poller"] == {"connected": False, "last_ok": None, "last_error": None}
+    assert len(await desk.calls()) == 1 and len(await desk.posts()) == 1
+
+
+async def test_scorecard_poller_is_none_without_a_reader(db) -> None:
+    assert (await desk_for(db, StubLLM([]), FakeMarket()).scorecard())["poller"] is None
+
+
+class GatedLLM(StubLLM):
+    """Each completion waits for ``gate``: the backfill's parse cannot finish early."""
+
+    def __init__(self, replies: list[str]) -> None:
+        super().__init__(replies)
+        self.gate = asyncio.Event()
+
+    async def complete(self, role, messages, **kw):
+        await self.gate.wait()
+        return await super().complete(role, messages, **kw)
+
+
+async def test_backfill_returns_once_stored_and_processes_in_the_background(db) -> None:
+    reader = FakeReader([raw(1, "DOGE long", at=T0), raw(2, "ETH long", at=T0)])
+    llm = GatedLLM([call_reply("DOGE"), call_reply("ETH")])
+    desk = desk_for(db, llm, FakeMarket(), reader)
+
+    out = await asyncio.wait_for(desk.backfill(), timeout=5)
+
+    assert out == {"backfill": {"stored": 2}, "processing": "started"}
+    assert await CallParsesRepo(db).get(CHANNEL, 1) is None  # parsing has not finished
+    # A second backfill while it runs stores nothing new and starts no second task.
+    assert (await desk.backfill())["processing"] == "already running"
+
+    llm.gate.set()
+    await asyncio.wait_for(desk._processing, timeout=5)
+    assert {s["msg_id"] for s in await CallScoresRepo(db).all(CHANNEL)} == {1, 2}
+    assert (await desk.backfill())["processing"] == "started"  # done: a new one may start
+    await desk.aclose()
+
+
+async def test_aclose_cancels_background_processing(db) -> None:
+    reader = FakeReader([raw(1, "DOGE long", at=T0)])
+    desk = desk_for(db, GatedLLM([call_reply("DOGE")]), FakeMarket(), reader)
+    await desk.backfill()
+    task = desk._processing
+
+    await desk.aclose()
+
+    assert task.cancelled()

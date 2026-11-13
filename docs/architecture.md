@@ -159,7 +159,10 @@ SignalScheduler → ContextBuilder → (analyst desk) → Decider → (Confirm) 
   (`call_scores`, results only). The scorecard and its gate are a report; Phase 1 places no
   orders and imports no executor, broker or RiskGuard. Doors: `channel_posts`,
   `channel_calls`, `call_scorecard`, `calls_poll`, `calls_backfill` (`/calls*`; 409 while
-  off). Runbook: `runbooks/telegram-calls.md`; spec:
+  off or with no session; while Telegram is not connected the reads answer and poll and
+  backfill answer 503). The poller connects in the background with backoff and reconnects
+  after a drop; `backfill` stores the history and processes it as a background task.
+  Runbook: `runbooks/telegram-calls.md`; spec:
   `superpowers/specs/2026-11-12-telegram-signals-bot-design.md`.
 - **Decider** — one Nemotron completion, JSON-schema-validated, 1 retry with the validation
   errors fed back. Transient (infra) vs crash errors classified so infra blips don't arm

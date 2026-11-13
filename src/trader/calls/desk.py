@@ -3,16 +3,20 @@ scorer, and the call scorecard every surface reads.
 
 ``process`` is the pipeline after posts are stored: parse what is pending, link the
 updates, score the calls that have no score yet, and rescore (at most hourly) the open
-ones and those whose bars fetch failed. The background
-poller runs it after a pass that stored something; ``poll`` and ``backfill`` are the
-manual commands. Bars are fetched per call and never stored. Phase 1 places no orders:
-nothing here reaches the executor, the broker or RiskGuard.
+ones and those whose bars fetch failed. The desk owns one poller over the reader, and
+``run`` drives it: every pass, new posts or not, ends in ``process``, so posts a spend
+cap or a model error left unparsed are picked up without waiting for a new post.
+``poll`` and ``backfill`` are the manual commands; ``backfill`` returns once the history
+is stored and processes it in the background. Bars are fetched per call and never
+stored. Phase 1 places no orders: nothing here reaches the executor, the broker or
+RiskGuard.
 """
 
 from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
+from contextlib import suppress
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -22,6 +26,7 @@ import structlog
 from trader.calls.link import link_updates
 from trader.calls.parse import CallLevels, CallParser, CallUpdate
 from trader.calls.poller import ChannelPoller
+from trader.calls.reader import ChannelReader
 from trader.calls.score import CallScore, _unscorable, simulate, size_usd
 from trader.core.symbols import AssetClass, make_symbol
 from trader.eval.costs import costs_from_settings
@@ -59,6 +64,16 @@ class CallsOff(RuntimeError):
         super().__init__("Telegram calls are off or no session is stored")
 
 
+class CallsDisconnected(RuntimeError):
+    """A command that reads Telegram while the poller has not (re)connected."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Telegram is not connected yet; the poller keeps retrying (see the scorecard's"
+            " poller). The stored posts, calls and scorecard still answer."
+        )
+
+
 class CallsDesk:
     def __init__(
         self,
@@ -66,13 +81,26 @@ class CallsDesk:
         settings: Settings,
         market: Any | None,
         llm: Any,
-        poller: ChannelPoller | None,
+        reader: ChannelReader | None,
     ) -> None:
         self._db = db
         self._settings = settings
         self._market = market
-        self._poller = poller
         self._channel_id = settings.calls_channel_id
+        # ONE poller: the background passes and the manual commands share its lock.
+        self._poller = (
+            None
+            if reader is None
+            else ChannelPoller(
+                db,
+                reader,
+                channel_id=self._channel_id,
+                recheck=settings.calls_recheck_posts,
+                on_new=self.process,
+                on_idle=self.process,  # open calls move with the bars, not only with posts
+            )
+        )
+        self._processing: asyncio.Task | None = None
         self._parser = CallParser(db, llm, channel_id=self._channel_id)
         self._posts = ChannelPostsRepo(db)
         self._parses = CallParsesRepo(db)
@@ -83,7 +111,23 @@ class CallsDesk:
     def _require_poller(self) -> ChannelPoller:
         if self._poller is None:
             raise CallsOff()
+        if not self._poller.connected:
+            raise CallsDisconnected()
         return self._poller
+
+    async def run(self, stopping: asyncio.Event) -> None:
+        """The background poller, every ``calls_poll_seconds`` until ``stopping``."""
+        if self._poller is None:
+            raise CallsOff()
+        await self._poller.run_forever(self._settings.calls_poll_seconds, stopping)
+
+    async def aclose(self) -> None:
+        """Cancel a background ``process`` (shutdown); its writes are idempotent."""
+        task, self._processing = self._processing, None
+        if task is not None and not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
     async def process(self, *, rescore: bool = False) -> dict[str, Any]:
         """Parse until nothing is pending (or the model fails), link, score."""
@@ -98,7 +142,9 @@ class CallsDesk:
                     break
             linked = await link_updates(self._db, self._channel_id)
             scored = await self._score(rescore=rescore)
-            return {"parsed": parsed, "linked": linked, "scored": scored}
+            out = {"parsed": parsed, "linked": linked, "scored": scored}
+            log.info("calls_process_done", channel_id=self._channel_id, rescore=rescore, **out)
+            return out
 
     async def poll(self) -> dict[str, Any]:
         """One poll now, then ``process``."""
@@ -106,15 +152,23 @@ class CallsDesk:
         return {"poll": counts, **await self.process()}
 
     async def backfill(self) -> dict[str, Any]:
-        """Store the channel's whole history, then ``process`` and rescore every call."""
+        """Store the channel's whole history and return; ``process`` with every call
+        rescored runs as a desk-owned background task (a parse of the whole history can
+        outlast any client's timeout). ``processing``: ``started``, or ``already running``
+        when an earlier backfill's is (the poller's next pass parses what it misses)."""
         counts = await self._require_poller().backfill()
-        return {"backfill": counts, **await self.process(rescore=True)}
+        if self._processing is not None and not self._processing.done():
+            return {"backfill": counts, "processing": "already running"}
+        self._processing = asyncio.create_task(
+            self._process_in_background(rescore=True), name="trader-calls-process"
+        )
+        return {"backfill": counts, "processing": "started"}
 
-    async def score_pending(self) -> int:
-        """Score calls with no score, status ``open``, or unscorable for want of bars;
-        the number stored. The background poller runs it on every pass with no new post."""
-        async with self._lock:
-            return await self._score(rescore=False)
+    async def _process_in_background(self, *, rescore: bool) -> None:
+        try:
+            await self.process(rescore=rescore)
+        except Exception as exc:  # noqa: BLE001 - logged; the poller's next pass resumes it
+            log.warning("calls_process_failed", error=type(exc).__name__)
 
     async def _score(self, *, rescore: bool) -> int:
         if self._market is None:
@@ -283,6 +337,7 @@ class CallsDesk:
             "live_days": live_days,
             "gate_pass": not reasons,
             "gate_reasons": reasons,
+            "poller": self._poller.status() if self._poller is not None else None,
         }
 
     async def _live_days(self) -> int:

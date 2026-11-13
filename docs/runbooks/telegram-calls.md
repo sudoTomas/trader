@@ -69,13 +69,24 @@ Restart outside market hours, so no wakeup is cut short:
 
 ```bash
 systemctl --user restart trader-api
-journalctl --user -u trader-api -f     # no calls_poller_not_started warning
+journalctl --user -u trader-api -f     # calls_connected; no calls_poller_not_started
 ```
 
-The API connects the stored session at boot and polls every `TRADER_CALLS_POLL_SECONDS`
-(default 300). With no session, or one that does not connect, it logs
-`calls_poller_not_started` and boots anyway; the calls commands then answer 409. With no
-Alpaca keys, posts are stored and parsed but not scored (`calls_scoring_off`).
+The API boots without waiting on Telegram: the poller connects in the background and
+polls every `TRADER_CALLS_POLL_SECONDS` (default 300). A failed connect
+(`calls_connect_failed`) is retried after 5 seconds, doubling up to the poll interval, and
+a dropped connection is reconnected before the next pass. While it is not connected the
+stored posts, calls and scorecard still answer, and `trader calls poll` and
+`trader calls backfill` answer 503. The scorecard's `poller` shows the state:
+`connected`, `last_ok` (the last good pass) and `last_error` (the error type of the last
+failed connect or pass). With no stored session (or `TRADER_SECRETS_KEY` unset), it logs
+`calls_poller_not_started` and every calls command answers 409. With no Alpaca keys,
+posts are stored and parsed but not scored (`calls_scoring_off`).
+
+Every pass ends in a parse, link and score, so posts left unparsed (the cap, a model
+error) are picked up on the next pass. Open calls, and calls whose bars fetch failed,
+are rescored at most once an hour; a coin Alpaca has no bars for stays unscorable until
+the next backfill.
 
 ## 5. Backfill, once
 
@@ -83,16 +94,22 @@ Alpaca keys, posts are stored and parsed but not scored (`calls_scoring_off`).
 trader calls backfill
 ```
 
-It stores the channel's whole history as backfilled, parses it (levels only: outcome text
-an edit added later is ignored), links the updates and scores every call. Live polling
-stores nothing until the backfill has stored something, so posts read before it are not
-counted as live. Run it once. Every write is idempotent, so a second run does no harm.
+It stores the channel's whole history as backfilled and returns
+`{"backfill": {"stored": n}, "processing": "started"}` (`calls_backfill_stored` in the
+log). The parse (levels only: outcome text an edit added later is ignored), the links and
+the rescore of every call then run in the background; `calls_process_done` in the log,
+with the counts, marks the end. Watch it fill in:
 
-The CLI waits 120 seconds. A long backfill can outlast that and print a timeout while the
-API carries on: `calls_backfill_done` in the log means the posts are stored, and the
-parse and score follow. A parse stops early on a model error or at the cap and leaves
-the rest pending; `trader calls poll` parses what is left (it waits for a running
-backfill to finish first).
+```bash
+trader calls scorecard        # calls and scored counts grow as the parse goes
+journalctl --user -u trader-api -f | grep -E 'calls_(backfill_stored|process_done|parse_stopped)'
+```
+
+A second backfill while that runs answers `"processing": "already running"`. A parse
+stops early on a model error or at the cap (`calls_parse_stopped`) and leaves the rest
+pending; the poller's next pass carries on with it. Live polling stores nothing until
+the backfill has stored something, so posts read before it are not counted as live. Run
+it once. Every write is idempotent, so a second run does no harm.
 
 ## 6. Check
 
@@ -128,8 +145,8 @@ needs its own design before any code. Nothing in this feature places an order.
 ## Revoke the session
 
 On the phone: Telegram → Settings → Devices, and end the Spark's session. The poller then
-fails its passes (`calls_poll_failed` in the log) until a new `trader telegram login`
-and a restart.
+fails its passes or its reconnects (`calls_poll_failed` or `calls_connect_failed` in
+the log, `poller.last_error` in the scorecard) until a new `trader telegram login` and a restart.
 
 ## Turn it off
 

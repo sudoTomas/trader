@@ -11,6 +11,7 @@ Telethon is the optional ``telegram`` extra; it is imported only when a client i
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Protocol
@@ -35,6 +36,14 @@ class RawPost:
 
 
 class ChannelReader(Protocol):
+    async def connect(self) -> None:
+        """Connect (again, after a drop); raises when Telegram or the login refuses."""
+        ...
+
+    def is_connected(self) -> bool: ...
+
+    async def disconnect(self) -> None: ...
+
     async def newer(self, channel_id: int, min_id: int, limit: int = 200) -> list[RawPost]:
         """Posts with ``msg_id > min_id``, ascending by msg_id."""
         ...
@@ -105,12 +114,20 @@ class TelethonReader:
         return f"TelethonReader(api_id={self._api_id})"
 
     async def connect(self) -> None:
+        """A fresh client over the stored session; a dropped one is closed first."""
+        if self._tg is not None:
+            with suppress(Exception):  # it is already dead; only its sockets are left
+                await self._tg.disconnect()
+            self._tg = None
         self._tg = _client(self._api_id, self._api_hash, self._session)
         await self._tg.connect()
         if not await self._tg.is_user_authorized():
             await self._tg.disconnect()
             self._tg = None
             raise RuntimeError("the stored Telegram session is not authorized; log in again")
+
+    def is_connected(self) -> bool:
+        return self._tg is not None and self._tg.is_connected()
 
     async def disconnect(self) -> None:
         if self._tg is not None:

@@ -30,9 +30,32 @@ def post(msg_id: int, text: str | None = None) -> RawPost:
 class FakeReader:
     """A ChannelReader over a list of posts; ``fail_newer`` raises on that many calls."""
 
-    def __init__(self, posts: list[RawPost], *, fail_newer: int = 0) -> None:
+    def __init__(
+        self,
+        posts: list[RawPost],
+        *,
+        fail_newer: int = 0,
+        connected: bool = True,
+        fail_connect: int = 0,
+    ) -> None:
         self.posts = posts
         self.fail_newer = fail_newer
+        self.connected = connected
+        self.fail_connect = fail_connect  # connect() raises this many times (-1: always)
+        self.connects = 0
+
+    async def connect(self) -> None:
+        self.connects += 1
+        if self.fail_connect:
+            self.fail_connect -= 1
+            raise ConnectionError("telegram is unreachable")
+        self.connected = True
+
+    def is_connected(self) -> bool:
+        return self.connected
+
+    async def disconnect(self) -> None:
+        self.connected = False
 
     def _sorted(self) -> list[RawPost]:
         return sorted(self.posts, key=lambda p: p.msg_id)
@@ -202,23 +225,61 @@ async def test_run_forever_skips_on_new_when_nothing_was_stored(db) -> None:
     assert called == []
 
 
+async def test_run_forever_connects_with_backoff_then_polls(db) -> None:
+    await ChannelPostsRepo(db).upsert_version(post(1), channel_id=CHANNEL, backfilled=True)
+    reader = FakeReader([post(1)], connected=False, fail_connect=2)
+    stopping = asyncio.Event()
+
+    async def on_idle() -> None:
+        stopping.set()
+
+    poller = ChannelPoller(db, reader, channel_id=CHANNEL, recheck=0, on_idle=on_idle)
+    assert poller.status() == {"connected": False, "last_ok": None, "last_error": None}
+    await asyncio.wait_for(poller.run_forever(0.01, stopping, retry_seconds=0.001), timeout=5)
+
+    assert reader.connects == 3  # two failures, then connected
+    status = poller.status()
+    assert status["connected"] is True and status["last_error"] is None
+    assert datetime.fromisoformat(status["last_ok"]).tzinfo is not None
+
+
+async def test_a_failed_connect_is_reported_and_retried(db) -> None:
+    reader = FakeReader([], connected=False, fail_connect=-1)
+    stopping = asyncio.Event()
+    poller = ChannelPoller(db, reader, channel_id=CHANNEL, recheck=0)
+    task = asyncio.create_task(poller.run_forever(0.05, stopping, retry_seconds=0.001))
+    for _ in range(200):
+        await asyncio.sleep(0.005)
+        if reader.connects >= 3:
+            break
+    stopping.set()
+    await asyncio.wait_for(task, timeout=5)
+
+    assert reader.connects >= 3
+    assert poller.status() == {"connected": False, "last_ok": None, "last_error": "ConnectionError"}
+
+
+async def test_run_forever_reconnects_after_a_drop(db) -> None:
+    await ChannelPostsRepo(db).upsert_version(post(1), channel_id=CHANNEL, backfilled=True)
+    reader = FakeReader([post(1)])
+    stopping = asyncio.Event()
+    passes: list[bool] = []
+
+    async def on_idle() -> None:
+        passes.append(reader.connected)
+        if len(passes) == 1:
+            reader.connected = False  # Telethon gave up its own reconnects
+        else:
+            stopping.set()
+
+    poller = ChannelPoller(db, reader, channel_id=CHANNEL, recheck=0, on_idle=on_idle)
+    await asyncio.wait_for(poller.run_forever(0.01, stopping, retry_seconds=0.001), timeout=5)
+
+    assert passes == [True, True]
+    assert reader.connects == 1
+
+
 # --- the lifespan task --------------------------------------------------------------------
-
-
-class LifespanReader(FakeReader):
-    def __init__(self, *, fail_connect: bool = False) -> None:
-        super().__init__([])
-        self.fail_connect = fail_connect
-        self.entered = self.exited = False
-
-    async def __aenter__(self) -> LifespanReader:
-        if self.fail_connect:
-            raise RuntimeError("the stored Telegram session is not authorized")
-        self.entered = True
-        return self
-
-    async def __aexit__(self, *exc: object) -> None:
-        self.exited = True
 
 
 def boot_settings(**kwargs):
@@ -228,12 +289,13 @@ def boot_settings(**kwargs):
 
 
 def lifespan_spies(monkeypatch, reader):
+    import trader.calls.desk as desk_module
     import trader.surfaces.api.app as app_module
 
     runs: list[dict] = []
 
     class SpyPoller(ChannelPoller):
-        async def run_forever(self, interval_seconds: float, stopping: asyncio.Event) -> None:
+        async def run_forever(self, interval_seconds: float, stopping: asyncio.Event, **kw):
             runs.append(
                 {
                     "interval": interval_seconds,
@@ -243,7 +305,7 @@ def lifespan_spies(monkeypatch, reader):
                 }
             )
             try:
-                await stopping.wait()
+                await super().run_forever(interval_seconds, stopping, **kw)
             finally:  # shutdown sets ``stopping`` and cancels, as for settlement
                 runs[-1]["ended"] = stopping.is_set()
 
@@ -251,45 +313,81 @@ def lifespan_spies(monkeypatch, reader):
         return reader
 
     monkeypatch.setattr(app_module, "reader_from_store", fake_reader_from_store)
-    monkeypatch.setattr(app_module, "ChannelPoller", SpyPoller)
+    monkeypatch.setattr(desk_module, "ChannelPoller", SpyPoller)
     return app_module, runs
 
 
-def test_lifespan_runs_the_poller_while_connected(clean_db: None, monkeypatch) -> None:
+def wait_for(condition, timeout: float = 5.0) -> None:
+    import time
+
+    deadline = time.monotonic() + timeout
+    while not condition():
+        assert time.monotonic() < deadline, "timed out"
+        time.sleep(0.01)
+
+
+def test_lifespan_connects_in_the_background_and_runs_the_poller(
+    clean_db: None, monkeypatch
+) -> None:
     from fastapi.testclient import TestClient
 
-    reader = LifespanReader()
+    reader = FakeReader([], connected=False)
     app_module, runs = lifespan_spies(monkeypatch, reader)
     s = boot_settings(calls_enabled=True, calls_poll_seconds=7.0)
     with TestClient(app_module.create_app(s)) as tc:
         assert tc.get("/health").status_code == 200
-        assert reader.entered and not reader.exited
+        wait_for(lambda: reader.connected)
         assert runs and runs[0]["interval"] == 7.0
         assert runs[0]["task"] == "trader-calls-poller"
-        assert runs[0]["on_new"] is not None  # the desk's process() after a stored pass
-        assert runs[0]["on_idle"] is not None  # its score_pending() after an empty one
-        # The CallsDesk shares that poller and answers the calls capabilities.
-        assert tc.get("/calls/scorecard").status_code == 200
+        # Every pass, with posts stored or not, runs the desk's whole pipeline.
+        assert runs[0]["on_new"] == runs[0]["on_idle"]
+        assert runs[0]["on_idle"].__name__ == "process"
+        card = tc.get("/calls/scorecard")
+        assert card.status_code == 200
+        assert card.json()["poller"]["connected"] is True
     assert runs[0].get("ended") is True
-    assert reader.exited
+    assert reader.connected is False  # disconnected at shutdown
 
 
 def test_lifespan_skips_the_poller_when_disabled(clean_db: None, monkeypatch) -> None:
     from fastapi.testclient import TestClient
 
-    reader = LifespanReader()
+    reader = FakeReader([], connected=False)
     app_module, runs = lifespan_spies(monkeypatch, reader)
     with TestClient(app_module.create_app(boot_settings(calls_enabled=False))) as tc:
         assert tc.get("/health").status_code == 200
-    assert runs == [] and not reader.entered
+    assert runs == [] and reader.connects == 0
 
 
-def test_lifespan_boots_without_a_session_or_a_connection(clean_db: None, monkeypatch) -> None:
+def test_lifespan_without_a_session_answers_409(clean_db: None, monkeypatch) -> None:
     from fastapi.testclient import TestClient
 
-    for reader in (None, LifespanReader(fail_connect=True)):
-        app_module, runs = lifespan_spies(monkeypatch, reader)
-        with TestClient(app_module.create_app(boot_settings(calls_enabled=True))) as tc:
-            assert tc.get("/health").status_code == 200
-            assert tc.get("/calls/scorecard").status_code == 409
-        assert runs == []
+    app_module, runs = lifespan_spies(monkeypatch, None)
+    with TestClient(app_module.create_app(boot_settings(calls_enabled=True))) as tc:
+        assert tc.get("/health").status_code == 200
+        assert tc.get("/calls/scorecard").status_code == 409
+    assert runs == []
+
+
+def test_lifespan_with_telegram_down_reads_and_answers_503(clean_db: None, monkeypatch) -> None:
+    from fastapi.testclient import TestClient
+
+    reader = FakeReader([], connected=False, fail_connect=-1)
+    app_module, runs = lifespan_spies(monkeypatch, reader)
+    with TestClient(app_module.create_app(boot_settings(calls_enabled=True))) as tc:
+        assert tc.get("/health").status_code == 200  # boot does not wait for Telegram
+        wait_for(lambda: tc.get("/calls/scorecard").json()["poller"]["last_error"] is not None)
+        card = tc.get("/calls/scorecard")
+        assert card.status_code == 200
+        assert card.json()["poller"] == {
+            "connected": False,
+            "last_ok": None,
+            "last_error": "ConnectionError",
+        }
+        assert tc.get("/calls").status_code == 200
+        assert tc.get("/calls/posts").status_code == 200
+        for path in ("/calls/poll", "/calls/backfill"):
+            resp = tc.post(path)
+            assert resp.status_code == 503, (path, resp.text)
+            assert "not connected" in resp.json()["detail"]
+    assert runs and runs[0].get("ended") is True
