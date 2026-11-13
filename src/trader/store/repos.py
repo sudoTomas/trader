@@ -929,6 +929,17 @@ class CallParsesRepo:
             (channel_id, call_msg_id),
         )
 
+    async def unlinked_updates(self, channel_id: int) -> list[Row]:
+        """Updates with no ``links_to``, with their post's ``posted_at`` and ``reply_to``,
+        oldest first."""
+        return await self._db.fetch_all(
+            "SELECT c.*, p.posted_at, p.reply_to FROM call_parses c"
+            " JOIN channel_posts p USING (channel_id, msg_id, version)"
+            " WHERE c.channel_id = %s AND c.kind = 'update' AND c.links_to IS NULL"
+            " ORDER BY p.posted_at, c.msg_id",
+            (channel_id,),
+        )
+
     async def get(self, channel_id: int, msg_id: int) -> Row | None:
         return await self._db.fetch_one(
             "SELECT * FROM call_parses WHERE channel_id = %s AND msg_id = %s",
