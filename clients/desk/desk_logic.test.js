@@ -340,7 +340,7 @@ const LONG = { coin: 'ETH', side: 'long', entry: 3200, tps: [3300, 3400, 3550], 
 
 test('callRow: the levels, a dash for a missing stop, and untradeable rows marked', () => {
   const won = callRow(call(LONG, { status: 'closed', tradeable: true, result: { net_return: 0.1, reason: null } }));
-  assert.deepEqual(won, { coin: 'ETH', side: 'long', posted: '2026-11-10T14:03:00+00:00', entry: '3,200', tps: '3,300 / 3,400 / 3,550', stop: '3,100', status: 'closed', net: '+10.0%', tradeable: true });
+  assert.deepEqual(won, { coin: 'ETH', side: 'long', posted: '2026-11-10T14:03:00+00:00', entry: '3,200', tps: '3,300 / 3,400 / 3,550', stop: '3,100', status: 'closed', net: '+10.0%', netTitle: null, tradeable: true });
   const noStop = callRow(call({ ...LONG, coin: 'PENGU', entry: null, tps: [], stop: null, no_stop: true }, { status: 'unscorable', tradeable: false, result: { net_return: 0, reason: 'bars unavailable: no bars for PENGU/USD' } }));
   assert.equal(noStop.stop, '—');
   assert.equal(noStop.entry, 'market');
@@ -350,6 +350,11 @@ test('callRow: the levels, a dash for a missing stop, and untradeable rows marke
   const short = callRow(call({ ...LONG, side: 'short' }, { status: 'closed', tradeable: false, result: { net_return: -0.034 } }));
   assert.equal(short.tradeable, false);
   assert.equal(short.net, '-3.4%');
+  // An open call's net is marked to the last bar, not realised.
+  const open = callRow(call(LONG, { status: 'open', tradeable: true, result: { net_return: 0.05 } }));
+  assert.equal(open.net, '+5.0% mark');
+  assert.match(open.netTitle, /mark/i);
+  assert.equal(won.netTitle, null);
   const fresh = callRow(call(LONG, null));
   assert.equal(fresh.status, 'unscored');
   assert.equal(fresh.tradeable, null);

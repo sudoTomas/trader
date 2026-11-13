@@ -16,6 +16,7 @@ the next poll retries the same posts. Logs carry counts and ids, never post text
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Literal
 
 import structlog
@@ -136,9 +137,19 @@ def _require_everywhere(schema: dict[str, Any]) -> dict[str, Any]:
 PARSE_SCHEMA: dict[str, Any] = _require_everywhere(ParsedPost.model_json_schema())
 
 
+#: Quote currencies a ticker may carry glued on (``DOGEUSDT``); longest first.
+QUOTES = ("USDT", "USDC", "USD")
+#: The post's delimiter in any case, with any spacing inside the tag (``</POST >``).
+_POST_TAG = re.compile(r"<\s*/?\s*post\s*>", re.IGNORECASE)
+
+
 def ticker(coin: str) -> str:
-    """``#doge/usdt`` -> ``DOGE``."""
-    return coin.strip().lstrip("#").split("/")[0].strip().upper()
+    """``#doge/usdt`` or ``DOGEUSDT`` -> ``DOGE``; a bare ``USDT`` stays ``USDT``."""
+    base = coin.strip().lstrip("#").split("/")[0].strip().upper()
+    for quote in QUOTES:
+        if base.endswith(quote) and len(base) > len(quote):
+            return base[: -len(quote)]
+    return base
 
 
 def validate_levels(levels: CallLevels) -> tuple[CallLevels, list[str]]:
@@ -166,7 +177,7 @@ def validate_levels(levels: CallLevels) -> tuple[CallLevels, list[str]]:
 
 def user_message(text: str, *, backfilled: bool) -> str:
     # The post cannot close its own delimiter.
-    body = text.replace("<post>", "").replace("</post>", "")
+    body = _POST_TAG.sub("", text)
     post = f"<post>\n{body}\n</post>"
     return f"{LEVELS_ONLY_NOTE}\n\n{post}" if backfilled else post
 

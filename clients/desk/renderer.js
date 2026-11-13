@@ -681,7 +681,10 @@ function renderCalls() {
             el('span', { className: CALL_PILL[row.status] || 'pill', textContent: row.status }),
             row.tradeable === false ? el('span', { className: 'pill', title: 'Not counted in the gate: a short, or no Alpaca bars', textContent: 'untradeable' }) : null);
         } },
-        { h: 'Net', get: (c) => callRow(c).net, r: true },
+        { h: 'Net', get: (c) => {
+          const row = callRow(c);
+          return row.netTitle ? el('span', { title: row.netTitle, textContent: row.net }) : row.net;
+        }, r: true },
       ], store.calls, { key: (c) => `call${c.msg_id}`, detail: callDetail }) || empty('No calls yet', 'Calls land here once the poller has read and parsed the channel.')),
   );
 }

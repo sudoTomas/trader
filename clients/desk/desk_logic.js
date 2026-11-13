@@ -245,13 +245,15 @@ function scorecardTiles(sc) {
 }
 
 // One row of the calls table. Prices keep up to 6 significant digits (crypto runs from
-// 0.00001 to 100,000); a missing level is a dash, a call with no entry is at market.
+// 0.00001 to 100,000); a missing level is a dash, a call with no entry is at market. An
+// open call's net is marked to the last bar's close ("mark"), not realised.
 const level = (v) => (finite(v) ? Number(v).toLocaleString('en-US', { maximumSignificantDigits: 6 }) : '—');
 
 function callRow(c) {
   const l = c?.levels || {};
   const score = c?.score || null;
   const net = score && (score.status === 'closed' || score.status === 'open') ? score.result?.net_return : null;
+  const marked = score?.status === 'open' && finite(net);
   return {
     coin: l.coin || '?',
     side: l.side || '—',
@@ -260,7 +262,8 @@ function callRow(c) {
     tps: (l.tps || []).filter(finite).map(level).join(' / ') || '—',
     stop: level(l.stop),
     status: score ? score.status : 'unscored',
-    net: finite(net) ? netPct(net) : '—',
+    net: finite(net) ? `${netPct(net)}${marked ? ' mark' : ''}` : '—',
+    netTitle: marked ? 'Still open: marked to the last bar close, not realised' : null,
     tradeable: score ? score.tradeable === true : null,
   };
 }
