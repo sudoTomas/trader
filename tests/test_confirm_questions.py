@@ -36,7 +36,7 @@ from trader.loop.sources import (
 
 
 def test_constants_are_the_agreed_values():
-    assert QUESTIONS_VERSION == "2026-11-12.2"
+    assert QUESTIONS_VERSION == "2026-11-13.1"
     assert (GROUNDED_MIN, NEWS_AGAINST_MAX, CATALYST_MIN, CONTESTED_NEWS_MIN) == (
         0.25,
         0.80,
@@ -273,3 +273,13 @@ def test_grounded_checks_the_rationale_against_context_too():
     text = json.dumps(GROUNDED)
     assert "`context`" in text
     assert "`context`" not in json.dumps(NEWS_AGAINST)
+
+
+def test_analyst_desk_reads_are_context_the_rationale_may_cite():
+    # Live, the desk's analyst reads are in the decide prompt and rationales cite them
+    # ("technical bullish 0.75"). Without them in the state, Jev called such opens
+    # ungrounded and the veto blocked a third of Bot #1's opens on 2026-11-13.
+    reads = ["technical: bullish 0.75 — price above EMA12", "research: bullish 0.70 — AI margins"]
+    state = build_state(make_context(analysts=reads), make_draft(), None)
+    assert state["context"] == {"analyst_desk": reads}
+    assert "research" not in state
