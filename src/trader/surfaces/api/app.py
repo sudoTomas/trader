@@ -10,14 +10,17 @@ research-capture tools; the capture key's only MCP door — #8).
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager, suppress
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from typing import Any
 
+import structlog
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field
 
+from trader.calls.poller import ChannelPoller
+from trader.calls.reader import reader_from_store
 from trader.llm.caps import CapError
 from trader.llm.profiles import ProfileError, ProfileNotFound
 from trader.llm.providers import ProviderError, ProviderNotFound
@@ -36,6 +39,8 @@ from trader.store.migrate import run_migrations
 from trader.surfaces.api.middleware import ApiKeyMiddleware
 from trader.surfaces.mcp.server import CAPTURE_CAPABILITIES, build_mcp
 from trader.surfaces.services import VERSION, build_registry
+
+log = structlog.get_logger(__name__)
 
 
 class ResearchNoteIn(BaseModel):
@@ -244,9 +249,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     settler.run_forever(settings.settlement_interval_seconds, settling),
                     name="trader-settlement",
                 )
+            calls_stopping = asyncio.Event()
+            calls_task = None
+            calls_stack = AsyncExitStack()  # holds the Telegram connection for the poller
+            if settings.calls_enabled:
+                calls_task = await _start_calls_poller(db, settings, calls_stack, calls_stopping)
             try:
                 yield
             finally:
+                if calls_task is not None:
+                    calls_stopping.set()
+                    calls_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await calls_task
+                try:
+                    await calls_stack.aclose()
+                except Exception as exc:  # noqa: BLE001 - a failed disconnect must not block shutdown
+                    log.warning("calls_disconnect_failed", error=type(exc).__name__)
                 if settle_task is not None:
                     settling.set()
                     settle_task.cancel()
@@ -861,6 +880,29 @@ def build_settler(db: Database, settings: Settings, *, llm=None, xai_manager=Non
         symbols=settings.symbol_registry(),
         reflector=Reflector(llm or build_llm(db, settings, xai_manager=xai_manager)),
         max_reflections=settings.reflect_max_per_pass,
+    )
+
+
+async def _start_calls_poller(
+    db: Database, settings: Settings, stack: AsyncExitStack, stopping: asyncio.Event
+) -> asyncio.Task | None:
+    """Connect the stored Telegram session into ``stack`` and start the calls poller.
+    None, with a warning, when there is no session or it does not connect: the app still
+    boots. Logs carry the error type only, never the session or a post."""
+    try:
+        reader = await reader_from_store(db, settings)
+        if reader is None:
+            log.warning("calls_poller_not_started", reason="no stored Telegram session")
+            return None
+        await stack.enter_async_context(reader)
+    except Exception as exc:  # noqa: BLE001 - a dead Telegram login must not refuse boot
+        log.warning("calls_poller_not_started", error=type(exc).__name__)
+        return None
+    poller = ChannelPoller(
+        db, reader, channel_id=settings.calls_channel_id, recheck=settings.calls_recheck_posts
+    )
+    return asyncio.create_task(
+        poller.run_forever(settings.calls_poll_seconds, stopping), name="trader-calls-poller"
     )
 
 
