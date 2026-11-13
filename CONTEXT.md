@@ -123,3 +123,17 @@ _Avoid_: memory, reflection, note (a note is research)
 **Scorecard**:
 How each desk seat (the decide model, each analyst lane, the critic) has done on settled decisions: its hit rate on the excess return, its slugging (average win over average loss), and the rank correlation of its conviction with the forward return.
 _Avoid_: leaderboard, performance report
+
+### Telegram calls
+
+**Channel call**:
+A trade a signals channel posts: the coin, the side, the entry, up to three take-profits and the stop (or none), with the allocation and leverage when it gives them. Parsed once from the post as first seen; a backfilled post is parsed for its levels only.
+_Avoid_: signal (a signal is a Shadow signal), alert, tip
+
+**Call update**:
+A later post that changes a channel call: a take-profit hit, partial profit taken, the stop moved or moved to break-even, the trade closed. It is linked to its call through the reply chain, else to the newest call on the same coin.
+_Avoid_: follow-up, result
+
+**Call scorecard**:
+Every channel call simulated against 15-minute bars as the Bot would trade it (entry at the next bar's open, a third off at each take-profit, the stop to break-even after the first, after costs), with the gate it reports: the backfill plus 28 live days, positive sleeve-weighted net P&L, and half the tradeable calls reaching their first take-profit before the stop. A report: nothing trades on it.
+_Avoid_: scorecard alone (the Scorecard grades desk seats), backtest

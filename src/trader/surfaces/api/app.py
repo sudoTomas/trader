@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field
 
+from trader.calls.desk import CallsDesk, CallsOff
 from trader.calls.poller import ChannelPoller
 from trader.calls.reader import reader_from_store
 from trader.llm.caps import CapError
@@ -200,6 +201,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     evaluator = build_evaluator(db, settings, desk, llm=llm)
     xai_http = build_xai_http(settings, xai_manager=xai_manager)
     settler = build_settler(db, settings, llm=llm)
+    # The CallsDesk needs the stored Telegram session, so it exists only once the lifespan
+    # has connected it; until then (or with calls off) the calls capabilities answer 409.
+    calls_slot: dict[str, CallsDesk | None] = {"desk": None}
     registry = build_registry(
         db,
         supervisor,
@@ -216,6 +220,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         openbb=build_openbb(db, settings),
         vendors=vendors,
         settler=settler,
+        calls=lambda: calls_slot["desk"],
     )
     mcp = build_mcp(registry)
     capture_mcp = build_mcp(registry, only=CAPTURE_CAPABILITIES, name="trader-capture")
@@ -253,10 +258,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             calls_task = None
             calls_stack = AsyncExitStack()  # holds the Telegram connection for the poller
             if settings.calls_enabled:
-                calls_task = await _start_calls_poller(db, settings, calls_stack, calls_stopping)
+                started = await _start_calls(db, settings, llm, calls_stack, calls_stopping)
+                if started is not None:
+                    calls_slot["desk"], calls_task = started
             try:
                 yield
             finally:
+                calls_slot["desk"] = None
                 if calls_task is not None:
                     calls_stopping.set()
                     calls_task.cancel()
@@ -389,6 +397,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         days: int = Query(default=14, ge=1, le=60), bot: str | None = Query(default=None)
     ) -> dict:
         return await registry.get("signal_scores").handler(days=days, bot=bot)
+
+    @app.exception_handler(CallsOff)
+    async def calls_off(_: Request, exc: CallsOff) -> JSONResponse:
+        return JSONResponse({"detail": str(exc)}, status_code=409)
+
+    @app.get("/calls")
+    async def channel_calls(limit: int = Query(default=100, ge=1, le=500)) -> list[dict]:
+        return await registry.get("channel_calls").handler(limit=limit)
+
+    @app.get("/calls/posts")
+    async def channel_posts(limit: int = Query(default=50, ge=1, le=200)) -> list[dict]:
+        return await registry.get("channel_posts").handler(limit=limit)
+
+    @app.get("/calls/scorecard")
+    async def call_scorecard() -> dict:
+        return await registry.get("call_scorecard").handler()
+
+    @app.post("/calls/poll")
+    async def calls_poll() -> dict:
+        return await registry.get("calls_poll").handler()
+
+    @app.post("/calls/backfill")
+    async def calls_backfill() -> dict:
+        return await registry.get("calls_backfill").handler()
 
     @app.get("/decisions/{decision_id}")
     async def decision(decision_id: int) -> dict | None:
@@ -883,12 +915,15 @@ def build_settler(db: Database, settings: Settings, *, llm=None, xai_manager=Non
     )
 
 
-async def _start_calls_poller(
-    db: Database, settings: Settings, stack: AsyncExitStack, stopping: asyncio.Event
-) -> asyncio.Task | None:
-    """Connect the stored Telegram session into ``stack`` and start the calls poller.
+async def _start_calls(
+    db: Database, settings: Settings, llm, stack: AsyncExitStack, stopping: asyncio.Event
+) -> tuple[CallsDesk, asyncio.Task] | None:
+    """Connect the stored Telegram session into ``stack``, build the CallsDesk over ONE
+    poller (the background task and the manual commands share its lock) and start it.
     None, with a warning, when there is no session or it does not connect: the app still
     boots. Logs carry the error type only, never the session or a post."""
+    from trader.data.composite import build_market_data
+
     try:
         reader = await reader_from_store(db, settings)
         if reader is None:
@@ -898,12 +933,29 @@ async def _start_calls_poller(
     except Exception as exc:  # noqa: BLE001 - a dead Telegram login must not refuse boot
         log.warning("calls_poller_not_started", error=type(exc).__name__)
         return None
+    try:
+        market = build_market_data(settings)
+    except ValueError:  # no Alpaca keys: posts are still stored and parsed, not scored
+        log.warning("calls_scoring_off", reason="no market data credentials")
+        market = None
+    desk: CallsDesk | None = None
+
+    async def on_new() -> None:
+        assert desk is not None
+        await desk.process()
+
     poller = ChannelPoller(
-        db, reader, channel_id=settings.calls_channel_id, recheck=settings.calls_recheck_posts
+        db,
+        reader,
+        channel_id=settings.calls_channel_id,
+        recheck=settings.calls_recheck_posts,
+        on_new=on_new,
     )
-    return asyncio.create_task(
+    desk = CallsDesk(db, settings, market, llm, poller)
+    task = asyncio.create_task(
         poller.run_forever(settings.calls_poll_seconds, stopping), name="trader-calls-poller"
     )
+    return desk, task
 
 
 def build_providers(db: Database, settings: Settings):

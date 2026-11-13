@@ -214,7 +214,13 @@ def lifespan_spies(monkeypatch, reader):
 
     class SpyPoller(ChannelPoller):
         async def run_forever(self, interval_seconds: float, stopping: asyncio.Event) -> None:
-            runs.append({"interval": interval_seconds, "task": asyncio.current_task().get_name()})
+            runs.append(
+                {
+                    "interval": interval_seconds,
+                    "task": asyncio.current_task().get_name(),
+                    "on_new": self._on_new,
+                }
+            )
             try:
                 await stopping.wait()
             finally:  # shutdown sets ``stopping`` and cancels, as for settlement
@@ -239,6 +245,9 @@ def test_lifespan_runs_the_poller_while_connected(clean_db: None, monkeypatch) -
         assert reader.entered and not reader.exited
         assert runs and runs[0]["interval"] == 7.0
         assert runs[0]["task"] == "trader-calls-poller"
+        assert runs[0]["on_new"] is not None  # the desk's process() after a stored pass
+        # The CallsDesk shares that poller and answers the calls capabilities.
+        assert tc.get("/calls/scorecard").status_code == 200
     assert runs[0].get("ended") is True
     assert reader.exited
 
@@ -260,4 +269,5 @@ def test_lifespan_boots_without_a_session_or_a_connection(clean_db: None, monkey
         app_module, runs = lifespan_spies(monkeypatch, reader)
         with TestClient(app_module.create_app(boot_settings(calls_enabled=True))) as tc:
             assert tc.get("/health").status_code == 200
+            assert tc.get("/calls/scorecard").status_code == 409
         assert runs == []

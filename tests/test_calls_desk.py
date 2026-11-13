@@ -1,0 +1,270 @@
+"""CallsDesk: poll -> parse -> link -> score, and the scorecard. Real Postgres through the
+``db`` fixture; Telegram, the LLM and the bars are fakes."""
+
+from __future__ import annotations
+
+import json
+from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
+
+from trader.calls.desk import CallsDesk
+from trader.calls.poller import ChannelPoller
+from trader.calls.reader import RawPost
+from trader.core.types import Bar
+from trader.llm.base import Completion, Usage
+from trader.ops.config import Settings
+from trader.store.repos import CallParsesRepo, CallScoresRepo, ChannelPostsRepo
+
+CHANNEL = -1003097376178
+T0 = datetime(2026, 11, 1, 12, 0, tzinfo=UTC)
+
+
+def settings(**kwargs) -> Settings:
+    return Settings(_env_file=None, auth_disabled=True, calls_channel_id=CHANNEL, **kwargs)
+
+
+def raw(msg_id: int, text: str, *, at: datetime, reply_to: int | None = None) -> RawPost:
+    return RawPost(
+        msg_id=msg_id, posted_at=at, edited_at=None, reply_to=reply_to, text=text, media=None
+    )
+
+
+def call_reply(coin: str, *, side: str = "long", allocation=None, leverage=None) -> str:
+    return json.dumps(
+        {
+            "kind": "call",
+            "call": {
+                "coin": coin,
+                "side": side,
+                "entry": 100.0,
+                "tps": [110.0, 120.0, 130.0] if side == "long" else [90.0, 80.0, 70.0],
+                "stop": None,
+                "no_stop": True,
+                "allocation_pct": allocation,
+                "leverage": leverage,
+            },
+            "update": None,
+            "flags": [],
+        }
+    )
+
+
+UPDATE_REPLY = json.dumps(
+    {
+        "kind": "update",
+        "call": None,
+        "update": {"coin": "DOGE", "event": "tp_hit", "tp_level": 1, "new_stop": None},
+        "flags": [],
+    }
+)
+
+
+class StubLLM:
+    def __init__(self, replies: list[str]) -> None:
+        self._replies = list(replies)
+
+    async def complete(self, role, messages, *, schema=None, max_tokens=1024, temperature=0.2):
+        return Completion(
+            text=self._replies.pop(0),
+            usage=Usage(prompt_tokens=1, completion_tokens=1),
+            cost_usd=0.0,
+            provider="stub",
+            model="stub",
+            profile_version=1,
+        )
+
+
+class FakeReader:
+    def __init__(self, posts: list[RawPost]) -> None:
+        self.posts = posts
+
+    async def newer(self, channel_id: int, min_id: int, limit: int = 200) -> list[RawPost]:
+        return [p for p in sorted(self.posts, key=lambda p: p.msg_id) if p.msg_id > min_id][:limit]
+
+    async def latest(self, channel_id: int, limit: int) -> list[RawPost]:
+        return sorted(self.posts, key=lambda p: -p.msg_id)[:limit]
+
+    async def history(self, channel_id: int) -> AsyncIterator[RawPost]:
+        for p in sorted(self.posts, key=lambda p: p.msg_id):
+            yield p
+
+
+class FakeMarket:
+    """15m bars from each window's start: open 100, high 111 (TP1), low 99, close 105.
+    ``fail`` maps a ticker to an exception to raise, or to [] for no bars."""
+
+    def __init__(self, fail: dict | None = None) -> None:
+        self.fail = fail or {}
+        self.asked: list[tuple[str, str, datetime, datetime]] = []
+
+    async def get_bars_between(self, symbol, interval, start, end) -> list[Bar]:
+        self.asked.append((symbol.ticker, interval, start, end))
+        if symbol.ticker in self.fail:
+            outcome = self.fail[symbol.ticker]
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+        first = start + timedelta(minutes=15)
+        return [
+            Bar(symbol.ticker, interval, first + timedelta(minutes=15 * i), 100, 111, 99, 105, 1)
+            for i in range(4)
+        ]
+
+
+def desk_for(db, llm, market, reader=None, **kw) -> CallsDesk:
+    s = settings(**kw)
+    poller = None
+    if reader is not None:
+        poller = ChannelPoller(db, reader, channel_id=CHANNEL, recheck=0)
+    return CallsDesk(db, s, market, llm, poller)
+
+
+async def seed_call(
+    db,
+    msg_id: int,
+    coin: str,
+    *,
+    at: datetime = T0,
+    backfilled: bool = True,
+    side: str = "long",
+    allocation=None,
+    leverage=None,
+) -> None:
+    await ChannelPostsRepo(db).upsert_version(
+        raw(msg_id, f"{coin} call", at=at), channel_id=CHANNEL, backfilled=backfilled
+    )
+    await CallParsesRepo(db).add(
+        channel_id=CHANNEL,
+        msg_id=msg_id,
+        version=1,
+        kind="call",
+        payload=json.loads(call_reply(coin, side=side, allocation=allocation, leverage=leverage)),
+        model=None,
+        profile_version=None,
+        cost_usd=None,
+        error=None,
+    )
+
+
+async def test_poll_runs_parse_link_and_score(db) -> None:
+    # The backfill has stored something (an empty post), so the poll stores live posts.
+    await ChannelPostsRepo(db).upsert_version(
+        raw(1, "", at=T0 - timedelta(days=1)), channel_id=CHANNEL, backfilled=True
+    )
+    reader = FakeReader(
+        [
+            raw(1, "", at=T0 - timedelta(days=1)),
+            raw(2, "DOGE long", at=T0),
+            raw(3, "DOGE TP1 HIT", at=T0 + timedelta(hours=2), reply_to=2),
+        ]
+    )
+    market = FakeMarket()
+    desk = desk_for(db, StubLLM([call_reply("DOGE"), UPDATE_REPLY]), market, reader)
+
+    out = await desk.poll()
+
+    assert out["poll"] == {"new": 2, "edited": 0}
+    assert out["linked"] == 1 and out["scored"] == 1
+    assert (await CallParsesRepo(db).get(CHANNEL, 3))["links_to"] == 2
+    scores = await CallScoresRepo(db).all(CHANNEL)
+    assert [(s["msg_id"], s["tradeable"]) for s in scores] == [(2, True)]
+    assert scores[0]["result"]["fills"][1]["reason"] == "tp1"
+    # 15m bars from 15 minutes before the post, for DOGE/USD.
+    ticker, interval, start, _ = market.asked[0]
+    assert (ticker, interval, start) == ("DOGE/USD", "15m", T0 - timedelta(minutes=15))
+    assert start.tzinfo is not None
+
+    calls = await desk.calls()
+    assert calls[0]["msg_id"] == 2
+    assert calls[0]["score"]["status"] in {"open", "closed"}
+    assert [u["msg_id"] for u in calls[0]["updates"]] == [3]
+    posts = await desk.posts()
+    assert [(p["msg_id"], p["kind"]) for p in posts] == [(3, "update"), (2, "call"), (1, "other")]
+
+
+async def test_unscorable_call_does_not_break_the_scorecard(db) -> None:
+    await seed_call(db, 1, "DOGE")
+    await seed_call(db, 2, "PENGU", at=T0 + timedelta(hours=1))
+    await seed_call(db, 3, "WLD", at=T0 + timedelta(hours=2))
+    market = FakeMarket(fail={"PENGU/USD": [], "WLD/USD": RuntimeError("no such asset")})
+    desk = desk_for(db, StubLLM([]), market)
+
+    assert await desk.score_pending() == 3
+    card = await desk.scorecard()
+
+    assert card["calls"] == 3
+    assert card["unscorable"] == 2
+    assert card["tradeable"] == 1
+    by_status = {s["msg_id"]: s for s in await CallScoresRepo(db).all(CHANNEL)}
+    assert by_status[2]["status"] == "unscorable" and not by_status[2]["tradeable"]
+    assert by_status[3]["result"]["reason"]
+    # Unscorable rows are not rescored on the next pass; open ones are.
+    market.asked.clear()
+    await desk.score_pending()
+    assert {t for t, *_ in market.asked} <= {"DOGE/USD"}
+
+
+async def test_a_fresh_call_waits_for_its_entry_bar(db) -> None:
+    await seed_call(db, 1, "DOGE", at=datetime.now(UTC) - timedelta(minutes=5), backfilled=False)
+    desk = desk_for(db, StubLLM([]), FakeMarket(fail={"DOGE/USD": []}))
+
+    assert await desk.score_pending() == 0
+    assert await CallScoresRepo(db).all(CHANNEL) == []
+
+
+async def test_scorecard_gate_needs_28_live_days_and_positive_pnl(db) -> None:
+    await seed_call(db, 1, "DOGE")
+    await seed_call(db, 2, "ETH", at=T0 + timedelta(hours=1))
+    desk = desk_for(db, StubLLM([]), FakeMarket())
+    await desk.score_pending()
+
+    card = await desk.scorecard()
+
+    assert card["live_days"] == 0
+    assert card["gate_pass"] is False
+    assert any("live days" in r for r in card["gate_reasons"])
+    assert set(card["by_coin"]) == {"DOGE", "ETH"}
+
+
+async def test_scorecard_gate_passes_with_backfill_live_weeks_and_tp1(db) -> None:
+    await seed_call(db, 1, "DOGE")
+    await seed_call(db, 2, "ETH", at=datetime.now(UTC) - timedelta(days=30), backfilled=False)
+    for msg_id in (1, 2):
+        await CallScoresRepo(db).put(
+            CHANNEL,
+            msg_id,
+            status="closed",
+            tradeable=True,
+            result={"status": "closed", "net_return": 0.05, "first_touch": "tp1"},
+        )
+    card = await desk_for(db, StubLLM([]), FakeMarket()).scorecard()
+
+    assert card["live_days"] == 30
+    assert card["tp1_before_stop"] == 2 and card["tp1_rate"] == 1.0
+    assert card["gate_pass"] is True, card["gate_reasons"]
+    assert card["gate_reasons"] == []
+
+
+async def test_sleeve_pnl_mirrors_allocation_times_leverage(db) -> None:
+    await seed_call(db, 1, "DOGE", allocation=0.5, leverage=7)
+    await seed_call(db, 2, "SOL", side="short", at=T0 + timedelta(hours=1))
+    await CallScoresRepo(db).put(
+        CHANNEL,
+        1,
+        status="closed",
+        tradeable=True,
+        result={"status": "closed", "net_return": 0.10, "first_touch": "tp1"},
+    )
+    await CallScoresRepo(db).put(
+        CHANNEL,
+        2,
+        status="closed",
+        tradeable=False,
+        result={"status": "closed", "net_return": -0.02, "first_touch": "stop"},
+    )
+
+    card = await desk_for(db, StubLLM([]), FakeMarket()).scorecard()
+
+    assert card["sleeve_pnl_usd"] == 35.0  # $10,000 x 0.5% x 7 x +10%
+    assert card["net_return_mean"] == 0.10
+    assert card["untradeable"] == {"calls": 1, "net_return_mean": -0.02}

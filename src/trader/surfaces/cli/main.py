@@ -708,6 +708,42 @@ def vendors_collect(
     typer.echo(json.dumps(_post("/research/vendors/collect", params=params), indent=2))
 
 
+calls_app = typer.Typer(
+    help="Telegram channel calls: the posts, the parsed calls and the call scorecard."
+)
+app.add_typer(calls_app, name="calls")
+
+
+@calls_app.command("posts")
+def calls_posts(limit: int = typer.Option(50, help="How many posts, newest first.")) -> None:
+    """Print the channel's latest posts with the kind each was parsed as."""
+    typer.echo(json.dumps(_get("/calls/posts", params={"limit": limit}), indent=2))
+
+
+@calls_app.command("list")
+def calls_list(limit: int = typer.Option(100, help="How many calls, newest first.")) -> None:
+    """Print the channel calls: levels, score and linked updates."""
+    typer.echo(json.dumps(_get("/calls", params={"limit": limit}), indent=2))
+
+
+@calls_app.command("scorecard")
+def calls_scorecard() -> None:
+    """Print the call scorecard and the gate (a report; nothing trades on it)."""
+    typer.echo(json.dumps(_get("/calls/scorecard"), indent=2))
+
+
+@calls_app.command("poll")
+def calls_poll() -> None:
+    """Poll the channel now, then parse, link and score."""
+    typer.echo(json.dumps(_post("/calls/poll"), indent=2))
+
+
+@calls_app.command("backfill")
+def calls_backfill() -> None:
+    """Store the channel's whole history, then parse, link and rescore every call."""
+    typer.echo(json.dumps(_post("/calls/backfill"), indent=2))
+
+
 fred_app = typer.Typer(help="FRED macro series (VIX etc.) — the prints the decide context sees.")
 app.add_typer(fred_app, name="fred")
 
