@@ -7,7 +7,7 @@ import json
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 
-from trader.calls.desk import CallsDesk
+from trader.calls.desk import PARSE_BATCH, CallsDesk
 from trader.calls.poller import ChannelPoller
 from trader.calls.reader import RawPost
 from trader.core.types import Bar
@@ -57,6 +57,9 @@ UPDATE_REPLY = json.dumps(
         "flags": [],
     }
 )
+
+
+OTHER_REPLY = json.dumps({"kind": "other", "call": None, "update": None, "flags": []})
 
 
 class StubLLM:
@@ -452,3 +455,18 @@ async def test_the_gate_fails_on_tp1_rate_alone(db) -> None:
     assert card["tp1_rate"] == 1 / 3
     assert card["gate_pass"] is False
     assert card["gate_reasons"] == ["1 of 3 resolved tradeable calls reached TP1 before the stop"]
+
+
+async def test_process_parses_past_one_batch(db) -> None:
+    n = PARSE_BATCH * 2 + 5
+    posts = ChannelPostsRepo(db)
+    for msg_id in range(1, n + 1):
+        await posts.upsert_version(
+            raw(msg_id, f"chatter {msg_id}", at=T0), channel_id=CHANNEL, backfilled=True
+        )
+    desk = desk_for(db, StubLLM([OTHER_REPLY] * n), FakeMarket())
+
+    out = await desk.process()
+
+    assert out["parsed"] == {"other": n}
+    assert await posts.unparsed(CHANNEL, 10) == []
