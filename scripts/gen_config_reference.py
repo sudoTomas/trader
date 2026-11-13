@@ -60,6 +60,11 @@ SECTION_NOTES = {
         "Notes, Macro View compilation, briefs, the decision desk and X sentiment. Every flag "
         "here is dark by default and earns its flip through replay, then a shadow window."
     ),
+    "Telegram calls": (
+        "The Telegram channel-calls scorecard (Phase 1): read one signals channel read-only, "
+        "parse each call once and score it against bars. It places no orders; the poller is "
+        "dark until `TRADER_CALLS_ENABLED` is flipped."
+    ),
     "LLM endpoints": (
         "Two roles, each any OpenAI-compatible `/v1`: **decide** (also the desk analysts) and "
         "**research** (briefs, compiler, critic, registry sentiment). With "

@@ -32,6 +32,9 @@ dependencies = [
     "ccxt>=4.5.92",
 ]
 
+[project.optional-dependencies]
+telegram = ["telethon>=1.40"]
+
 [project.scripts]
 trader = "trader.surfaces.cli.main:app"
 

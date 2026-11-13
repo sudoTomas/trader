@@ -6,11 +6,14 @@ signatures, dict rows out, no ORM. Each repo carries only what its first consume
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from psycopg.types.json import Jsonb
 
 from trader.store.db import Database
+
+if TYPE_CHECKING:
+    from trader.calls.reader import RawPost
 
 Row = dict[str, Any]
 
@@ -753,6 +756,206 @@ class VendorReadsRepo:
             "SELECT * FROM vendor_reads WHERE (%s::text IS NULL OR source = %s)"
             " AND (%s::text IS NULL OR symbol = %s) ORDER BY ts DESC, id DESC LIMIT %s",
             (source, source, symbol, symbol, limit),
+        )
+
+
+class ChannelSessionsRepo:
+    """The Telegram login for the calls reader. ``api_hash_enc`` and ``session_enc`` arrive
+    already Fernet-encrypted; this repo never sees plaintext."""
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def put(self, name: str, *, api_id: int, api_hash_enc: str, session_enc: str) -> None:
+        await self._db.execute(
+            "INSERT INTO channel_sessions (name, api_id, api_hash_enc, session_enc)"
+            " VALUES (%s, %s, %s, %s) ON CONFLICT (name) DO UPDATE SET"
+            " api_id = EXCLUDED.api_id, api_hash_enc = EXCLUDED.api_hash_enc,"
+            " session_enc = EXCLUDED.session_enc",
+            (name, api_id, api_hash_enc, session_enc),
+        )
+
+    async def get(self, name: str) -> Row | None:
+        return await self._db.fetch_one("SELECT * FROM channel_sessions WHERE name = %s", (name,))
+
+
+class ChannelPostsRepo:
+    """Channel posts as versions: an edit adds version n+1, nothing is overwritten."""
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def upsert_version(self, post: RawPost, *, channel_id: int, backfilled: bool) -> bool:
+        """Insert version n+1 when ``text`` or ``edited_at`` differs from the latest version
+        (version 1 when the post is new). True when it inserted. One statement, and a
+        concurrent duplicate loses on the primary key and inserts nothing."""
+        row = await self._db.fetch_one(
+            """
+            WITH latest AS (
+                SELECT version, text, edited_at FROM channel_posts
+                WHERE channel_id = %(channel_id)s AND msg_id = %(msg_id)s
+                ORDER BY version DESC LIMIT 1
+            )
+            INSERT INTO channel_posts (channel_id, msg_id, version, posted_at, edited_at,
+                                       reply_to, text, media, backfilled)
+            SELECT %(channel_id)s, %(msg_id)s, COALESCE((SELECT version FROM latest), 0) + 1,
+                   %(posted_at)s, %(edited_at)s, %(reply_to)s, %(text)s, %(media)s,
+                   %(backfilled)s
+            WHERE NOT EXISTS (
+                SELECT 1 FROM latest WHERE text = %(text)s::text
+                AND edited_at IS NOT DISTINCT FROM %(edited_at)s::timestamptz
+            )
+            ON CONFLICT (channel_id, msg_id, version) DO NOTHING
+            RETURNING version
+            """,
+            {
+                "channel_id": channel_id,
+                "msg_id": post.msg_id,
+                "posted_at": post.posted_at,
+                "edited_at": post.edited_at,
+                "reply_to": post.reply_to,
+                "text": post.text,
+                "media": post.media,
+                "backfilled": backfilled,
+            },
+        )
+        return row is not None
+
+    async def latest(self, channel_id: int, msg_id: int) -> Row | None:
+        return await self._db.fetch_one(
+            "SELECT * FROM channel_posts WHERE channel_id = %s AND msg_id = %s"
+            " ORDER BY version DESC LIMIT 1",
+            (channel_id, msg_id),
+        )
+
+    async def first(self, channel_id: int, msg_id: int) -> Row | None:
+        return await self._db.fetch_one(
+            "SELECT * FROM channel_posts WHERE channel_id = %s AND msg_id = %s"
+            " ORDER BY version LIMIT 1",
+            (channel_id, msg_id),
+        )
+
+    async def unparsed(self, channel_id: int, limit: int = 50) -> list[Row]:
+        """First versions with no ``call_parses`` row, oldest first."""
+        return await self._db.fetch_all(
+            "SELECT p.* FROM channel_posts p WHERE p.channel_id = %s AND p.version = 1"
+            " AND NOT EXISTS (SELECT 1 FROM call_parses c"
+            " WHERE c.channel_id = p.channel_id AND c.msg_id = p.msg_id)"
+            " ORDER BY p.msg_id LIMIT %s",
+            (channel_id, limit),
+        )
+
+    async def listing(
+        self, channel_id: int, *, limit: int = 50, before: int | None = None
+    ) -> list[Row]:
+        """The latest version of each post, newest first; ``before`` pages by ``msg_id``."""
+        return await self._db.fetch_all(
+            "SELECT * FROM (SELECT DISTINCT ON (msg_id) * FROM channel_posts"
+            " WHERE channel_id = %s AND (%s::bigint IS NULL OR msg_id < %s)"
+            " ORDER BY msg_id, version DESC) latest ORDER BY msg_id DESC LIMIT %s",
+            (channel_id, before, before, limit),
+        )
+
+    async def max_msg_id(self, channel_id: int) -> int:
+        """The newest stored ``msg_id``; 0 when the channel has none."""
+        row = await self._db.fetch_one(
+            "SELECT COALESCE(MAX(msg_id), 0) AS m FROM channel_posts WHERE channel_id = %s",
+            (channel_id,),
+        )
+        assert row is not None
+        return row["m"]
+
+
+class CallParsesRepo:
+    """One parse per post (the first one); a second ``add`` raises ``UniqueViolation``."""
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def add(
+        self,
+        *,
+        channel_id: int,
+        msg_id: int,
+        version: int,
+        kind: str,
+        payload: dict[str, Any],
+        model: str | None,
+        profile_version: int | None,
+        cost_usd: float | None,
+        error: str | None,
+    ) -> int:
+        row = await self._db.fetch_one(
+            "INSERT INTO call_parses (channel_id, msg_id, version, kind, payload, model,"
+            " profile_version, cost_usd, error) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+            " RETURNING id",
+            (
+                channel_id,
+                msg_id,
+                version,
+                kind,
+                Jsonb(payload),
+                model,
+                profile_version,
+                cost_usd,
+                error,
+            ),
+        )
+        assert row is not None
+        return row["id"]
+
+    async def set_link(self, channel_id: int, msg_id: int, links_to: int | None) -> None:
+        await self._db.execute(
+            "UPDATE call_parses SET links_to = %s WHERE channel_id = %s AND msg_id = %s",
+            (links_to, channel_id, msg_id),
+        )
+
+    async def calls(self, channel_id: int) -> list[Row]:
+        """Parsed calls with their post's ``posted_at`` and ``backfilled``, oldest first."""
+        return await self._db.fetch_all(
+            "SELECT c.*, p.posted_at, p.backfilled FROM call_parses c"
+            " JOIN channel_posts p USING (channel_id, msg_id, version)"
+            " WHERE c.channel_id = %s AND c.kind = 'call' ORDER BY p.posted_at, c.msg_id",
+            (channel_id,),
+        )
+
+    async def updates_for(self, channel_id: int, call_msg_id: int) -> list[Row]:
+        """Updates linked to a call, with their post's ``posted_at``, oldest first."""
+        return await self._db.fetch_all(
+            "SELECT c.*, p.posted_at FROM call_parses c"
+            " JOIN channel_posts p USING (channel_id, msg_id, version)"
+            " WHERE c.channel_id = %s AND c.kind = 'update' AND c.links_to = %s"
+            " ORDER BY p.posted_at, c.msg_id",
+            (channel_id, call_msg_id),
+        )
+
+    async def get(self, channel_id: int, msg_id: int) -> Row | None:
+        return await self._db.fetch_one(
+            "SELECT * FROM call_parses WHERE channel_id = %s AND msg_id = %s",
+            (channel_id, msg_id),
+        )
+
+
+class CallScoresRepo:
+    """The latest score per call: results, never bars."""
+
+    def __init__(self, db: Database) -> None:
+        self._db = db
+
+    async def put(
+        self, channel_id: int, msg_id: int, *, status: str, tradeable: bool, result: dict[str, Any]
+    ) -> None:
+        await self._db.execute(
+            "INSERT INTO call_scores (channel_id, msg_id, status, tradeable, result)"
+            " VALUES (%s, %s, %s, %s, %s) ON CONFLICT (channel_id, msg_id) DO UPDATE SET"
+            " status = EXCLUDED.status, tradeable = EXCLUDED.tradeable,"
+            " result = EXCLUDED.result, scored_at = now()",
+            (channel_id, msg_id, status, tradeable, Jsonb(result)),
+        )
+
+    async def all(self, channel_id: int) -> list[Row]:
+        return await self._db.fetch_all(
+            "SELECT * FROM call_scores WHERE channel_id = %s ORDER BY msg_id", (channel_id,)
         )
 
 
