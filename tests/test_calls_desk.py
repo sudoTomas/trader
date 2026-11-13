@@ -200,9 +200,18 @@ async def test_unscorable_call_does_not_break_the_scorecard(db) -> None:
     assert by_status[3]["result"]["reason"]
     # Rows unscorable for want of bars are rescored on the next pass; a closed one is not.
     assert by_status[1]["status"] == "closed"
+    assert by_status[2]["result"]["reason"] == "bars unavailable: no bars for PENGU/USD"
+    # Right away nothing is fetched again; an hour on, only the fetch that raised is
+    # retried. An empty fetch past the grace (an unlisted coin) waits for a backfill.
     market.asked.clear()
+    assert await desk.score_pending() == 0
+    assert market.asked == []
+    await age_scores(db, hours=2)
     await desk.score_pending()
-    assert {t for t, *_ in market.asked} == {"PENGU/USD", "WLD/USD"}
+    assert {t for t, *_ in market.asked} == {"WLD/USD"}
+    market.asked.clear()
+    await desk.process(rescore=True)
+    assert {t for t, *_ in market.asked} == {"DOGE/USD", "PENGU/USD", "WLD/USD"}
 
 
 async def test_a_call_unscorable_for_want_of_bars_is_rescored_when_they_arrive(db) -> None:
@@ -215,9 +224,62 @@ async def test_a_call_unscorable_for_want_of_bars_is_rescored_when_they_arrive(d
     assert row["result"]["reason"] == "bars unavailable: ConnectionError"
 
     market.fail.clear()  # the outage ends
+    assert await desk.score_pending() == 0  # retried at most hourly
+    await age_scores(db, hours=1, minutes=1)
     assert await desk.score_pending() == 1
     (row,) = await CallScoresRepo(db).all(CHANNEL)
     assert row["status"] == "closed" and row["tradeable"] is True
+
+
+async def age_scores(db, **delta) -> None:
+    """Move every stored score's ``scored_at`` back by ``timedelta(**delta)``."""
+    await db.execute("UPDATE call_scores SET scored_at = scored_at - %s", (timedelta(**delta),))
+
+
+def flat_bars(start: datetime, n: int = 4) -> list[Bar]:
+    """15m bars from ``start`` that touch neither a TP at 110 nor an 8% stop: open."""
+    return [
+        Bar("DOGE/USD", "15m", start + timedelta(minutes=15 * i), 100, 105, 99, 102, 1)
+        for i in range(n)
+    ]
+
+
+async def test_an_open_call_is_rescored_at_most_hourly(db) -> None:
+    await seed_call(db, 1, "DOGE")
+    market = FakeMarket(fail={"DOGE/USD": flat_bars(T0)})
+    desk = desk_for(db, StubLLM([]), market)
+    assert await desk.score_pending() == 1
+    (row,) = await CallScoresRepo(db).all(CHANNEL)
+    assert row["status"] == "open"
+
+    market.asked.clear()
+    assert await desk.score_pending() == 0
+    await age_scores(db, minutes=59)
+    assert await desk.score_pending() == 0
+    assert market.asked == []
+    await age_scores(db, minutes=2)
+    assert await desk.score_pending() == 1
+    assert len(market.asked) == 1
+
+
+async def test_no_bars_after_the_post_is_classed_as_no_bars(db) -> None:
+    # An old call whose bars all predate it: like an empty fetch, stable until a backfill.
+    await seed_call(db, 1, "DOGE")
+    market = FakeMarket(fail={"DOGE/USD": flat_bars(T0 - timedelta(minutes=15), n=1)})
+    desk = desk_for(db, StubLLM([]), market)
+    assert await desk.score_pending() == 1
+    (row,) = await CallScoresRepo(db).all(CHANNEL)
+    assert row["status"] == "unscorable"
+    assert row["result"]["reason"] == "bars unavailable: no bars after post for DOGE/USD"
+
+    await age_scores(db, hours=2)
+    market.asked.clear()
+    assert await desk.score_pending() == 0
+    assert market.asked == []
+    market.fail.clear()
+    assert (await desk.process(rescore=True))["scored"] == 1
+    (row,) = await CallScoresRepo(db).all(CHANNEL)
+    assert row["status"] == "closed"
 
 
 async def test_invalid_levels_are_stored_unscorable_not_retried(db) -> None:

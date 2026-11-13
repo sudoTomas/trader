@@ -2,7 +2,8 @@
 scorer, and the call scorecard every surface reads.
 
 ``process`` is the pipeline after posts are stored: parse what is pending, link the
-updates, score the calls that have no score yet or are still ``open``. The background
+updates, score the calls that have no score yet, and rescore (at most hourly) the open
+ones and those whose bars fetch failed. The background
 poller runs it after a pass that stored something; ``poll`` and ``backfill`` are the
 manual commands. Bars are fetched per call and never stored. Phase 1 places no orders:
 nothing here reaches the executor, the broker or RiskGuard.
@@ -12,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -34,8 +36,14 @@ BARS_LEAD = timedelta(minutes=15)
 #: A call younger than this with no entry bar yet is left unscored, not unscorable.
 ENTRY_GRACE = timedelta(hours=1)
 #: The reason prefix of a call unscorable because its bars fetch raised or came back
-#: empty; such rows are rescored on later passes (the bars may arrive, the outage end).
+#: empty. A fetch that raised (an outage) is retried every ``RESCORE_EVERY``.
 BARS_UNAVAILABLE = "bars unavailable"
+#: The reason prefix of an empty fetch past ``ENTRY_GRACE``, or of bars that all predate
+#: the post: the coin has no bars at Alpaca. Stable: only a backfill rescores it.
+NO_BARS = f"{BARS_UNAVAILABLE}: no bars"
+#: An open call, or one whose bars fetch raised, is rescored at most this often: bars
+#: come from the trading loop's Alpaca keys, and an open call moves slowly on 15m bars.
+RESCORE_EVERY = timedelta(hours=1)
 #: Posts parsed per ``parse_pending`` batch.
 PARSE_BATCH = 50
 #: The gate's live period, in days since the first live post.
@@ -113,9 +121,10 @@ class CallsDesk:
             log.warning("calls_score_skipped", reason="no market data in this build")
             return 0
         existing = {s["msg_id"]: s for s in await self._scores.all(self._channel_id)}
+        now = datetime.now(UTC)
         stored = 0
         for call in await self._parses.calls(self._channel_id):
-            if not rescore and not _due(existing.get(call["msg_id"])):
+            if not rescore and not _due(existing.get(call["msg_id"]), now):
                 continue
             try:
                 if await self._score_one(call):
@@ -168,7 +177,7 @@ class CallsDesk:
         if reason is None and not bars:
             if now - posted_at < ENTRY_GRACE:
                 return None  # the entry bar has not printed yet
-            reason = f"{BARS_UNAVAILABLE}: no bars for {levels.coin}/USD"
+            reason = f"{NO_BARS} for {levels.coin}/USD"
         if reason is not None:
             score = _unscorable(levels, reason)
         else:
@@ -185,8 +194,10 @@ class CallsDesk:
                 costs=costs_from_settings(self._settings),
                 asset_class=AssetClass.CRYPTO,
             )
-            if score.status == "unscorable" and now - posted_at < ENTRY_GRACE:
-                return None  # the entry bar has not printed yet
+            if score.status == "unscorable":  # every bar predates the post
+                if now - posted_at < ENTRY_GRACE:
+                    return None  # the entry bar has not printed yet
+                score = replace(score, reason=f"{NO_BARS} after post for {levels.coin}/USD")
         return score
 
     async def scorecard(self) -> dict[str, Any]:
@@ -338,12 +349,22 @@ class CallsDesk:
         return out
 
 
-def _due(score: Row | None) -> bool:
-    """Whether a call's stored score is due a rescore on a normal pass."""
-    if score is None or score["status"] == "open":
+def _due(score: Row | None, now: datetime) -> bool:
+    """Whether a call's stored score is due a rescore on a normal pass: never scored;
+    or, at most every ``RESCORE_EVERY``, open or unscorable because its bars fetch
+    raised. Closed, no bars (``NO_BARS``) and other unscorable rows wait for a backfill."""
+    if score is None:
+        return True
+    if now - score["scored_at"] < RESCORE_EVERY:
+        return False
+    if score["status"] == "open":
         return True
     reason = score["result"].get("reason") or ""
-    return score["status"] == "unscorable" and reason.startswith(BARS_UNAVAILABLE)
+    return (
+        score["status"] == "unscorable"
+        and reason.startswith(BARS_UNAVAILABLE)
+        and not reason.startswith(NO_BARS)
+    )
 
 
 def _mean(values: list[float]) -> float | None:
