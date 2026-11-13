@@ -104,3 +104,20 @@ def test_the_calls_desk_answers_through_registry_and_mcp(clean_db: None) -> None
     assert listed == [{"limit": 3}]
     assert not polled.is_error
     assert polled.structured_content == {"poll": {"new": 0, "edited": 0}}
+
+
+class DisconnectedDesk(FakeDesk):
+    async def poll(self) -> dict:
+        from trader.calls.desk import CallsDisconnected
+
+        raise CallsDisconnected()
+
+
+def test_mcp_gives_the_not_connected_reason(clean_db: None) -> None:
+    async def run() -> object:
+        registry = build_registry(None, calls=lambda: DisconnectedDesk())
+        async with Client(build_mcp(registry)) as mcp_client:
+            return await mcp_client.call_tool("calls_poll", {})
+
+    refused = asyncio.run(run())
+    assert refused.is_error and "Telegram is not connected yet" in str(refused.content)
