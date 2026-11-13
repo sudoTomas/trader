@@ -98,6 +98,10 @@ Named JSON fields, not the decide prompt string:
   (`news_against` never reads them), but `grounded` checks the rationale against them too.
   Without them, the first replay pilot vetoed an NVDA open as `ungrounded` (p = 0.09) only
   because its rationale cited the Macro View, which the decide prompt shows and Jev did not.
+  Amended again 2026-11-13 (questions version `2026-11-13.1`): `context.analyst_desk`, the
+  analyst desk's reads as the decide prompt renders them. Live, rationales cite them
+  ("technical bullish 0.75"); without them Jev called 9 of Bot #1's first 25 veto-on opens
+  ungrounded. Replays do not run the desk, so the two-week check could not see this.
 
 Apply the human test: a smart person shown only this state and one question could answer it
 quickly. Drop any field no question needs.
