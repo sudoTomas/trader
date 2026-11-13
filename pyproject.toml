@@ -33,7 +33,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-telegram = ["telethon>=1.40"]
+telegram = ["telethon>=1.40", "qrcode>=8"]
 
 [project.scripts]
 trader = "trader.surfaces.cli.main:app"

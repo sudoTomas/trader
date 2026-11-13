@@ -836,6 +836,99 @@ def xai_probe_cmd(
     typer.echo(f"summary: {json.dumps(out['summary'])}")
 
 
+telegram_app = typer.Typer(
+    help="Telegram login for the read-only calls reader (local, not via the API)."
+)
+app.add_typer(telegram_app, name="telegram")
+
+
+@telegram_app.command("login")
+def telegram_login(
+    name: Annotated[
+        str | None, typer.Option(help="Session name. Default: TRADER_CALLS_SESSION_NAME.")
+    ] = None,
+) -> None:
+    """QR login: scan the code with Telegram on a phone (Settings > Devices > Link
+    Desktop Device). Stores api_id, plus api_hash and the session sealed with
+    TRADER_SECRETS_KEY. Read-only use: the reader never posts or marks anything read."""
+    import asyncio
+    from getpass import getpass
+
+    from trader.calls.reader import qr_login, seal
+    from trader.store.db import Database
+    from trader.store.repos import ChannelSessionsRepo
+
+    settings = get_settings()
+    if not settings.secrets_key:
+        typer.echo("TRADER_SECRETS_KEY is unset; the session cannot be stored.", err=True)
+        raise typer.Exit(1)
+    try:
+        import qrcode
+    except ImportError as exc:
+        typer.echo("install the telegram extra: uv sync --extra telegram", err=True)
+        raise typer.Exit(1) from exc
+    name = name or settings.calls_session_name
+    api_id = typer.prompt("api_id (my.telegram.org)", type=int)
+    api_hash = typer.prompt("api_hash", hide_input=True)
+
+    def show_qr(url: str) -> None:
+        qr = qrcode.QRCode(border=1)
+        qr.add_data(url)
+        qr.print_ascii(invert=True)
+        typer.echo("Scan with Telegram on your phone (the code renews every 60s).")
+
+    async def run() -> str | None:
+        session, first_name = await qr_login(
+            api_id, api_hash, show_qr=show_qr, password=lambda: getpass("2FA password: ")
+        )
+        db = Database(min_size=1, max_size=1)
+        await db.open()
+        try:
+            await ChannelSessionsRepo(db).put(
+                name,
+                api_id=api_id,
+                api_hash_enc=seal(settings.secrets_key, api_hash),
+                session_enc=seal(settings.secrets_key, session),
+            )
+        finally:
+            await db.close()
+        return first_name
+
+    first_name = asyncio.run(run())
+    typer.echo(f"logged in as {first_name or '?'}; session {name!r} stored encrypted")
+
+
+@telegram_app.command("status")
+def telegram_status() -> None:
+    """Whether the configured session is stored, and its account's first name."""
+    import asyncio
+
+    from trader.calls.reader import reader_from_store
+    from trader.store.db import Database
+
+    settings = get_settings()
+
+    async def run() -> dict[str, object]:
+        out: dict[str, object] = {"name": settings.calls_session_name}
+        db = Database(min_size=1, max_size=1)
+        await db.open()
+        try:
+            reader = await reader_from_store(db, settings)
+        finally:
+            await db.close()
+        if reader is None:
+            out["session"] = False
+            if not settings.secrets_key:
+                out["reason"] = "TRADER_SECRETS_KEY unset"
+            return out
+        out["session"] = True
+        async with reader:
+            out["first_name"] = await reader.first_name()
+        return out
+
+    typer.echo(json.dumps(asyncio.run(run()), indent=2))
+
+
 screener_app = typer.Typer(
     help="Screener — rank a static universe into a bounded shortlist (query only)."
 )
