@@ -10,14 +10,17 @@ research-capture tools; the capture key's only MCP door — #8).
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager, suppress
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from typing import Any
 
+import structlog
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field
 
+from trader.calls.desk import CallsDesk, CallsDisconnected, CallsOff
+from trader.calls.reader import reader_from_store
 from trader.llm.caps import CapError
 from trader.llm.profiles import ProfileError, ProfileNotFound
 from trader.llm.providers import ProviderError, ProviderNotFound
@@ -36,6 +39,8 @@ from trader.store.migrate import run_migrations
 from trader.surfaces.api.middleware import ApiKeyMiddleware
 from trader.surfaces.mcp.server import CAPTURE_CAPABILITIES, build_mcp
 from trader.surfaces.services import VERSION, build_registry
+
+log = structlog.get_logger(__name__)
 
 
 class ResearchNoteIn(BaseModel):
@@ -195,6 +200,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     evaluator = build_evaluator(db, settings, desk, llm=llm)
     xai_http = build_xai_http(settings, xai_manager=xai_manager)
     settler = build_settler(db, settings, llm=llm)
+    # The CallsDesk needs the stored Telegram session, so it exists only once the lifespan
+    # has read it; until then (or with calls off) the calls capabilities answer 409. While
+    # Telegram is not connected, reads answer and poll/backfill answer 503.
+    calls_slot: dict[str, CallsDesk | None] = {"desk": None}
     registry = build_registry(
         db,
         supervisor,
@@ -211,6 +220,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         openbb=build_openbb(db, settings),
         vendors=vendors,
         settler=settler,
+        calls=lambda: calls_slot["desk"],
     )
     mcp = build_mcp(registry)
     capture_mcp = build_mcp(registry, only=CAPTURE_CAPABILITIES, name="trader-capture")
@@ -244,9 +254,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     settler.run_forever(settings.settlement_interval_seconds, settling),
                     name="trader-settlement",
                 )
+            calls_stopping = asyncio.Event()
+            calls_task = None
+            calls_stack = AsyncExitStack()  # disconnects the poller's Telegram reader
+            if settings.calls_enabled:
+                started = await _start_calls(db, settings, llm, calls_stack, calls_stopping)
+                if started is not None:
+                    calls_slot["desk"], calls_task = started
             try:
                 yield
             finally:
+                calls_desk, calls_slot["desk"] = calls_slot["desk"], None
+                if calls_task is not None:
+                    calls_stopping.set()
+                    calls_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await calls_task
+                if calls_desk is not None:
+                    await calls_desk.aclose()  # a backfill's background processing
+                try:
+                    await calls_stack.aclose()
+                except Exception as exc:  # noqa: BLE001 - a failed disconnect must not block shutdown
+                    log.warning("calls_disconnect_failed", error=type(exc).__name__)
                 if settle_task is not None:
                     settling.set()
                     settle_task.cancel()
@@ -370,6 +399,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         days: int = Query(default=14, ge=1, le=60), bot: str | None = Query(default=None)
     ) -> dict:
         return await registry.get("signal_scores").handler(days=days, bot=bot)
+
+    @app.exception_handler(CallsOff)
+    async def calls_off(_: Request, exc: CallsOff) -> JSONResponse:
+        return JSONResponse({"detail": str(exc)}, status_code=409)
+
+    @app.exception_handler(CallsDisconnected)
+    async def calls_disconnected(_: Request, exc: CallsDisconnected) -> JSONResponse:
+        return JSONResponse({"detail": str(exc)}, status_code=503)
+
+    @app.get("/calls")
+    async def channel_calls(limit: int = Query(default=100, ge=1, le=500)) -> list[dict]:
+        return await registry.get("channel_calls").handler(limit=limit)
+
+    @app.get("/calls/posts")
+    async def channel_posts(limit: int = Query(default=50, ge=1, le=200)) -> list[dict]:
+        return await registry.get("channel_posts").handler(limit=limit)
+
+    @app.get("/calls/scorecard")
+    async def call_scorecard() -> dict:
+        return await registry.get("call_scorecard").handler()
+
+    @app.post("/calls/poll")
+    async def calls_poll() -> dict:
+        return await registry.get("calls_poll").handler()
+
+    @app.post("/calls/backfill")
+    async def calls_backfill() -> dict:
+        return await registry.get("calls_backfill").handler()
 
     @app.get("/decisions/{decision_id}")
     async def decision(decision_id: int) -> dict | None:
@@ -862,6 +919,36 @@ def build_settler(db: Database, settings: Settings, *, llm=None, xai_manager=Non
         reflector=Reflector(llm or build_llm(db, settings, xai_manager=xai_manager)),
         max_reflections=settings.reflect_max_per_pass,
     )
+
+
+async def _start_calls(
+    db: Database, settings: Settings, llm, stack: AsyncExitStack, stopping: asyncio.Event
+) -> tuple[CallsDesk, asyncio.Task] | None:
+    """Build the CallsDesk over the stored Telegram session and start its poller. The
+    poller connects in the background (with backoff, and again after a drop), so boot
+    never waits on Telegram and the stored data answers while it is down. None, with a
+    warning, when no session is stored or it cannot be unsealed: the calls capabilities
+    then answer 409. ``stack`` disconnects the reader at shutdown. Logs carry the error
+    type only, never the session or a post."""
+    from trader.data.composite import build_market_data
+
+    try:
+        reader = await reader_from_store(db, settings)
+    except Exception as exc:  # noqa: BLE001 - an unsealable login must not refuse boot
+        log.warning("calls_poller_not_started", error=type(exc).__name__)
+        return None
+    if reader is None:
+        log.warning("calls_poller_not_started", reason="no stored Telegram session")
+        return None
+    stack.push_async_callback(reader.disconnect)
+    try:
+        market = build_market_data(settings)
+    except ValueError:  # no Alpaca keys: posts are still stored and parsed, not scored
+        log.warning("calls_scoring_off", reason="no market data credentials")
+        market = None
+    desk = CallsDesk(db, settings, market, llm, reader)
+    task = asyncio.create_task(desk.run(stopping), name="trader-calls-poller")
+    return desk, task
 
 
 def build_providers(db: Database, settings: Settings):

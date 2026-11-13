@@ -23,6 +23,15 @@ from trader.llm.base import LLMError
 SYNTHETIC_CONTEXT = """Symbol: SPY (us_equity). Price 500.00. RSI(14) 50.1, SMA(20) 499.80,
 EMA(20) 500.05, realized vol 0.8%. No position held. This is a connectivity probe:
 answer within the schema, a hold is fine."""
+#: One synthetic channel post for the ``calls`` Role.
+PROBE_POST = """BTC LONG
+
+My Entry: 70000
+
+TP1: $72000
+TP2: $74000
+
+Stop Loss: $68000"""
 
 
 @dataclass(frozen=True)
@@ -31,10 +40,14 @@ class Contract:
     schema: dict[str, Any]
     validate: Callable[[str], object]
     max_tokens: int = 512
+    #: The user message; a Role whose input is not a symbol context brings its own.
+    user: str = SYNTHETIC_CONTEXT
 
 
 def _contracts() -> dict[str, Contract]:
     # Imported here: these modules sit above the LLM layer and import the registry.
+    from trader.calls.parse import PARSE_SCHEMA, ParsedPost, user_message
+    from trader.calls.parse import SYSTEM_PROMPT as CALLS_PROMPT
     from trader.desk.analysts import ANALYST_SCHEMA, TECHNICAL_PROMPT, AnalystOutput
     from trader.desk.critic import CRITIC_SCHEMA, CriticOutput
     from trader.desk.critic import SYSTEM_PROMPT as CRITIC_PROMPT
@@ -71,6 +84,12 @@ def _contracts() -> dict[str, Contract]:
             confirm_questions,
             confirm_answers,
         ),
+        "calls": Contract(
+            CALLS_PROMPT,
+            PARSE_SCHEMA,
+            ParsedPost.model_validate_json,
+            user=user_message(PROBE_POST, backfilled=False),
+        ),
     }
 
 
@@ -86,7 +105,7 @@ async def probe(role: str, client: Any) -> dict[str, Any]:
             completion = await client.complete(
                 [
                     {"role": "system", "content": contract.system},
-                    {"role": "user", "content": SYNTHETIC_CONTEXT},
+                    {"role": "user", "content": contract.user},
                 ],
                 schema=contract.schema,
                 max_tokens=contract.max_tokens,

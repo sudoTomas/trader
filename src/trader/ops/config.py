@@ -32,6 +32,7 @@ SECTIONS = (
     "Risk limits (RiskGuard)",
     "Replay costs",
     "Research Desk",
+    "Telegram calls",
     "LLM endpoints",
     "Broker / market data credentials",
 )
@@ -668,6 +669,60 @@ class Settings(BaseSettings):
             "seat runs outside the service meter, so this is its spend record; `trader seat "
             "report` reads it back for the citation loop."
         ),
+    )
+
+    # --- Telegram calls ---
+    calls_enabled: bool = setting(
+        False,
+        category=GATE,
+        section="Telegram calls",
+        description=(
+            "Runs the Telegram channel-calls poller: reads the configured channel (read-only, "
+            "never sends or marks read), parses each post's call once and scores it against "
+            "bars. Phase 1 places no orders. Needs a stored Telegram session."
+        ),
+    )
+    calls_channel_id: int = setting(
+        -1003097376178,
+        category=TUNING,
+        section="Telegram calls",
+        description="Telegram channel the calls poller reads. Only this channel is read.",
+    )
+    calls_poll_seconds: float = setting(
+        300.0,
+        category=TUNING,
+        section="Telegram calls",
+        description="Seconds between polls of the calls channel.",
+        gt=0,
+    )
+    calls_recheck_posts: int = setting(
+        50,
+        category=TUNING,
+        section="Telegram calls",
+        description=(
+            "How many of the newest posts each poll re-reads for edits; an edit is stored as "
+            "a new version and never re-parses a live call's levels."
+        ),
+        ge=0,
+    )
+    calls_session_name: str = setting(
+        "spark",
+        category=TUNING,
+        section="Telegram calls",
+        description=(
+            "Name of the stored Telegram session (`channel_sessions`, Fernet-encrypted with "
+            "`TRADER_SECRETS_KEY`) the poller logs in with."
+        ),
+    )
+    calls_sleeve_usd: float = setting(
+        10_000.0,
+        category=TUNING,
+        section="Telegram calls",
+        description=(
+            "Notional sleeve the scorecard sizes calls against: size per call = sleeve x "
+            "allocation x leverage (1% and 1x when the call omits them). Reported only."
+        ),
+        gt=0,
     )
 
     # --- LLM endpoints ---

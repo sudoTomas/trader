@@ -91,6 +91,7 @@ def build_registry(
     openbb: Any | None = None,
     vendors: Any | None = None,
     settler: Any | None = None,
+    calls: Any | None = None,
 ) -> ServiceRegistry:
     """Construct the registry with the capabilities available in this build.
 
@@ -109,7 +110,10 @@ def build_registry(
     (``research.vendors.VendorDesk``, #142), absent in store-less builds. ``settler`` is
     the settlement pass (``learning.settlement.Settler``), absent without market-data
     credentials. ``openbb`` is the OpenBB producer (``research.openbb.OpenBBProducer``,
-    #141), absent in store-less builds.
+    #141), absent in store-less builds. ``calls`` is the Telegram channel-calls desk
+    (``calls.desk.CallsDesk``), or a callable returning it: the desk exists only once the
+    lifespan has connected the stored session, so the app passes a lookup. Absent (or
+    None at call time), every calls capability raises ``CallsOff``.
     """
     reg = ServiceRegistry()
 
@@ -1568,6 +1572,65 @@ def build_registry(
         )
         async def clear_spend_cap(role: str) -> dict[str, Any]:
             return await caps.clear(role)
+
+    def _calls() -> Any:
+        from trader.calls.desk import CallsOff
+
+        desk = calls() if callable(calls) else calls
+        if desk is None:
+            raise CallsOff()
+        return desk
+
+    @reg.register(
+        "channel_posts",
+        kind="query",
+        summary="The Telegram calls channel's latest posts (latest version each), newest"
+        " first, with the kind each was parsed as (call, update, other, unparsed).",
+    )
+    async def channel_posts(limit: int = 50) -> list[dict[str, Any]]:
+        return await _calls().posts(limit=min(max(int(limit), 1), 200))
+
+    @reg.register(
+        "channel_calls",
+        kind="query",
+        summary="Channel calls newest first: the levels parsed, the score (closed, open or"
+        " unscorable, tradeable or not) and the updates linked to each.",
+    )
+    async def channel_calls(limit: int = 100) -> list[dict[str, Any]]:
+        return await _calls().calls(limit=min(max(int(limit), 1), 500))
+
+    @reg.register(
+        "call_scorecard",
+        kind="query",
+        summary="The call scorecard: every channel call simulated against 15m bars at 1x"
+        " after costs; TP1-before-stop rate, mean net return, sleeve-weighted P&L, per"
+        " coin, and the gate (backfill + 28 live days, P&L > 0, half reach TP1). A report:"
+        " nothing trades on it.",
+    )
+    async def call_scorecard() -> dict[str, Any]:
+        return await _calls().scorecard()
+
+    @reg.register(
+        "calls_poll",
+        kind="command",
+        summary="Poll the calls channel now (read-only), then parse, link and score. Audited.",
+    )
+    async def calls_poll() -> dict[str, Any]:
+        out = await _calls().poll()
+        await _audit_command("calls_poll", out)
+        return out
+
+    @reg.register(
+        "calls_backfill",
+        kind="command",
+        summary="Store the calls channel's whole history as backfilled (levels-only"
+        " parses) and return; parse, link and rescore every call run in the background"
+        " (watch call_scorecard). Audited.",
+    )
+    async def calls_backfill() -> dict[str, Any]:
+        out = await _calls().backfill()
+        await _audit_command("calls_backfill", out)
+        return out
 
     async def _audit_command(action: str, payload: dict[str, Any]) -> None:
         """Commands are state-changing: every one leaves an append-only trace."""

@@ -3,7 +3,7 @@
 // saves, so a refused save shows the Probe's words and leaves the old Chain serving.
 // Keys are typed into a password field, sent once in a POST body and never read back.
 
-const ROLES = ['decide', 'analyst', 'critic', 'brief', 'compiler', 'sentiment', 'confirm', 'reflect'];
+const ROLES = ['decide', 'analyst', 'critic', 'brief', 'compiler', 'sentiment', 'confirm', 'reflect', 'calls'];
 const models = {
   roles: null, caps: {}, providers: [], presets: {}, profiles: [],
   modelIds: {}, // provider name -> [{id, price_in, price_out, source}]

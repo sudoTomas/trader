@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const {
   deskRequestUrl, approvalToast, resolveAuditLine, criticPill, confirmPill,
   modelChip, priceText, capText, probeText, servedText, errorText, stopText, stopSummary, configSections,
-  botSentiment, decideModelName,
+  botSentiment, decideModelName, scorecardTiles, callRow,
 } = require('./desk_logic');
 
 const BASE = 'http://127.0.0.1:8080';
@@ -306,4 +306,57 @@ test('decideModelName names the model of the newest decision, not a stale usage 
   assert.equal(decideModelName([{ served_by: 'openrouter:deepseek/deepseek-v4.1-flash' }], []), 'deepseek/deepseek-v4.1-flash');
   assert.equal(decideModelName([{ served_by: null }], usage), 'grok-4-1-fast');
   assert.equal(decideModelName([], []), null);
+});
+
+// The Calls panel on the Bots page: the Telegram channel's calls scored as the Phase 2 Bot
+// would trade them, and the gate figures (reported, not enforced).
+const SCORECARD = {
+  calls: 6, tradeable: 2, scored: 4, open: 1, unscorable: 1, tp1_before_stop: 1, tp1_rate: 0.5,
+  net_return_mean: 0.1, sleeve_pnl_usd: -12.3, by_coin: {}, untradeable: { calls: 2, net_return_mean: -0.02 },
+  live_days: 3, gate_pass: false, gate_reasons: ['3 live days of the 28 needed'],
+};
+
+test('scorecardTiles: TP1 rate as a percent, a losing sleeve in red, the gate not yet passed', () => {
+  const tiles = scorecardTiles(SCORECARD);
+  const by = Object.fromEntries(tiles.map((t) => [t.label, t]));
+  assert.deepEqual(Object.keys(by), ['Tradeable calls', 'TP1 rate', 'Sleeve P&L', 'Live days', 'Gate']);
+  assert.equal(by['Tradeable calls'].value, '2');
+  assert.equal(by['TP1 rate'].value, '50%');
+  assert.equal(by['Sleeve P&L'].value, '-$12.30');
+  assert.equal(by['Sleeve P&L'].tone, 'bad');
+  assert.equal(by['Live days'].value, '3');
+  assert.equal(by.Gate.value, 'not yet');
+  assert.equal(by.Gate.tone, 'warn');
+  const passed = Object.fromEntries(scorecardTiles({ ...SCORECARD, sleeve_pnl_usd: 40, gate_pass: true, gate_reasons: [] }).map((t) => [t.label, t]));
+  assert.equal(passed['Sleeve P&L'].value, '+$40.00');
+  assert.equal(passed['Sleeve P&L'].tone, 'live');
+  assert.equal(passed.Gate.value, 'passed');
+  // Nothing to read never prints NaN.
+  for (const t of scorecardTiles({})) assert.doesNotMatch(`${t.value} ${t.sub || ''}`, /NaN|undefined/);
+});
+
+const call = (levels, score) => ({ msg_id: 7, posted_at: '2026-11-10T14:03:00+00:00', backfilled: false, levels, flags: [], score, updates: [] });
+const LONG = { coin: 'ETH', side: 'long', entry: 3200, tps: [3300, 3400, 3550], stop: 3100, no_stop: false, allocation_pct: null, leverage: null };
+
+test('callRow: the levels, a dash for a missing stop, and untradeable rows marked', () => {
+  const won = callRow(call(LONG, { status: 'closed', tradeable: true, result: { net_return: 0.1, reason: null } }));
+  assert.deepEqual(won, { coin: 'ETH', side: 'long', posted: '2026-11-10T14:03:00+00:00', entry: '3,200', tps: '3,300 / 3,400 / 3,550', stop: '3,100', status: 'closed', net: '+10.0%', netTitle: null, tradeable: true });
+  const noStop = callRow(call({ ...LONG, coin: 'PENGU', entry: null, tps: [], stop: null, no_stop: true }, { status: 'unscorable', tradeable: false, result: { net_return: 0, reason: 'bars unavailable: no bars for PENGU/USD' } }));
+  assert.equal(noStop.stop, '—');
+  assert.equal(noStop.entry, 'market');
+  assert.equal(noStop.tps, '—');
+  assert.equal(noStop.net, '—');
+  assert.equal(noStop.tradeable, false);
+  const short = callRow(call({ ...LONG, side: 'short' }, { status: 'closed', tradeable: false, result: { net_return: -0.034 } }));
+  assert.equal(short.tradeable, false);
+  assert.equal(short.net, '-3.4%');
+  // An open call's net is marked to the last bar, not realised.
+  const open = callRow(call(LONG, { status: 'open', tradeable: true, result: { net_return: 0.05 } }));
+  assert.equal(open.net, '+5.0% mark');
+  assert.match(open.netTitle, /mark/i);
+  assert.equal(won.netTitle, null);
+  const fresh = callRow(call(LONG, null));
+  assert.equal(fresh.status, 'unscored');
+  assert.equal(fresh.tradeable, null);
+  assert.equal(fresh.net, '—');
 });

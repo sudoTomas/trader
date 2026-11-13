@@ -218,10 +218,60 @@ function botSentiment(bot) {
   return { on, enabled: true, why: null, unheld };
 }
 
+// The Calls panel (Telegram channel calls): the scorecard's gate figures as tiles. The gate
+// is reported, not enforced; nothing here trades.
+const finite = (v) => v != null && v !== '' && Number.isFinite(Number(v));
+const pnlUsd = (v) => {
+  const n = Number(v);
+  const s = `$${Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return n > 0 ? `+${s}` : n < 0 ? `-${s}` : s;
+};
+const netPct = (v) => {
+  const n = Number(v) * 100;
+  return `${n > 0 ? '+' : ''}${n.toFixed(1)}%`;
+};
+
+function scorecardTiles(sc) {
+  const c = sc || {};
+  const count = (v) => String(finite(v) ? Number(v) : 0);
+  const pnl = finite(c.sleeve_pnl_usd) ? Number(c.sleeve_pnl_usd) : null;
+  return [
+    { label: 'Tradeable calls', value: count(c.tradeable), tone: '', sub: `of ${count(c.calls)} calls · ${count(c.untradeable?.calls)} untradeable` },
+    { label: 'TP1 rate', value: finite(c.tp1_rate) ? pctText(c.tp1_rate) : '—', tone: '', sub: `${count(c.tp1_before_stop)} reached TP1 before the stop` },
+    { label: 'Sleeve P&L', value: pnl == null ? '—' : pnlUsd(pnl), tone: pnl > 0 ? 'live' : pnl < 0 ? 'bad' : '', sub: finite(c.net_return_mean) ? `mean net ${netPct(c.net_return_mean)} per closed call` : 'no closed calls yet' },
+    { label: 'Live days', value: count(c.live_days), tone: '', sub: 'of 28 needed' },
+    { label: 'Gate', value: c.gate_pass ? 'passed' : 'not yet', tone: c.gate_pass ? 'live' : 'warn', sub: 'reported, not enforced' },
+  ];
+}
+
+// One row of the calls table. Prices keep up to 6 significant digits (crypto runs from
+// 0.00001 to 100,000); a missing level is a dash, a call with no entry is at market. An
+// open call's net is marked to the last bar's close ("mark"), not realised.
+const level = (v) => (finite(v) ? Number(v).toLocaleString('en-US', { maximumSignificantDigits: 6 }) : '—');
+
+function callRow(c) {
+  const l = c?.levels || {};
+  const score = c?.score || null;
+  const net = score && (score.status === 'closed' || score.status === 'open') ? score.result?.net_return : null;
+  const marked = score?.status === 'open' && finite(net);
+  return {
+    coin: l.coin || '?',
+    side: l.side || '—',
+    posted: c?.posted_at || null,
+    entry: finite(l.entry) ? level(l.entry) : 'market',
+    tps: (l.tps || []).filter(finite).map(level).join(' / ') || '—',
+    stop: level(l.stop),
+    status: score ? score.status : 'unscored',
+    net: finite(net) ? `${netPct(net)}${marked ? ' mark' : ''}` : '—',
+    netTitle: marked ? 'Still open: marked to the last bar close, not realised' : null,
+    tradeable: score ? score.tradeable === true : null,
+  };
+}
+
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     ALLOWED_WRITES, deskRequestUrl, approvalToast, resolveAuditLine, criticPill, confirmPill,
     modelChip, priceText, capText, probeText, servedText, decideModelName, errorText, stopText, stopSummary, configSections,
-    botSentiment,
+    botSentiment, scorecardTiles, callRow,
   };
 }

@@ -7,6 +7,7 @@ missed tick means — this layer never crashes the process.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 import structlog
@@ -65,6 +66,19 @@ class CompositeMarketData:
         return await self._try_chain(
             symbol, "get_bars", lambda p: p.get_bars(symbol, interval, lookback)
         )
+
+    async def get_bars_between(
+        self, symbol: Symbol, interval: str, start: datetime, end: datetime
+    ) -> list[Bar]:
+        """Bars in a window, from the first provider in the chain that serves windows."""
+
+        async def call(provider: MarketData) -> list[Bar]:
+            fetch = getattr(provider, "get_bars_between", None)
+            if fetch is None:
+                raise MarketDataError("no window fetch")
+            return await fetch(symbol, interval, start, end)
+
+        return await self._try_chain(symbol, "get_bars_between", call)
 
     async def get_latest_quote(self, symbol: Symbol) -> Quote:
         return await self._try_chain(

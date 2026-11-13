@@ -15,12 +15,13 @@ from typing import Any
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
+from trader.calls.desk import CallsDisconnected, CallsOff
 from trader.loop.bots import BotNotFound, BotSpecError
 from trader.store.audit import SURFACE
 from trader.surfaces.services import ServiceRegistry
 
 # Refusals whose reason reaches the MCP caller (a Bot command's Owner rule, say).
-REFUSALS = (BotSpecError, BotNotFound)
+REFUSALS = (BotSpecError, BotNotFound, CallsOff, CallsDisconnected)
 
 # The capture surface (#8): what an external research agent holding the capture key may
 # do. Capability names (registry keys); the tool names derive from them

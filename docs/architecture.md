@@ -150,6 +150,20 @@ SignalScheduler → ContextBuilder → (analyst desk) → Decider → (Confirm) 
   (Kronos band coverage and hit rate, funding/OI rank IC). Kronos replays point-in-time
   (bars from the replay's frozen provider); the derivatives Source reads nothing in replay.
   Runbook: `runbooks/shadow-signals.md`.
+- **Telegram channel calls** (`trader.calls`, `TRADER_CALLS_ENABLED`, off) — not a Source:
+  no Bot reads it. Inside the API process a poller reads one Telegram channel with a stored,
+  Fernet-sealed session (read-only: never sends or marks read) into `channel_posts`, edits
+  as versions. The `calls` Role parses each post once into a call, an update or other
+  (`call_parses`), updates link to their call by reply chain (else the coin's newest recent
+  call), and a scorer replays each call's exit ladder over 15-minute bars fetched on demand
+  (`call_scores`, results only). The scorecard and its gate are a report; Phase 1 places no
+  orders and imports no executor, broker or RiskGuard. Doors: `channel_posts`,
+  `channel_calls`, `call_scorecard`, `calls_poll`, `calls_backfill` (`/calls*`; 409 while
+  off or with no session; while Telegram is not connected the reads answer and poll and
+  backfill answer 503). The poller connects in the background with backoff and reconnects
+  after a drop; `backfill` stores the history and processes it as a background task.
+  Runbook: `runbooks/telegram-calls.md`; spec:
+  `superpowers/specs/2026-11-12-telegram-signals-bot-design.md`.
 - **Decider** — one Nemotron completion, JSON-schema-validated, 1 retry with the validation
   errors fed back. Transient (infra) vs crash errors classified so infra blips don't arm
   backoff ([transient-vs-crash-backoff](lessons.md#transient-vs-crash-backoff)). Runs in

@@ -26,6 +26,7 @@ Gates at a glance (all default closed):
 - `TRADER_LESSONS_ENABLED` = `false`
 - `TRADER_SENTIMENT_TRIGGER_ENABLED` = `false`
 - `TRADER_POLYMARKET_IN_MACRO_VIEW` = `false`
+- `TRADER_CALLS_ENABLED` = `false`
 - `TRADER_CONFIRM_VETO_ENABLED` = `true`
 
 ## Surfaces / auth
@@ -140,6 +141,19 @@ Notes, Macro View compilation, briefs, the decision desk and X sentiment. Every 
 | `TRADER_SEAT_MAX_NOTES` | `int` | `3` | tuning | Hard cap on notes one seat sweep may submit after the grounding and dedupe gates; the rest are dropped and logged. |
 | `TRADER_SEAT_NOTE_MAX_CHARS` | `int` | `1400` | tuning | Seat note body cap. A longer body is sent back to the model to distill once; still over → dropped. Keeps notes inside the decide prompt's research lane. |
 | `TRADER_SEAT_STATE_PATH` | `str` | `~/.local/state/trader/seat-runs.jsonl` | tuning | Append-only JSONL of seat runs (submitted note ids, usage, estimated cost). The seat runs outside the service meter, so this is its spend record; `trader seat report` reads it back for the citation loop. |
+
+## Telegram calls
+
+The Telegram channel-calls scorecard (Phase 1): read one signals channel read-only, parse each call once and score it against bars. It places no orders; the poller is dark until `TRADER_CALLS_ENABLED` is flipped.
+
+| Variable | Type | Default | Category | Description |
+|---|---|---|---|---|
+| `TRADER_CALLS_ENABLED` | `bool` | `false` | gate | Runs the Telegram channel-calls poller: reads the configured channel (read-only, never sends or marks read), parses each post's call once and scores it against bars. Phase 1 places no orders. Needs a stored Telegram session. |
+| `TRADER_CALLS_CHANNEL_ID` | `int` | `-1003097376178` | tuning | Telegram channel the calls poller reads. Only this channel is read. |
+| `TRADER_CALLS_POLL_SECONDS` | `float` | `300.0` | tuning | Seconds between polls of the calls channel. |
+| `TRADER_CALLS_RECHECK_POSTS` | `int` | `50` | tuning | How many of the newest posts each poll re-reads for edits; an edit is stored as a new version and never re-parses a live call's levels. |
+| `TRADER_CALLS_SESSION_NAME` | `str` | `spark` | tuning | Name of the stored Telegram session (`channel_sessions`, Fernet-encrypted with `TRADER_SECRETS_KEY`) the poller logs in with. |
+| `TRADER_CALLS_SLEEVE_USD` | `float` | `10000.0` | tuning | Notional sleeve the scorecard sizes calls against: size per call = sleeve x allocation x leverage (1% and 1x when the call omits them). Reported only. |
 
 ## LLM endpoints
 
