@@ -44,8 +44,9 @@ ROLES = (
     "critic",
     "confirm",
     "reflect",
+    "calls",
 )
-RESEARCH_ROLES = ("brief", "compiler", "sentiment", "critic", "reflect")
+RESEARCH_ROLES = ("brief", "compiler", "sentiment", "critic", "reflect", "calls")
 #: Usage-meter provider for a configured OpenAI-compatible endpoint (not the Nemotron preset).
 GENERIC_PROVIDER = "openai_compat"
 

@@ -33,7 +33,7 @@ _Avoid_: dust, minimum notional (that is a fixed dollar floor), rebalance thresh
 ### Models
 
 **Role**:
-A job a model does for the agent: decide, analyst, critic, brief, compiler, sentiment, confirm, or reflect. Each Role has a contract its model must meet, so only some models fit some Roles.
+A job a model does for the agent: decide, analyst, critic, brief, compiler, sentiment, confirm, reflect, or calls. Each Role has a contract its model must meet, so only some models fit some Roles.
 _Avoid_: seat (a seat is a Grok research sweep), slot, agent
 
 **Provider**:

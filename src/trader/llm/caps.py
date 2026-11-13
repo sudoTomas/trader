@@ -29,6 +29,7 @@ ROLES = (
     "critic",
     "confirm",
     "reflect",
+    "calls",
 )
 ESTIMATE_DAYS = 7
 
