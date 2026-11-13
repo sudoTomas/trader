@@ -317,7 +317,7 @@ function todayStats() {
   const usageToday = rows.filter((r) => r.day === utcToday);
   const cost = usageToday.reduce((a, r) => a + Number(r.cost_usd || 0), 0);
   const requests = usageToday.reduce((a, r) => a + Number(r.requests || 0), 0);
-  const decideModel = rows.find((r) => r.role === 'decide');
+  const decideModel = decideModelName(store.decisions, rows);
   return { today, good, errors, held, acted: good.length - held, avg, cost, requests, lastError: errors[0], decideModel };
 }
 
@@ -331,7 +331,7 @@ function renderTiles() {
   $('tiles').replaceChildren(
     tile(String(t.today.length), 'Decisions today', `${t.held} held · ${t.acted} acted`, store.loop?.running ? 'live' : ''),
     tile(String(t.errors.length), 'Errors today', t.lastError ? `last ${rel(t.lastError.ts)}` : 'None', t.errors.length ? 'bad' : ''),
-    tile(t.avg ? secs(t.avg) : '—', 'Decision time, last 20', t.decideModel ? t.decideModel.model : ''),
+    tile(t.avg ? secs(t.avg) : '—', 'Decision time, last 20', t.decideModel || ''),
     tile(usd(t.cost), 'Model cost today', `${t.requests} requests`),
     tile(String(store.positions.length), 'Open positions', `${store.orders.filter((o) => isToday(o.created_at)).length} orders today`),
     tile(String(pending), 'Waiting for you', pending ? 'Approvals in Book' : 'Nothing to approve', pending ? 'warn' : ''),
@@ -339,7 +339,7 @@ function renderTiles() {
   const fresh = t.good[0] && Date.now() - new Date(t.good[0].ts).getTime() < 300000;
   $('footModel').replaceChildren(
     el('span', { className: `pulse ${fresh ? 'on' : ''}` }),
-    el('span', { className: 'txt sub', textContent: t.decideModel ? `${t.decideModel.model} · ${t.avg ? secs(t.avg) : '—'}` : 'No decide calls yet' }),
+    el('span', { className: 'txt sub', textContent: t.decideModel ? `${t.decideModel} · ${t.avg ? secs(t.avg) : '—'}` : 'No decide calls yet' }),
   );
 }
 
@@ -383,7 +383,7 @@ function renderBrief() {
   const last = store.decisions[0];
   if (last) items.push({ parts: [['Last call: '], [describeDecision(last).verb, true], [` ${last.symbol || ''} · ${rel(last.ts)}`]] });
   items.push({ parts: [[String(t.today.length), true], [' decisions today, '], [String(t.errors.length), true], [' errors']], warn: t.errors.length > 0 });
-  if (t.decideModel && t.avg) items.push({ parts: [['Decide model '], [t.decideModel.model, true], [' answers in '], [secs(t.avg), true]] });
+  if (t.decideModel && t.avg) items.push({ parts: [['Decide model '], [t.decideModel, true], [' answers in '], [secs(t.avg), true]] });
   if (store.view?.global_thesis) items.push({ parts: [['Macro View: '], [store.view.global_thesis.replace(/\s*\[note:\d+\]/g, '').split(/(?<=\.)\s/)[0]]] });
   const pending = store.approvals.filter((a) => a.status === 'pending').length;
   if (pending) items.push({ parts: [[String(pending), true], [' approvals waiting for you']], warn: true });

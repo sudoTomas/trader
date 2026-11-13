@@ -142,6 +142,16 @@ function probeText(result) {
   return { ok: false, text: `failed · ${result.error}` };
 }
 
+// Ticker and Live tile: the decide model running now. The newest decision's served_by is
+// authoritative; the usage rows (one per model per day) only stand in for decisions served
+// from .env, which carry no served_by. "provider:model" -> model; models may contain ':'.
+function decideModelName(decisions, usageRows) {
+  const latest = (decisions || []).find((d) => d && d.served_by);
+  if (latest) return latest.served_by.split(':').slice(1).join(':') || latest.served_by;
+  const row = (usageRows || []).find((r) => r.role === 'decide');
+  return row ? row.model : null;
+}
+
 // Decision detail: which model served it, and from which Profile version (.env when none).
 function servedText(d) {
   if (!d || !d.served_by) return null;
@@ -211,7 +221,7 @@ function botSentiment(bot) {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     ALLOWED_WRITES, deskRequestUrl, approvalToast, resolveAuditLine, criticPill, confirmPill,
-    modelChip, priceText, capText, probeText, servedText, errorText, stopText, stopSummary, configSections,
+    modelChip, priceText, capText, probeText, servedText, decideModelName, errorText, stopText, stopSummary, configSections,
     botSentiment,
   };
 }
