@@ -100,17 +100,20 @@ def simulate(
        the next 15-minute boundary (a post at exactly 10:15 uses the 10:15 bar); entry =
        its open. No such bar: ``unscorable``, ``"no bars after post"``.
     2. Stop: long ``max(call stop, entry * (1 - stop_frac))``, short ``min(call stop,
-       entry * (1 + stop_frac))``; no call stop uses the fraction alone.
+       entry * (1 + stop_frac))``; no call stop, or one not on the loss side of the
+       actual entry, uses the fraction alone.
     3. TPs: the stated TPs on the profitable side of the actual entry, in stated order,
        labelled tp1.. in that kept order. The position splits equally across them (the
-       last one takes whatever is left). None left: hold until the stop, a ``closed``
-       update or the end of the bars.
+       last one takes whatever is left). When stated TPs are dropped because the actual
+       entry is past them, the next kept TP is labelled and scored as tp1. None left: hold
+       until the stop, a ``closed`` update or the end of the bars.
     4. Walk bars from the entry bar. In each bar, updates first, then the stop (low <=
        stop for a long), then the TPs in order (high >= TP). A stop fill is at the stop,
        or at the open when the bar gapped through it; a TP fill is at the TP. After the
        first TP fill the stop goes to break-even (entry) unless already tighter, from the
-       next bar. A stop exit at exactly the entry is reason ``breakeven``. The walk ends
-       once the position is fully exited.
+       next bar. A stop exit filled at exactly the entry is reason ``breakeven``; one
+       that gapped through it is ``stop``. The walk ends once the position is fully
+       exited.
     5. Updates take effect at the first bar starting at or after their time:
        ``stop_to_breakeven`` -> stop = entry; ``stop_moved`` with ``new_stop`` -> that
        stop if tighter; ``closed`` -> exit the rest at that bar's open. ``tp_hit``,
@@ -138,7 +141,8 @@ def simulate(
         return max(a, b) if long else min(a, b)
 
     stop = entry * (1 - stop_frac) if long else entry * (1 + stop_frac)
-    if levels.stop is not None:
+    # A call stop on the wrong side of the actual entry is dropped, like the TPs.
+    if levels.stop is not None and (levels.stop < entry if long else levels.stop > entry):
         stop = tighter(levels.stop, stop)
     original_stop = stop
     tps = [tp for tp in levels.tps if (tp > entry if long else tp < entry)]
@@ -181,7 +185,7 @@ def simulate(
         # 4. Stop first.
         if stop_hit:
             price = min(bar.open, stop) if long else max(bar.open, stop)
-            exit_(bar, price, remaining, "breakeven" if stop == entry else "stop")
+            exit_(bar, price, remaining, "breakeven" if price == entry else "stop")
             break
 
         filled_tp = False

@@ -113,6 +113,15 @@ def test_tighter_of_call_stop_and_frac():
     assert run(call(stop=95.0), T0, series).stop_used == pytest.approx(95.0)
 
 
+def test_call_stop_on_wrong_side_of_actual_entry_falls_back_to_frac():
+    series = bars((94, 95, 93, 94))
+    score = run(call(stop=95.0), T0, series)
+    assert score.stop_used == pytest.approx(94 * 0.92)
+    assert score.status == "open" and score.first_touch == "neither"
+    short = run(call(side="short", tps=[90.0], stop=105.0), T0, bars((106, 107, 105, 106)))
+    assert short.stop_used == pytest.approx(106 * 1.08)
+
+
 def test_closed_update_exits_the_rest_at_next_bar_open():
     series = bars((100, 105, 99, 104), (104, 106, 103, 105), (106, 107, 105, 106))
     posted = T0 + timedelta(minutes=20)  # takes effect at the 10:30 bar
@@ -158,9 +167,7 @@ def test_stop_to_breakeven_update_and_tp_hit_changes_nothing():
 def test_stop_gapped_through_fills_at_the_open():
     series = bars((100, 111, 99, 110), (95, 96, 94, 95))
     score = run(call(), T0, series)
-    assert score.fills[-1] == Fill(
-        T0 + timedelta(minutes=15), 95.0, pytest.approx(2 / 3), "breakeven"
-    )
+    assert score.fills[-1] == Fill(T0 + timedelta(minutes=15), 95.0, pytest.approx(2 / 3), "stop")
 
 
 def test_short_is_mirrored():
