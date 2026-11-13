@@ -12,7 +12,9 @@ from trader.core.types import Action, Bar, Decision, OrderIntent, Side
 from trader.loop.confirm_questions import (
     CATALYST_MIN,
     CONTESTED_NEWS_MIN,
+    GROUNDED,
     GROUNDED_MIN,
+    NEWS_AGAINST,
     NEWS_AGAINST_MAX,
     QUESTIONS_VERSION,
     PositionState,
@@ -22,11 +24,19 @@ from trader.loop.confirm_questions import (
 )
 from trader.loop.context import DecisionContext, FredPrint, Indicators
 from trader.loop.scheduler import Trigger
-from trader.loop.sources import BRIEF, LESSONS, MACRO_VIEW, SENTIMENT, BriefSlice, SourceSlice
+from trader.loop.sources import (
+    BRIEF,
+    LESSONS,
+    MACRO_VIEW,
+    SENTIMENT,
+    BriefSlice,
+    MacroSlice,
+    SourceSlice,
+)
 
 
 def test_constants_are_the_agreed_values():
-    assert QUESTIONS_VERSION == "2026-11-12.1"
+    assert QUESTIONS_VERSION == "2026-11-12.2"
     assert (GROUNDED_MIN, NEWS_AGAINST_MAX, CATALYST_MIN, CONTESTED_NEWS_MIN) == (
         0.25,
         0.80,
@@ -234,3 +244,32 @@ def test_state_records_a_missing_open_rationale_as_null():
     )
     state = build_state(make_context(), make_draft(Action.CLOSE, Side.SELL), position)
     assert state["position"]["open_rationale"] is None
+
+
+def test_macro_view_and_lessons_are_context_the_rationale_may_cite():
+    # The decide prompt shows the Macro View and the Bot's Lessons, so a rationale that
+    # cites them is grounded. They go in ``context`` (never ``research``: neither is news
+    # about the symbol, so neither may feed news_against).
+    as_of = datetime(2026, 8, 12, 14, 0, tzinfo=UTC)
+    lessons = SourceSlice(LESSONS, "l7", as_of, "x", ["Last breakout open lost 3%"])
+    ctx = make_context(
+        macro_view=MacroSlice(4, ["Hyperscaler capex guidance high", "Liquidity improves Nov-Dec"]),
+        lessons=lessons,
+    )
+    state = build_state(ctx, make_draft(), None)
+    assert state["context"] == {
+        "macro_view": ["Hyperscaler capex guidance high", "Liquidity improves Nov-Dec"],
+        "lessons": ["Last breakout open lost 3%"],
+    }
+    assert "research" not in state
+    json.dumps(state)
+
+
+def test_state_without_macro_view_or_lessons_omits_context():
+    assert "context" not in build_state(make_context(), make_draft(), None)
+
+
+def test_grounded_checks_the_rationale_against_context_too():
+    text = json.dumps(GROUNDED)
+    assert "`context`" in text
+    assert "`context`" not in json.dumps(NEWS_AGAINST)

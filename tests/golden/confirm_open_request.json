@@ -10,12 +10,12 @@
       "type": "noul"
     },
     "grounded": {
+      "type": "noul",
+      "instructions": "Does every number and fact stated in `draft.rationale` appear in `market`, `research` or `context`?",
       "criteria": {
-        "false": "The rationale cites a number or event that `market` and `research` do not show.",
-        "true": "Each number, level and event the rationale cites can be found in `market` or `research`."
-      },
-      "instructions": "Does every number and fact stated in `draft.rationale` appear in `market` or `research`?",
-      "type": "noul"
+        "true": "Each number, level and event the rationale cites can be found in `market`, `research` or `context`.",
+        "false": "The rationale cites a number or event that `market`, `research` and `context` do not show."
+      }
     },
     "news_against": {
       "criteria": {
