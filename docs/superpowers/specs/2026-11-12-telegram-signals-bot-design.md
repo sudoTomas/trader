@@ -82,7 +82,7 @@ to Tomas, and he approves the switch. The gate is a report, not code.
 - **Bars:** Alpaca crypto 15-minute bars, fetched on demand. When a bar touches both a TP and
   the stop, the stop counts first (pessimistic). Unlisted coins (PENGU, WLD, ZEC) are scored
   only if another source has their bars, and never count toward the gate.
-- **Parse model:** a new `signals` Role, initially `grok-none:grok-4.3` then
+- **Parse model:** a new `calls` Role (named `calls`, not `signals`, because "signal" already means the Kronos and derivatives shadow signals), initially `grok-none:grok-4.3` then
   `openrouter:deepseek/deepseek-v4.1-flash`, Spend cap $2/day.
 - **Telegram session on the Spark:** its own session, created by a QR login run on the Spark
   (`trader`-side command or script), stored encrypted with `TRADER_SECRETS_KEY`. It does not
@@ -129,7 +129,7 @@ $10,000.
 - Polls from the Spark inside the trader process (or its supervisor), not a separate service;
   cadence a few minutes, configurable.
 - Telethon, the same client the login used.
-- The parse uses the model picker: a new Role (e.g. `signals`) with its own Chain and Spend cap,
+- The parse uses the model picker: a new Role (`calls`) with its own Chain and Spend cap,
   so the model can change without a deploy. Structured JSON output, validated; a malformed parse
   is stored as "unparsed", never guessed.
 - Updates attach to their call by Telegram reply id first, then by symbol and recency.
