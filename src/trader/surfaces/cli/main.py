@@ -1338,7 +1338,7 @@ def profile_duplicate(
 def profile_set(
     name: str = typer.Argument(..., help="Profile name."),
     role: str = typer.Argument(
-        ..., help="decide, analyst, critic, brief, compiler, sentiment or confirm."
+        ..., help="decide, analyst, critic, brief, compiler, reflect, calls, sentiment or confirm."
     ),
     model: Annotated[
         list[str] | None,
