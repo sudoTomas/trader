@@ -38,9 +38,11 @@ class CapturingLLM:
     def __init__(self, replies: list[str]) -> None:
         self.replies = list(replies)
         self.calls: list[tuple[str, list[dict[str, Any]]]] = []
+        self.max_tokens: list[int] = []
 
     async def complete(self, role, messages, *, schema=None, max_tokens=1024, temperature=0.2):
         self.calls.append((role, messages))
+        self.max_tokens.append(max_tokens)
         return Completion(
             text=self.replies.pop(0),
             usage=Usage(10, 20),
@@ -178,6 +180,16 @@ async def test_sections_without_valid_citations_are_dropped(db: Database):
     )
     view = await MacroViewCompiler(db, llm).compile_now()
     assert set(view["sections"]) == {"crypto"}
+
+
+async def test_compiler_leaves_room_for_a_full_digest(db: Database):
+    # The 1024-token default cut the digest mid-JSON on 2026-11-13 and 11-14 (an 83K-token
+    # prompt of notes), so three compiles failed validation and the Macro View went stale.
+    desk = ResearchDesk(db)
+    note = await desk.submit(title="n", body="b")
+    llm = CapturingLLM([reply(f"thesis [note:{note['id']}]", {})])
+    await MacroViewCompiler(db, llm).compile_now()
+    assert llm.max_tokens == [8192]
 
 
 async def test_compile_versions_increment_and_audit(db: Database):
