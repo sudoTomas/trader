@@ -40,6 +40,9 @@ log = structlog.get_logger(__name__)
 
 ROLE = "compiler"
 DEFAULT_DEBOUNCE_SECONDS = 30.0
+# The digest is a thesis plus a section per asset class: the 1024-token default cut it
+# mid-JSON once the notes grew, and a truncated digest fails validation.
+COMPILE_MAX_TOKENS = 8192
 
 CITATION = re.compile(r"\[note:(\d+)\]")
 POLY_CITATION = re.compile(r"\[poly:(\d+)\]")
@@ -150,7 +153,9 @@ class MacroViewCompiler:
             {"role": "system", "content": system},
             {"role": "user", "content": prompt},
         ]
-        completion = await self._llm.complete(ROLE, messages, schema=COMPILE_SCHEMA)
+        completion = await self._llm.complete(
+            ROLE, messages, schema=COMPILE_SCHEMA, max_tokens=COMPILE_MAX_TOKENS
+        )
         try:
             output = CompiledOutput.model_validate(json.loads(completion.text))
         except (json.JSONDecodeError, ValidationError) as exc:
