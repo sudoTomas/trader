@@ -2,8 +2,11 @@
 
 The reply chain wins: follow ``reply_to`` through the posts (at most ``MAX_DEPTH`` hops,
 which also ends a reply cycle) until a post whose parse is a ``call``. Without one, the
-newest call on the same coin posted within ``WINDOW`` before the update. Otherwise the
-update stays unlinked. Times are the ``posted_at`` of each post's first version.
+newest call on the same coin posted within ``WINDOW`` before the update. An update that
+names no coin ("moving my stop to breakeven") links to the one call still open when it
+was posted: within ``WINDOW``, and not scored closed with its last fill before the
+update. With none or several, or no match at all, the update stays unlinked.
+Times are the ``posted_at`` of each post's first version.
 
 A call that gains an update loses its stored score, so the next scoring pass simulates
 it with the update (a closed score is otherwise never rescored).
@@ -11,7 +14,7 @@ it with the update (a closed score is otherwise never rescored).
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from trader.store.db import Database
 from trader.store.repos import CallParsesRepo, CallScoresRepo, ChannelPostsRepo, Row
@@ -28,11 +31,14 @@ async def link_updates(db: Database, channel_id: int) -> int:
     posts = ChannelPostsRepo(db)
     scores = CallScoresRepo(db)
     calls = await parses.calls(channel_id)
+    closed_at = {
+        s["msg_id"]: _last_fill(s) for s in await scores.all(channel_id) if s["status"] == "closed"
+    }
     linked = 0
     for update in await parses.unlinked_updates(channel_id):
         call_id = await _by_reply(parses, posts, channel_id, update["reply_to"])
         if call_id is None:
-            call_id = _by_coin(calls, update)
+            call_id = _by_coin(calls, update) or _only_open(calls, closed_at, update)
         if call_id is not None:
             # Score dropped first: a failure between the two leaves the update unlinked,
             # and the next pass links it and drops the score again.
@@ -68,3 +74,21 @@ def _by_coin(calls: list[Row], update: Row) -> int | None:
         if call_coin.upper() == coin.upper() and at - WINDOW <= call["posted_at"] <= at:
             return call["msg_id"]
     return None
+
+
+def _last_fill(score: Row) -> datetime | None:
+    fills = (score["result"] or {}).get("fills") or []
+    return max((datetime.fromisoformat(f["ts"]) for f in fills), default=None)
+
+
+def _only_open(calls: list[Row], closed_at: dict[int, datetime | None], update: Row) -> int | None:
+    if (update["payload"].get("update") or {}).get("coin"):
+        return None  # a named coin that matched nothing is not about another coin's call
+    at = update["posted_at"]
+    open_calls = [
+        c["msg_id"]
+        for c in calls
+        if at - WINDOW <= c["posted_at"] <= at
+        and not ((done := closed_at.get(c["msg_id"])) is not None and done <= at)
+    ]
+    return open_calls[0] if len(open_calls) == 1 else None

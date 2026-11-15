@@ -88,7 +88,7 @@ def _contracts() -> dict[str, Contract]:
             CALLS_PROMPT,
             PARSE_SCHEMA,
             ParsedPost.model_validate_json,
-            user=user_message(PROBE_POST, backfilled=False),
+            user=user_message(PROBE_POST, levels_only=False),
         ),
     }
 

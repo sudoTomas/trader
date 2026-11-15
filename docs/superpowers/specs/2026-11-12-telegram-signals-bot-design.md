@@ -73,6 +73,12 @@ to Tomas, and he approves the switch. The gate is a report, not code.
   entry, TPs, stop, allocation, leverage) from the final edited text and ignores any outcome text
   an edit added; prices decide the outcome. Live calls use the text as first seen; later edits
   are stored as versions.
+  Amended 2026-11-14 (Tomas): a backfilled post never edited, or last edited within 15 minutes
+  of posting, is read like a live post, so its stop moves and take-profit reports count. This
+  channel edits nearly every post within minutes to fix typos; only a later edit can carry a
+  result. Without it the backfill missed the Nov 13 BTC "stop to breakeven" post and scored the
+  call to the 8% stop. An update that names no coin and replies to nothing links to the one call
+  still open when it was posted; with several open, it stays unlinked.
 
 ## Calls made after the builder check (Claude's)
 
