@@ -6,8 +6,11 @@ schema (pydantic) refuses a reply that is not JSON, breaks the shape, or names a
 without its levels: that post is stored as ``unparsed`` with the error, never guessed.
 Then ``validate_levels`` drops levels on the wrong side of the entry and flags them.
 
-Backfilled posts are parsed levels only: the channel edits its history with results
-("TP1 HIT +49%"), and a scorecard that read them would grade calls by their outcome.
+A backfilled post last edited more than ``FRESH_EDIT`` after it was posted is parsed
+levels only: the channel edits its history with results ("TP1 HIT +49%"), and a
+scorecard that read them would grade calls by their outcome. One never edited, or edited
+within ``FRESH_EDIT`` (the channel fixes typos within minutes), still says what it said
+then and is read like a live post, stop moves and take-profit reports included.
 
 A failed model call (``LLMError``, ``NoRoute``) stores nothing and stops the batch, so
 the next poll retries the same posts. Logs carry counts and ids, never post text.
@@ -17,6 +20,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import timedelta
 from typing import Any, Literal
 
 import structlog
@@ -31,6 +35,8 @@ log = structlog.get_logger(__name__)
 ROLE = "calls"
 MAX_TPS = 3
 MAX_TOKENS = 600
+#: A backfilled post edited later than this after posting is read levels only.
+FRESH_EDIT = timedelta(minutes=15)
 #: How much of a validation error is kept in ``call_parses.error``.
 ERROR_CHARS = 500
 
@@ -175,11 +181,19 @@ def validate_levels(levels: CallLevels) -> tuple[CallLevels, list[str]]:
     return levels.model_copy(update={"tps": tps, "stop": stop}), flags
 
 
-def user_message(text: str, *, backfilled: bool) -> str:
+def levels_only(post: dict[str, Any]) -> bool:
+    """Whether a stored post's text may have been edited with its result."""
+    edited_at = post["edited_at"]
+    return bool(post["backfilled"]) and (
+        edited_at is not None and edited_at - post["posted_at"] > FRESH_EDIT
+    )
+
+
+def user_message(text: str, *, levels_only: bool) -> str:
     # The post cannot close its own delimiter.
     body = _POST_TAG.sub("", text)
     post = f"<post>\n{body}\n</post>"
-    return f"{LEVELS_ONLY_NOTE}\n\n{post}" if backfilled else post
+    return f"{LEVELS_ONLY_NOTE}\n\n{post}" if levels_only else post
 
 
 class CallParser:
@@ -215,7 +229,7 @@ class CallParser:
             )
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_message(text, backfilled=post["backfilled"])},
+            {"role": "user", "content": user_message(text, levels_only=levels_only(post))},
         ]
         completion = await self._llm.complete(
             ROLE, messages, schema=PARSE_SCHEMA, max_tokens=MAX_TOKENS, temperature=0.0

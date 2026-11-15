@@ -89,9 +89,10 @@ async def test_no_match_stays_unlinked(db) -> None:
     await store(db, 2, "update", coin="DOGE")
     await store(db, 3, "call", coin="ADA", at=T0 - timedelta(days=31))
     await store(db, 4, "update", coin="ADA")
-    await store(db, 5, "update", coin=None)
+    await store(db, 5, "call", coin="ADA")  # a second open call: a coinless update is ambiguous
+    await store(db, 6, "update", coin=None)
     assert await link_updates(db, CHANNEL) == 0
-    for msg_id in (2, 4, 5):
+    for msg_id in (2, 4, 6):
         assert await links_to(db, msg_id) is None
 
 
@@ -116,3 +117,37 @@ async def test_linking_an_update_to_a_scored_call_drops_its_score(db) -> None:
 
     assert await link_updates(db, CHANNEL) == 1
     assert [s["msg_id"] for s in await scores.all(CHANNEL)] == [2]
+
+
+async def test_coinless_update_links_to_the_only_open_call(db) -> None:
+    # "I'm moving my stop-loss to breakeven": no coin, no reply. The older SOL call
+    # closed before the update, so the DOGE call is the only one it can be about.
+    await store(db, 1, "call", coin="SOL")
+    await CallScoresRepo(db).put(
+        CHANNEL,
+        1,
+        status="closed",
+        tradeable=True,
+        result={"fills": [{"ts": (T0 + timedelta(minutes=2)).isoformat()}]},
+    )
+    await store(db, 3, "call", coin="DOGE")
+    await store(db, 4, "update", coin=None)
+
+    assert await link_updates(db, CHANNEL) == 1
+    assert await links_to(db, 4) == 3
+
+
+async def test_a_call_closed_after_the_update_was_still_open_then(db) -> None:
+    await store(db, 1, "call", coin="SOL")
+    await CallScoresRepo(db).put(
+        CHANNEL,
+        1,
+        status="closed",
+        tradeable=True,
+        result={"fills": [{"ts": (T0 + timedelta(days=2)).isoformat()}]},
+    )
+    await store(db, 3, "call", coin="DOGE")
+    await store(db, 4, "update", coin=None)
+
+    assert await link_updates(db, CHANNEL) == 0
+    assert await links_to(db, 4) is None
