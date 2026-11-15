@@ -2,7 +2,9 @@
 # coding/agent model for OpenCode and Hermes. It takes the memory Nemotron 3.5 Lightning
 # held until 2026-11-12 (Qwen3.6-35B-A3B on :8012 stays the fast model and local backup).
 # docs/research/2026-11-two-spark-cluster.md: ~20-28 tok/s with MTP on GB10, 28 GiB of
-# weights+overhead, ~240K tokens of fp8 KV at a 0.30 share; context capped at 128K here.
+# weights+overhead. 256K context (native max 262144) at a 0.36 share: ~430K tokens of fp8 KV,
+# one full-length request plus one ~170K. Raised from 128K/0.30 on 2026-11-14: OpenCode
+# script runs peak at 105-112K and were compacted at 128K.
 # Reasoning is long by default: clients should send reasoning_effort "medium".
 # Default weight loader on purpose: fastsafetensors staged the checkpoint in host RAM and
 # OOM-froze the box on 2026-11-11.
@@ -28,8 +30,8 @@ ExecStart=/usr/bin/docker run --rm --name vllm-qwen27 --gpus all \
     --trust-remote-code \
     --kv-cache-dtype fp8 \
     --attention-backend flashinfer \
-    --gpu-memory-utilization 0.30 \
-    --max-model-len 131072 \
+    --gpu-memory-utilization 0.36 \
+    --max-model-len 262144 \
     --max-num-seqs 4 \
     --max-num-batched-tokens 8192 \
     --enable-chunked-prefill \
