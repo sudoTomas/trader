@@ -280,11 +280,13 @@ class DecisionContext:
 
         if self.recent_decisions:
             lines += ["", "Recent decisions (newest first):"]
-            lines += [
-                f"  - {d['ts']} {d['trigger']} -> {_history_outcome(d)}"
-                for d in self.recent_decisions
-            ]
+            lines += [f"  - {history_line(d)}" for d in self.recent_decisions]
         return "\n".join(lines)
+
+
+def history_line(row: dict[str, Any]) -> str:
+    """One past decision as the prompt's history lists it: ``<ts> <trigger> -> <outcome>``."""
+    return f"{row['ts']} {row['trigger']} -> {_history_outcome(row)}"
 
 
 def _history_outcome(row: dict[str, Any]) -> str:
