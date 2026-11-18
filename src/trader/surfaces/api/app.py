@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
-from typing import Any
+from typing import Annotated, Any
 
 import structlog
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -725,6 +725,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             default=False,
             description="Apply Jev's open veto (a vetoed open becomes a hold); off records it.",
         ),
+        bot: str | None = Query(
+            default=None,
+            description="Replay as this Bot's current version reads: Sources, variant, Sleeve.",
+        ),
+        add_sources: Annotated[
+            list[str] | None, Query(description="Source names added to the Bot's (needs bot).")
+        ] = None,
     ) -> dict:
         seed: dict | None = None
         if (seed_qty is None) != (seed_entry is None):
@@ -750,6 +757,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 lessons=lessons,
                 model=model,
                 confirm_veto=confirm_veto,
+                bot=bot,
+                add_sources=add_sources,
             )
         # bad window / unknown symbol / bad seed / unknown Provider or one that cannot decide
         except (ValueError, KeyError) as exc:

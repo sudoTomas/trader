@@ -849,3 +849,106 @@ async def test_the_mcp_tool_takes_confirm_veto(db: Database):
     assert evaluator.configs[-1]["confirm_veto"] is True
     audit = await db.fetch_all("SELECT payload FROM audit_events ORDER BY id")
     assert audit[-1]["payload"]["confirm_veto"] is True
+
+
+async def test_a_replay_reads_as_a_named_bot_plus_added_sources(db: Database):
+    # #155: replay Bot #2 as it reads today, and again with new Sources, to compare.
+    from trader.loop.bots import BotDesk, bot_spec
+    from trader.surfaces.services import build_registry
+
+    await BotDesk(db).create(
+        "bot-2",
+        bot_spec(symbols={"SPY": "shadow"}, capital_usd=5_000.0, prompt_variant="equity-largecap"),
+    )
+    spec_sources = (await BotDesk(db).get("bot-2"))["spec"]["sources"]
+    evaluator = RecordingEvaluator()
+    reg = build_registry(db, evaluator=evaluator)
+    window = {"start": (NOW - timedelta(hours=2)).isoformat(), "end": NOW.isoformat()}
+
+    await reg.get("run_replay_eval").handler(symbol="SPY", bot="bot-2", **window)
+    await reg.get("run_replay_eval").handler(
+        symbol="SPY", bot="bot-2", add_sources=["earnings", "sec_filings"], **window
+    )
+
+    plain, added = evaluator.configs
+    assert plain["bot"] == "bot-2"
+    assert plain["sources"] == spec_sources
+    assert plain["prompt_variant"] == "equity-largecap"
+    assert plain["sleeve_usd"] == 5_000.0
+    assert added["sources"] == [
+        *spec_sources,
+        {"source": "earnings", "params": {}},
+        {"source": "sec_filings", "params": {}},
+    ]
+    assert added["add_sources"] == ["earnings", "sec_filings"]
+
+
+async def test_added_sources_need_a_bot_and_the_bot_must_exist(db: Database):
+    from trader.surfaces.services import build_registry
+
+    evaluator = RecordingEvaluator()
+    reg = build_registry(db, evaluator=evaluator)
+    window = {"start": (NOW - timedelta(hours=2)).isoformat(), "end": NOW.isoformat()}
+
+    with pytest.raises(ValueError, match="add_sources needs a bot"):
+        await reg.get("run_replay_eval").handler(symbol="SPY", add_sources=["earnings"], **window)
+    from trader.loop.bots import BotNotFound
+
+    with pytest.raises(BotNotFound):
+        await reg.get("run_replay_eval").handler(symbol="SPY", bot="ghost", **window)
+    assert evaluator.configs == []
+
+
+def test_eval_run_bot_and_added_sources_on_api_and_cli(clean_db: None, monkeypatch):
+    import asyncio as _asyncio
+
+    from fastapi.testclient import TestClient
+    from typer.testing import CliRunner
+
+    import trader.surfaces.api.app as app_mod
+    import trader.surfaces.cli.main as cli
+    from trader.ops.config import Settings
+
+    evaluator = RecordingEvaluator()
+    monkeypatch.setattr(app_mod, "build_evaluator", lambda db, settings, desk=None, **kw: evaluator)
+    settings = Settings(auth_disabled=True)
+    window = {"start": (NOW - timedelta(hours=2)).isoformat(), "end": NOW.isoformat()}
+
+    async def seed() -> None:
+        from trader.loop.bots import BotDesk, bot_spec
+
+        db = Database(settings.database_url)
+        await db.open()
+        try:
+            await BotDesk(db).create(
+                "bot-2", bot_spec(symbols={"SPY": "shadow"}, capital_usd=5_000.0)
+            )
+        finally:
+            await db.close()
+
+    _asyncio.run(seed())
+    with TestClient(app_mod.create_app(settings)) as tc:
+        ok = tc.post(
+            "/eval/replay",
+            params={
+                "symbol": "SPY",
+                "bot": "bot-2",
+                "add_sources": ["earnings", "options"],
+                **window,
+            },
+        )
+        bad = tc.post(
+            "/eval/replay", params={"symbol": "SPY", "add_sources": ["earnings"], **window}
+        )
+    assert ok.status_code == 200, ok.text
+    assert bad.status_code == 422 and "needs a bot" in bad.json()["detail"]
+    assert evaluator.configs[-1]["add_sources"] == ["earnings", "options"]
+
+    monkeypatch.setattr(cli, "_client", lambda: TestClient(app_mod.create_app(settings)))
+    base = ["eval", "run", "--symbol", "SPY", "--start", window["start"], "--end", window["end"]]
+    result = CliRunner().invoke(
+        cli.app, [*base, "--bot", "bot-2", "--add-source", "earnings", "--add-source", "options"]
+    )
+    assert result.exit_code == 0, result.output
+    assert evaluator.configs[-1]["bot"] == "bot-2"
+    assert evaluator.configs[-1]["add_sources"] == ["earnings", "options"]

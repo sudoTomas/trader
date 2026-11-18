@@ -1082,8 +1082,14 @@ def build_registry(
         lessons: bool = False,
         model: str | None = None,
         confirm_veto: bool = False,
+        bot: str | None = None,
+        add_sources: list[str] | None = None,
     ) -> dict[str, Any]:
-        """``blind`` withholds the ticker, calendar dates and dollar values from every
+        """``bot`` replays as that Bot's current version reads: its Sources, prompt
+        variant and Sleeve (and its desk lane when on). ``add_sources`` (Source names, with
+        ``bot`` only) subscribes the replay to more Sources on top of the Bot's, so one
+        window replayed with and without them shows what they change (#155).
+        ``blind`` withholds the ticker, calendar dates and dollar values from every
         replayed prompt (#140) and drops the free-text Sources; run it beside a named run
         over the same window to see how much of the P&L is the model's memory.
         ``briefs`` / ``macro_view`` drop a research lane from the replayed prompt;
@@ -1120,6 +1126,23 @@ def build_registry(
             config["lessons"] = True
         if confirm_veto:
             config["confirm_veto"] = True
+        if add_sources and bot is None:
+            raise ValueError("add_sources needs a bot: the Sources are added to that Bot's")
+        if bot is not None:
+            from trader.loop.bots import BotDesk
+
+            spec = (await BotDesk(db).get(bot))["spec"]
+            sources = list(spec.get("sources") or [])
+            sources += [{"source": name, "params": {}} for name in add_sources or []]
+            config["bot"] = bot
+            config["sources"] = sources
+            config["prompt_variant"] = (spec.get("prompt") or {}).get("variant", "default")
+            config["desk"] = desk or bool((spec.get("lanes") or {}).get("desk"))
+            capital = (spec.get("sleeve") or {}).get("capital_usd")
+            if capital is not None:
+                config["sleeve_usd"] = float(capital)
+            if add_sources:
+                config["add_sources"] = list(add_sources)
         pinned: dict[str, Any] = {}  # execute's keywords; empty = the harness registry
         if model is not None:
             from trader.llm.profiles import parse_model_spec
