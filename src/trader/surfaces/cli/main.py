@@ -539,6 +539,13 @@ def eval_run_cmd(
         "--confirm-veto/--no-confirm-veto",
         help="Apply Jev's open veto (a vetoed open becomes a hold); off records would_veto.",
     ),
+    bot: str | None = typer.Option(
+        None, "--bot", help="Replay as this Bot's current version reads: Sources, variant, Sleeve."
+    ),
+    add_source: Annotated[
+        list[str] | None,
+        typer.Option("--add-source", help="A Source added to the Bot's (needs --bot); repeatable."),
+    ] = None,
 ) -> None:
     """Start a background replay over [start, end); poll with `trader eval show`."""
     params = {
@@ -558,6 +565,8 @@ def eval_run_cmd(
         "lessons": lessons or None,
         "model": model,
         "confirm_veto": confirm_veto or None,
+        "bot": bot,
+        "add_sources": add_source or None,
     }
     # Unset options stay off the wire (an empty query value is not "unset" to the API).
     params = {k: v for k, v in params.items() if v is not None}
