@@ -36,7 +36,7 @@ from trader.loop.sources import (
 
 
 def test_constants_are_the_agreed_values():
-    assert QUESTIONS_VERSION == "2026-11-13.1"
+    assert QUESTIONS_VERSION == "2026-11-18.1"
     assert (GROUNDED_MIN, NEWS_AGAINST_MAX, CATALYST_MIN, CONTESTED_NEWS_MIN) == (
         0.25,
         0.80,
@@ -283,3 +283,29 @@ def test_analyst_desk_reads_are_context_the_rationale_may_cite():
     state = build_state(make_context(analysts=reads), make_draft(), None)
     assert state["context"] == {"analyst_desk": reads}
     assert "research" not in state
+
+
+def test_recent_decisions_are_context_as_the_prompt_lists_them():
+    # Live rationales cite them ("prior 5 heartbeats all shadow open"); without them Jev
+    # called two Bot #1 opens ungrounded (MSFT 2026-11-13, AMZN 2026-11-18).
+    recent = [
+        {
+            "ts": "2026-11-18T18:05:32+00:00",
+            "trigger": "heartbeat",
+            "status": "shadow",
+            "decision": {"action": "open"},
+        },
+        {
+            "ts": "2026-11-18T17:35:12+00:00",
+            "trigger": "heartbeat",
+            "status": "shadow",
+            "decision": {"action": "hold"},
+        },
+    ]
+    state = build_state(make_context(recent_decisions=recent), make_draft(), None)
+    assert state["context"] == {
+        "recent_decisions": [
+            "2026-11-18T18:05:32+00:00 heartbeat -> shadow open",
+            "2026-11-18T17:35:12+00:00 heartbeat -> hold",
+        ]
+    }

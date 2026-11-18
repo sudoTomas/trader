@@ -102,6 +102,10 @@ Named JSON fields, not the decide prompt string:
   analyst desk's reads as the decide prompt renders them. Live, rationales cite them
   ("technical bullish 0.75"); without them Jev called 9 of Bot #1's first 25 veto-on opens
   ungrounded. Replays do not run the desk, so the two-week check could not see this.
+  Amended again 2026-11-18 (questions version `2026-11-18.1`): `context.recent_decisions`, the
+  Bot's recent decisions as the prompt lists them (`<ts> <trigger> -> <outcome>`). Bot #1's
+  only two would-vetoes from Nov 13 to 18 (MSFT, AMZN; 2 of 26 opens) cited "prior heartbeats
+  shadow open", which Jev did not see.
 
 Apply the human test: a smart person shown only this state and one question could answer it
 quickly. Drop any field no question needs.
