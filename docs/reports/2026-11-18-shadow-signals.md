@@ -40,6 +40,27 @@ look: how the sidecar normalizes the context window (equity bars have overnight 
 gaps), the timestamp features it passes, and how predicted prices are turned into returns
 against `last_close`. Until that is fixed these numbers say nothing about Kronos.
 
+### Cause, found the same day
+
+Not a scaling bug. Kronos z-scores its whole input window, and the sidecar sent 400 1h
+bars: about 17 days for ETH and about 2.5 months of equity sessions. Kronos-small's
+forecast is then roughly "back to the window's mean within 24 bars". After the November
+selloff that mean sat far above the last price (ETH +17.5%, NVDA +30.5%), and the median
+forecasts matched it (+19.3%, +40.7%). A driftless random walk also came out with every path
+up. `predict` and `predict_batch` agree, on GPU and CPU.
+
+Offline check (7 symbols, 20 non-overlapping 24-bar points each, n = 140 per row):
+
+| Context | Coverage of p10..p90 | Hit rate |
+|---|---|---|
+| 400 bars | 19% | 56% |
+| 128 bars | 40% | 55% |
+| 64 bars | 36% | 58% |
+
+The lookback is now 128 bars. Coverage is still about half the target (the 32 sampled paths
+are too tightly bunched), and a hit rate of 55% on 140 points is within noise. Re-score
+after two more weeks on 128 before judging Kronos again.
+
 ## Funding rate and open interest (crypto_derivatives)
 
 Target: a rank IC with a stable sign across both weeks. Only ETH/USD has readings; basis
@@ -59,5 +80,5 @@ at whether the sign survives a window where ETH rose.
 
 ## Next
 
-- Fix the Kronos sidecar's scaling before any further Kronos scoring.
+- Kronos lookback lowered to 128 bars; re-score in two weeks.
 - Keep `TRADER_SHADOW_SIGNALS_ENABLED=true`; no `in_prompt` change.
