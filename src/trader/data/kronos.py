@@ -2,7 +2,7 @@
 
 Kronos-small (MIT, ``shiyu-coder/Kronos``) runs in its own GPU container
 (``infra/kronos/``), never inside the trader process. Per call the trader sends the
-symbol's last ~400 bars and gets back N independently sampled close paths. The paths are
+symbol's last 128 bars and gets back N independently sampled close paths. The paths are
 kept apart on purpose: the library's ``sample_count`` averages them into one path, which
 throws away the spread the band is scored on. The summary computed here is what the
 journal records: the share of paths that end up, and the median, p10 and p90 forward
@@ -27,8 +27,12 @@ from trader.core.types import Bar
 
 log = structlog.get_logger(__name__)
 
-#: Bars sent per forecast. Kronos-small's context is 512; 400 leaves it headroom.
-KRONOS_LOOKBACK = 400
+#: Bars sent per forecast. Kronos z-scores its whole context and forecasts a pull back to
+#: that window's mean: with 400 1h bars (about 2.5 months of equity sessions) a selloff
+#: became "+19% for NVDA in 24 bars, every path up". An offline check on 2026-11-18 (7
+#: symbols, 20 non-overlapping 24-bar points each) put p10..p90 coverage at 19% for 400
+#: bars, 40% for 128 and 36% for 64 (target ~80%). See docs/reports/2026-11-18-shadow-signals.md.
+KRONOS_LOOKBACK = 128
 KRONOS_INTERVAL = "1h"
 TIMEOUT_SECONDS = 15.0
 
