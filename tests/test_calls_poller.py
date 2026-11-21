@@ -345,6 +345,9 @@ def test_lifespan_connects_in_the_background_and_runs_the_poller(
         card = tc.get("/calls/scorecard")
         assert card.status_code == 200
         assert card.json()["poller"]["connected"] is True
+        health = tc.get("/health").json()
+        assert health["status"] == "ok"
+        assert health["calls_poller"]["connected"] is True
     assert runs[0].get("ended") is True
     assert reader.connected is False  # disconnected at shutdown
 
@@ -384,6 +387,11 @@ def test_lifespan_with_telegram_down_reads_and_answers_503(clean_db: None, monke
             "last_ok": None,
             "last_error": "ConnectionError",
         }
+        # A poller that cannot connect (e.g. telethon missing after a bad deploy) shows.
+        health = tc.get("/health")
+        assert health.status_code == 200
+        assert health.json()["status"] == "degraded"
+        assert health.json()["calls_poller"]["last_error"] == "ConnectionError"
         assert tc.get("/calls").status_code == 200
         assert tc.get("/calls/posts").status_code == 200
         for path in ("/calls/poll", "/calls/backfill"):
