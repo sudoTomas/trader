@@ -54,6 +54,11 @@ systemctl --user restart trader-api       # deploy: git pull + run the suite, th
 systemctl --user stop trader-api          # take the API down (loop stops cleanly)
 ```
 
+**Deploy a change**: `scripts/deploy-host.sh` from the checkout. It pulls fast-forward,
+runs `uv sync --all-extras --dev`, restarts the unit and waits for `/health` to say `ok`
+(exit 1 otherwise). Plain `uv sync` removes the extras; without `telegram` the calls poller
+cannot connect, and `/health` reports `degraded` with the poller's `calls_poller` status.
+
 Optional shadow-window watcher (monitoring only, see
 `docs/runbooks/decide-change-gate.md`): copy `trader-desk-watch.service` and
 `trader-desk-watch.timer` the same way and `enable --now trader-desk-watch.timer`.

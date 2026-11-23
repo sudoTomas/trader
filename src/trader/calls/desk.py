@@ -337,8 +337,12 @@ class CallsDesk:
             "live_days": live_days,
             "gate_pass": not reasons,
             "gate_reasons": reasons,
-            "poller": self._poller.status() if self._poller is not None else None,
+            "poller": self.poller_status(),
         }
+
+    def poller_status(self) -> dict[str, Any] | None:
+        """The poller's ``status()``, or None when this desk has no poller."""
+        return self._poller.status() if self._poller is not None else None
 
     async def _live_days(self) -> int:
         row = await self._db.fetch_one(

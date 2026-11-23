@@ -127,8 +127,15 @@ def build_registry(
                 db_status = "ok"
             except Exception:
                 db_status = "unreachable"
-        status = "ok" if db_status == "ok" else "degraded"
-        return {"status": status, "service": "trader", "version": VERSION, "db": db_status}
+        out: dict[str, Any] = {"service": "trader", "version": VERSION, "db": db_status}
+        desk = calls() if callable(calls) else calls
+        poller = desk.poller_status() if desk is not None else None
+        # A failed connect or pass (``last_error``) is degraded; still connecting at boot is not.
+        calls_down = poller is not None and not poller["connected"] and poller["last_error"]
+        if poller is not None:
+            out["calls_poller"] = poller
+        ok = db_status == "ok" and not calls_down
+        return {"status": "ok" if ok else "degraded", **out}
 
     @reg.register("audit", kind="query", summary="Recent audit events, newest first.")
     async def audit(limit: int = 50) -> list[dict[str, Any]]:
