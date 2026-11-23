@@ -1,0 +1,14 @@
+# Weekly Telegram calls scorecard snapshot (read only; never changes anything).
+# Pair with trader-calls-scorecard.timer:
+#   cp infra/systemd/trader-calls-scorecard.{service,timer} ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now trader-calls-scorecard.timer
+#
+# Writes ~/reports/calls-scorecard/<date>.json. Runs from the checkout so the CLI reads
+# TRADER_API_KEY from its .env.
+[Unit]
+Description=trader weekly calls scorecard snapshot
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/repos/trader
+ExecStart=/bin/sh -c 'mkdir -p %h/reports/calls-scorecard && %h/repos/trader/.venv/bin/trader calls scorecard > %h/reports/calls-scorecard/$(date +%%F).json'

@@ -1,0 +1,11 @@
+# Fridays 15:05 host time, after the US close. Persistent=true runs a missed Friday
+# after a reboot.
+[Unit]
+Description=Weekly trader calls scorecard
+
+[Timer]
+OnCalendar=Fri *-*-* 15:05:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
