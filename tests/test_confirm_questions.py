@@ -36,7 +36,7 @@ from trader.loop.sources import (
 
 
 def test_constants_are_the_agreed_values():
-    assert QUESTIONS_VERSION == "2026-11-18.1"
+    assert QUESTIONS_VERSION == "2026-11-27.1"
     assert (GROUNDED_MIN, NEWS_AGAINST_MAX, CATALYST_MIN, CONTESTED_NEWS_MIN) == (
         0.25,
         0.80,
@@ -273,6 +273,17 @@ def test_grounded_checks_the_rationale_against_context_too():
     text = json.dumps(GROUNDED)
     assert "`context`" in text
     assert "`context`" not in json.dumps(NEWS_AGAINST)
+
+
+def test_grounded_leaves_numbers_aside_and_accepts_stated_absence():
+    # Live, Jev marked clean opens ungrounded over quoted levels and over "no research
+    # present" / "no open position" (5 vetoes, 2026-11-23..25). Numbers stay out of the
+    # question; a correct statement that a part is missing counts as shown.
+    text = json.dumps(GROUNDED)
+    assert "apart from its numbers" in text
+    assert "no open position" in text
+    for part in ("`market`", "`research`", "`context`"):
+        assert part in text
 
 
 def test_analyst_desk_reads_are_context_the_rationale_may_cite():

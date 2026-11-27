@@ -56,7 +56,7 @@ recorded.
 
 | id | Asked on | Type | Plain meaning |
 |---|---|---|---|
-| `grounded` | open, close | Noul | Every number and fact stated in `draft.rationale` appears in `market` or `research`. |
+| `grounded` | open, close | Noul | Every event and fact in `draft.rationale`, apart from its numbers, is shown in `market`, `research` or `context` (amended 2026-11-27). |
 | `news_against` | open, close | Noul | `research` gives a reason to expect the symbol to move opposite to `draft.side`. Not asked when `research` is empty; code treats it as neutral (0.5 is NOT used; the rule simply skips news terms). |
 | `catalyst` | open, close | Noul | `draft.rationale` names a specific signal or event behind the trade, rather than generic language ("momentum looks good"). |
 | `thesis_broken` | close only | Noul | Something in `market` or `research` since `position.opened_at` contradicts `position.open_rationale`. |
@@ -106,6 +106,16 @@ Named JSON fields, not the decide prompt string:
   Bot's recent decisions as the prompt lists them (`<ts> <trigger> -> <outcome>`). Bot #1's
   only two would-vetoes from Nov 13 to 18 (MSFT, AMZN; 2 of 26 opens) cited "prior heartbeats
   shadow open", which Jev did not see.
+- `grounded` (amended 2026-11-27, questions version `2026-11-27.1`): the question now leaves
+  the rationale's numbers aside and counts a correct "nothing of this kind" statement ("no
+  research present", "no open position") as shown. With the veto on (from 2026-11-21) Jev
+  vetoed 5 opens as ungrounded (GOOGL, NVDA x2, META x2, Nov 23-25). Every number they quoted
+  was in the prompt, and all 5 said something was missing (0 vetoes among 107 opens without
+  such a phrase, 5 among 76 with one). A probe on states rebuilt from the journaled prompts
+  (the 5 vetoes, 16 held-out opens, 5 drafts with an invented event added): the old wording
+  scored 4 clean drafts below 0.25; the new one scored 1 (0.22), and the invented events
+  0.04-0.19. A code check of the numbers was tried and dropped: models round and reformat
+  quoted levels, so it flagged 18 of 268 clean opens.
 
 Apply the human test: a smart person shown only this state and one question could answer it
 quickly. Drop any field no question needs.
