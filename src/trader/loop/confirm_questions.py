@@ -19,7 +19,7 @@ from trader.core.types import Decision
 from trader.loop.context import DecisionContext, history_line
 from trader.loop.sources import BRIEF, FRED, HELD_POSITION, LESSONS, MACRO_VIEW, SourceSlice
 
-QUESTIONS_VERSION = "2026-11-18.1"
+QUESTIONS_VERSION = "2026-11-27.1"
 
 GROUNDED_MIN = 0.25  # veto an open when p(grounded) is below this
 NEWS_AGAINST_MAX = 0.80  # veto an open when p(news_against) is above this
@@ -46,12 +46,16 @@ def _noul(instructions: str, true: str, false: str) -> dict[str, Any]:
     }
 
 
+# Numbers are left out: rationales quote the prompt's levels, rounded or reformatted
+# (0.04915 as 4.915%), and Jev marked clean opens ungrounded over them (2026-11-27).
 GROUNDED = _noul(
-    "Does every number and fact stated in `draft.rationale` appear in `market`, `research`"
-    " or `context`?",
-    "Each number, level and event the rationale cites can be found in `market`, `research`"
-    " or `context`.",
-    "The rationale cites a number or event that `market`, `research` and `context` do not show.",
+    "Is every event and fact in `draft.rationale`, apart from its numbers, shown in `market`,"
+    " `research` or `context`?",
+    "Each event, signal or fact the rationale states, leaving its numbers aside, can be found"
+    " in `market`, `research` or `context`. A statement that something is missing, such as no"
+    " research or no open position, counts as found when the state has no such part.",
+    "The rationale states an event or fact, such as a news item, an analyst view or a"
+    " filing, that `market`, `research` and `context` do not show.",
 )
 CATALYST = _noul(
     "Does `draft.rationale` name a specific signal or event behind the trade?",

@@ -11,10 +11,10 @@
     },
     "grounded": {
       "type": "noul",
-      "instructions": "Does every number and fact stated in `draft.rationale` appear in `market`, `research` or `context`?",
+      "instructions": "Is every event and fact in `draft.rationale`, apart from its numbers, shown in `market`, `research` or `context`?",
       "criteria": {
-        "true": "Each number, level and event the rationale cites can be found in `market`, `research` or `context`.",
-        "false": "The rationale cites a number or event that `market`, `research` and `context` do not show."
+        "true": "Each event, signal or fact the rationale states, leaving its numbers aside, can be found in `market`, `research` or `context`. A statement that something is missing, such as no research or no open position, counts as found when the state has no such part.",
+        "false": "The rationale states an event or fact, such as a news item, an analyst view or a filing, that `market`, `research` and `context` do not show."
       }
     },
     "news_against": {
